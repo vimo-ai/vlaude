@@ -325,6 +325,30 @@ export class DaemonGateway
   }
 
   /**
+   * 监听来自 AppGateway 的监听新 session 事件
+   */
+  @OnEvent('daemon.watchNewSession')
+  handleWatchNewSessionEvent(data: { clientId: string; projectPath: string }) {
+    this.logger.log(`📥 [事件监听] 收到监听新Session事件`);
+    this.logger.log(`   CLI ID: ${data.clientId}`);
+    this.logger.log(`   项目路径: ${data.projectPath}`);
+
+    const daemons = Array.from(this.connectedDaemons.values());
+    if (daemons.length === 0) {
+      this.logger.warn(`⚠️ [监听新Session] 没有 Daemon 连接`);
+      return;
+    }
+
+    const daemon = daemons[0];
+    daemon.socket.emit('server:watchNewSession', {
+      clientId: data.clientId,
+      projectPath: data.projectPath,
+    });
+
+    this.logger.log(`✅ [监听新Session] 已通知 Daemon 开始监听`);
+  }
+
+  /**
    * 监听来自 AppGateway 的会话发现事件
    */
   @OnEvent('daemon.sessionDiscovered')
