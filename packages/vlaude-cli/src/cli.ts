@@ -33,16 +33,10 @@ async function getSessionId(args: string[]): Promise<SessionInfo | null> {
   // 如果用户明确指定 --resume 或 -r,返回 session 信息
   if (resumeIndex !== -1 && args[resumeIndex + 1]) {
     const sessionId = args[resumeIndex + 1];
-    const projectPath = getCurrentProjectPath();
-
-    console.log(chalk.gray(`📝 Resuming session: ${sessionId}`));
-    console.log(chalk.gray(`   Project: ${projectPath}`));
-
     return { sessionId };
   }
 
   // 新建 session - 我们先不知道 sessionId,让 claude 自己创建
-  console.log(chalk.gray('📝 Creating new session...'));
   return null;
 }
 
@@ -64,18 +58,10 @@ function runLocalMode(
   sessionId: string
 ): Promise<'exit' | 'switch'> {
   return new Promise((resolve, reject) => {
-    console.log(chalk.blue('🖥️  Local mode - You can use Claude normally'));
-    console.log(chalk.gray(`Session: ${sessionId}\n`));
+    // Local mode - status will be shown by vlaude-statusline
 
-    // DEBUG: 打印实际传递给 claude 的参数
-    console.log(chalk.yellow('[DEBUG] Spawning claude with:'));
-    console.log(chalk.yellow(`  args: ${JSON.stringify(args)}`));
-    console.log(chalk.yellow(`  cwd: ${process.cwd()}`));
-    console.log(chalk.yellow(`  stdin.isTTY: ${process.stdin.isTTY}`));
-    console.log(chalk.yellow(`  stdout.isTTY: ${process.stdout.isTTY}\n`));
-
-    // Pause stdin before spawning (like happy-cli does)
-    process.stdin.pause();
+    // 不需要 pause stdin，因为 stdio: 'inherit' 会让子进程直接接管
+    // process.stdin.pause();
 
     // Use the latest claude from ~/.claude/local/claude
     // This ensures we use the auto-updated version (2.0.43) instead of
@@ -108,8 +94,8 @@ function runLocalMode(
       currentClaudeProcess = null;
       currentSwitchHandler = null;
 
-      // Resume stdin after process exits
-      process.stdin.resume();
+      // 不需要 resume，因为我们没有 pause
+      // process.stdin.resume();
 
       if (shouldSwitch) {
         resolve('switch');
@@ -124,8 +110,8 @@ function runLocalMode(
       currentClaudeProcess = null;
       currentSwitchHandler = null;
 
-      // Resume stdin on error
-      process.stdin.resume();
+      // 不需要 resume，因为我们没有 pause
+      // process.stdin.resume();
 
       reject(error);
     });
@@ -209,12 +195,7 @@ async function main() {
   controlSocket.on('connect', () => {
     if (currentSessionId) {
       controlSocket.emit('join', { sessionId: currentSessionId, clientType: 'cli', projectPath });
-      console.log(chalk.gray('✅ Connected to Vlaude server'));
-      console.log(chalk.gray(`   Session: ${currentSessionId}`));
-      console.log(chalk.gray(`   Project: ${projectPath}`));
-      console.log(chalk.gray(`   Client type: cli\n`));
-    } else {
-      console.log(chalk.gray('✅ Connected to Vlaude server (waiting for session creation)'));
+      // Connected to Vlaude server - status will be shown by vlaude-statusline
     }
   });
 
@@ -252,9 +233,7 @@ async function main() {
       try {
         // 如果没有 sessionId，请求 Daemon 监听新 session 创建
         if (!currentSessionId) {
-          console.log(chalk.gray('📝 Creating new session...'));
-          console.log(chalk.gray('   Requesting Daemon to watch for new session files...'));
-
+          // Requesting Daemon to watch for new session files
           // 发送监听请求
           controlSocket.emit('watch-new-session', { projectPath });
 
@@ -266,7 +245,7 @@ async function main() {
 
             controlSocket.once('new-session-created', (data: { sessionId: string; projectPath: string }) => {
               clearTimeout(timeout);
-              console.log(chalk.green(`✅ New session created: ${data.sessionId}`));
+              // Session created - status will be shown by vlaude-statusline
               resolve(data.sessionId);
             });
           });
@@ -286,7 +265,7 @@ async function main() {
             // 成功获取到 sessionId，加入 server
             if (controlSocket.connected) {
               controlSocket.emit('join', { sessionId: currentSessionId, clientType: 'cli', projectPath });
-              console.log(chalk.gray(`\n✅ Session created and joined: ${currentSessionId}\n`));
+              // Session joined - status will be shown by vlaude-statusline
             }
 
             // 继续等待 Claude 进程完成
