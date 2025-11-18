@@ -1,0 +1,73 @@
+// Prisma Schema for vlaude-server
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Project {
+  id             Int       @id @default(autoincrement())
+  name           String    @db.VarChar(255)
+  path           String    @unique @db.VarChar(500)
+  encodedDirName String?   @db.VarChar(500)  // Claude 编码的目录名(用于文件系统映射)
+  projectPath    String?   @db.VarChar(500)  // 兼容字段,存储项目路径
+  lastAccessed   DateTime?
+  lastModified   DateTime?  // 项目最后修改时间（所有 session 中最新的 mtime）
+  sessionCount   Int       @default(0)  // session 数量
+  isDeleted      Boolean   @default(false)  // 软删除标记
+  deletedAt      DateTime?  // 删除时间
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  sessions Session[]
+
+  @@index([isDeleted, lastModified])
+  @@index([encodedDirName])
+  @@map("vlaude_project")
+}
+
+model Session {
+  id             Int      @id @default(autoincrement())
+  sessionId      String   @unique @db.VarChar(255)
+  projectId      Int
+  projectPath    String?  @db.VarChar(500)  // 项目路径(冗余字段,用于快速查询)
+  messageCount   Int      @default(0)
+  lastMessageAt  DateTime?
+  lastParsedLine Int      @default(0)  // 上次解析到第几行
+  lastFileSize   BigInt   @default(0)  // 上次解析时的文件大小（字节）
+  lastMtime      DateTime?  // 上次解析时的文件修改时间
+  isDeleted      Boolean  @default(false)  // 软删除标记
+  deletedAt      DateTime?  // 删除时间
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  project  Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  messages Message[]
+
+  @@index([projectId])
+  @@index([projectPath])
+  @@index([isDeleted, lastMtime])
+  @@map("claude_session")
+}
+
+model Message {
+  id        Int      @id @default(autoincrement())
+  sessionId Int
+  role      String   @db.VarChar(20)
+  content   String   @db.Text
+  metadata  Json?
+  sequence  Int
+  timestamp DateTime
+  createdAt DateTime @default(now())
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, sequence], name: "sessionId_sequence")
+  @@index([sessionId])
+  @@index([sequence])
+  @@map("claude_message")
+}

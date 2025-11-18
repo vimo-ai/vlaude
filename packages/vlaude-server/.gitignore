@@ -1,0 +1,60 @@
+# compiled output
+/dist
+/node_modules
+
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
+
+# OS
+.DS_Store
+
+# Tests
+/coverage
+/.nyc_output
+
+# IDEs and editors
+/.idea
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+
+# IDE - VSCode
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Prisma
+prisma/*.db
+prisma/*.db-journal
+
+# Test database
+prisma/test-db/sqlite/*.db
+prisma/test-db/sqlite/*.db-journal
+# Test Prisma generated files (保留schema.prisma，忽略生成文件)
+prisma/test-db/prisma/*
+!prisma/test-db/prisma/schema.prisma
+
+# Cache
+cache/
+.cache/
+
+# Temporary files
+*.tmp
+*.temp
+.temp/

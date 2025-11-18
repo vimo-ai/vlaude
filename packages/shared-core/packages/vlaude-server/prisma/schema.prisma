@@ -1,0 +1,61 @@
+// Prisma Schema for vlaude-server
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model VlaudeProject {
+  id          Int      @id @default(autoincrement())
+  projectSlug String   @unique @db.VarChar(255)
+  localPath   String   @db.VarChar(500)
+  lastSyncAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  delete      Boolean  @default(false)
+
+  sessions ClaudeSession[]
+
+  @@map("vlaude_project")
+}
+
+model ClaudeSession {
+  id              Int      @id @default(autoincrement())
+  projectId       Int
+  claudeSessionId String   @unique @db.VarChar(255)
+  model           String   @default("claude-sonnet-4-20250514") @db.VarChar(100)
+  permissionMode  String   @default("bypassPermissions") @db.VarChar(50)
+  status          String   @default("active") @db.VarChar(20)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  delete          Boolean  @default(false)
+
+  project  VlaudeProject   @relation(fields: [projectId], references: [id])
+  messages ClaudeMessage[]
+
+  @@index([projectId])
+  @@index([status])
+  @@map("claude_session")
+}
+
+model ClaudeMessage {
+  id        Int      @id @default(autoincrement())
+  sessionId Int
+  uuid      String   @unique @db.VarChar(255)
+  role      String   @db.VarChar(20)
+  type      String   @db.VarChar(50)
+  content   Json
+  timestamp DateTime
+  createdAt DateTime @default(now())
+  delete    Boolean  @default(false)
+
+  session ClaudeSession @relation(fields: [sessionId], references: [id])
+
+  @@index([sessionId])
+  @@index([timestamp])
+  @@map("claude_message")
+}

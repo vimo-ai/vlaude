@@ -1,0 +1,19 @@
+{
+  "name": "vlaude",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Vlaude - Cross-device Claude Code dialog system",
+  "scripts": {
+    "dev:daemon": "pnpm --filter @vlaude/daemon start:dev",
+    "dev:server": "pnpm --filter @vlaude/server start:dev",
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "test:unit": "pnpm -r test:unit",
+    "test:e2e": "pnpm -r test:e2e",
+    "test:coverage": "pnpm -r test:coverage"
+  },
+  "keywords": ["vlaude", "claude", "cross-device"],
+  "author": "higuaifan",
+  "license": "ISC",
+  "packageManager": "pnpm@9.15.0"
+}

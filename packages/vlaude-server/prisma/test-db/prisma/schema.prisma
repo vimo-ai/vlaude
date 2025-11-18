@@ -1,0 +1,25 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "./"
+}
+
+generator json {
+  provider = "prisma-json-types-generator"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:../sqlite/test.db"
+}
+
+// =================== 用户模块 ===================
+// 注意：用户数据存储在独立的用户服务中，这里只保留用户ID的引用
+// 如果需要存储用户相关的业务数据，请在对应的业务表中添加userId字段
+
+// 示例：如果需要存储用户的业务数据，可以这样定义：
+// model UserProfile {
+//   id     Int @id @default(autoincrement())
+//   userId Int @unique @map("user_id") // 引用用户服务中的用户ID
+//   // 其他业务字段...
+//   @@map("user_profile")
+// }

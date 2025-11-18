@@ -1,0 +1,1242 @@
+{
+  "user": {
+    "totalCount": 50911,
+    "fields": {
+      "parentUuid": {
+        "count": 50904,
+        "percentage": "99.99",
+        "types": [
+          "object",
+          "string"
+        ],
+        "sampleValues": [
+          "5421b43e-f7e8-456b-a7eb-97d6e531ecae",
+          "19d6c13d-fafb-41df-a154-657497d53ba6",
+          "a881ee77-1bb9-4519-b0ee-b5dcbf298610",
+          "07ee16b3-7530-4915-bdd5-b7debc514265",
+          "920badc0-db1f-4a89-9f91-62ceaa0060dc",
+          "d51bb0bc-df3e-45f3-96b0-fd333ad556ca",
+          "3ea68719-9acb-4307-a869-c760c563925a",
+          "46a637d7-8ebf-4b24-bbf6-24b8e05e5d23",
+          "713fda54-f5f9-4ee6-8b74-c3ac45b40452",
+          "93346780-655c-47f4-8df7-86ce8ae58e55"
+        ]
+      },
+      "isSidechain": {
+        "count": 50904,
+        "percentage": "99.99",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      },
+      "userType": {
+        "count": 50904,
+        "percentage": "99.99",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "external"
+        ]
+      },
+      "cwd": {
+        "count": 50904,
+        "percentage": "99.99",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "/Users/higuaifan/.config/clash",
+          "/Users/higuaifan/Desktop/hi/小工具/红果短剧",
+          "/Users/higuaifan/Desktop/hi/小工具/NAS",
+          "/Users/higuaifan/Desktop/hi/小工具/claude",
+          "/Users/higuaifan/Desktop/vimo/vlaude/vlaude-watcher",
+          "/Users/higuaifan/Desktop/vimo/vlaude/vlaude-cli",
+          "/Users/higuaifan/Desktop/vimo/claude-ecosystem/packages/shared-core",
+          "/Users/higuaifan/Desktop/vimo/claude-ecosystem",
+          "/Users/higuaifan/Desktop/vimo/claude-ecosystem/packages/clash-server",
+          "/Users/higuaifan/Desktop/vimo/claude-ecosystem/packages"
+        ]
+      },
+      "sessionId": {
+        "count": 50904,
+        "percentage": "99.99",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "e951e3c4-4732-4d04-850c-bbb2e43c2bdd",
+          "a6f754e4-d3fb-405e-8fef-e19f5afa18ee",
+          "0f9a4ad4-48ad-40ec-b0eb-5e8e4c407036",
+          "176e3507-7b8b-4b5e-9dd8-aa4b00773e55",
+          "5191e9e1-692f-45d8-9dde-d68fb8b1eae8",
+          "819c3d4a-bd89-4340-a8b9-f861030f05af",
+          "06880974-ed15-4fd3-8715-cc5427b7a57b",
+          "3b99d1f0-476d-422e-a069-ede61fd39b75",
+          "365fdb58-2ebd-408c-8183-f294c9583fba",
+          "f76d488a-ff4c-459e-a007-a5dfaaeede4a"
+        ]
+      },
+      "version": {
+        "count": 50904,
+        "percentage": "99.99",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "2.0.33",
+          "2.0.31",
+          "2.0.42",
+          "2.0.37",
+          "2.0.41",
+          "2.0.36",
+          "1.0.102",
+          "2.0.26",
+          "2.0.25",
+          "2.0.30"
+        ]
+      },
+      "gitBranch": {
+        "count": 50904,
+        "percentage": "99.99",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "",
+          "main",
+          "feature/sparkle-auto-update",
+          "gh-pages",
+          "feature/tencent-video-support",
+          "experiment/obs-raw-h264",
+          "master",
+          "dev",
+          "feature/happy-integration-backup"
+        ]
+      },
+      "agentId": {
+        "count": 910,
+        "percentage": "1.79",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "0faa75a0",
+          "7601923c",
+          "45d7ac05",
+          "a3ba7e4e",
+          "12efb1f8",
+          "1ff97baa",
+          "27a1e1fe",
+          "3ac63ac2",
+          "53189172",
+          "539fc472"
+        ]
+      },
+      "type": {
+        "count": 50911,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "user"
+        ]
+      },
+      "message": {
+        "count": 50911,
+        "percentage": "100.00",
+        "types": [
+          "object"
+        ],
+        "sampleValues": [
+          "{role, content}"
+        ]
+      },
+      "uuid": {
+        "count": 50904,
+        "percentage": "99.99",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "cfb50b95-933d-4ab4-ae6c-1f7d3843bb57",
+          "b501fbed-326a-4ece-9636-2f36ca39cdba",
+          "9ee808d9-158a-4fc9-9c18-d6ddba6ae970",
+          "19d6c13d-fafb-41df-a154-657497d53ba6",
+          "a881ee77-1bb9-4519-b0ee-b5dcbf298610",
+          "de993015-cdf2-4a6b-85f3-cc64a88bff61",
+          "920badc0-db1f-4a89-9f91-62ceaa0060dc",
+          "84121780-9dfe-43b1-822c-88dcd172af0c",
+          "3ea68719-9acb-4307-a869-c760c563925a",
+          "46a637d7-8ebf-4b24-bbf6-24b8e05e5d23"
+        ]
+      },
+      "timestamp": {
+        "count": 50911,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "2025-11-05T18:34:51.994Z",
+          "2025-11-05T18:34:51.993Z",
+          "2025-11-02T16:01:56.016Z",
+          "2025-11-02T16:02:07.125Z",
+          "2025-11-02T16:02:07.504Z",
+          "2025-11-02T16:02:07.519Z",
+          "2025-11-02T16:02:16.537Z",
+          "2025-11-02T16:02:17.039Z",
+          "2025-11-02T16:02:24.414Z",
+          "2025-11-02T16:02:24.415Z"
+        ]
+      },
+      "thinkingMetadata": {
+        "count": 7083,
+        "percentage": "13.91",
+        "types": [
+          "object"
+        ],
+        "sampleValues": [
+          "{level, disabled, triggers}"
+        ]
+      },
+      "toolUseResult": {
+        "count": 41022,
+        "percentage": "80.58",
+        "types": [
+          "string",
+          "object"
+        ],
+        "sampleValues": [
+          "Error: EISDIR: illegal operation on a directory, read",
+          "{filenames, durationMs, numFiles, truncated}",
+          "{stdout, stderr, interrupted, isImage}",
+          "{type, file}",
+          "{filePath, oldString, newString, originalFile, structuredPatch, userModified, replaceAll}",
+          "{0}",
+          "Error: MCP tool \"take_snapshot\" response (72542 tokens) exceeds maximum allowed tokens (25000). Plea",
+          "{type, filePath, content, structuredPatch}",
+          "Error: The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was",
+          "Error: Exit code 1\nnode:internal/modules/cjs/loader:1404\n  throw err;\n  ^\n\nError: Cannot find module",
+          "{bytes, code, codeText, result, durationMs, url}",
+          "{mode, filenames, numFiles}",
+          "{oldTodos, newTodos}",
+          "{mode, numFiles, filenames, content, numLines}",
+          "{query, results, durationSeconds}",
+          "{mode, numFiles, filenames, content, numLines, appliedLimit}",
+          "{stdout, stderr, interrupted, isImage, backgroundTaskId}",
+          "{shellId, command, status, exitCode, stdout, stderr, stdoutLines, stderrLines, timestamp}",
+          "{0, 1}",
+          "{message, shell_id}"
+        ]
+      },
+      "isVisibleInTranscriptOnly": {
+        "count": 423,
+        "percentage": "0.83",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      },
+      "isCompactSummary": {
+        "count": 418,
+        "percentage": "0.82",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      },
+      "isMeta": {
+        "count": 205,
+        "percentage": "0.40",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      }
+    },
+    "samples": [
+      {
+        "parentUuid": null,
+        "isSidechain": true,
+        "userType": "external",
+        "cwd": "/Users/higuaifan/.config/clash",
+        "sessionId": "e951e3c4-4732-4d04-850c-bbb2e43c2bdd",
+        "version": "2.0.33",
+        "gitBranch": "",
+        "agentId": "0faa75a0",
+        "type": "user",
+        "message": "{role, content}",
+        "uuid": "cfb50b95-933d-4ab4-ae6c-1f7d3843bb57",
+        "timestamp": "2025-11-05T18:34:51.994Z"
+      },
+      {
+        "parentUuid": null,
+        "isSidechain": true,
+        "userType": "external",
+        "cwd": "/Users/higuaifan/.config/clash",
+        "sessionId": "e951e3c4-4732-4d04-850c-bbb2e43c2bdd",
+        "version": "2.0.33",
+        "gitBranch": "",
+        "agentId": "7601923c",
+        "type": "user",
+        "message": "{role, content}",
+        "uuid": "b501fbed-326a-4ece-9636-2f36ca39cdba",
+        "timestamp": "2025-11-05T18:34:51.993Z"
+      },
+      {
+        "parentUuid": null,
+        "isSidechain": false,
+        "userType": "external",
+        "cwd": "/Users/higuaifan/Desktop/hi/小工具/红果短剧",
+        "sessionId": "a6f754e4-d3fb-405e-8fef-e19f5afa18ee",
+        "version": "2.0.31",
+        "gitBranch": "",
+        "type": "user",
+        "message": "{role, content}",
+        "uuid": "9ee808d9-158a-4fc9-9c18-d6ddba6ae970",
+        "timestamp": "2025-11-02T16:01:56.016Z",
+        "thinkingMetadata": "{level, disabled, triggers}"
+      }
+    ]
+  },
+  "assistant": {
+    "totalCount": 91725,
+    "fields": {
+      "parentUuid": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "string",
+          "object"
+        ],
+        "sampleValues": [
+          "cfb50b95-933d-4ab4-ae6c-1f7d3843bb57",
+          "b501fbed-326a-4ece-9636-2f36ca39cdba",
+          "9ee808d9-158a-4fc9-9c18-d6ddba6ae970",
+          "db0c33bd-c20a-425e-a824-43d0c2522765",
+          "20b59ba5-132e-4b78-80da-e4b14f149894",
+          "3ecf7461-6027-467c-b789-bd0af5b1f47d",
+          "9ab6ac27-ef0c-4fb1-9e65-6b354e176ca5",
+          "de993015-cdf2-4a6b-85f3-cc64a88bff61",
+          "f0b905e4-cefd-463d-8802-5aaf035ae165",
+          "7e007e62-adcd-4c1c-aa8b-65f3adbc8813"
+        ]
+      },
+      "isSidechain": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      },
+      "userType": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "external"
+        ]
+      },
+      "cwd": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "/Users/higuaifan/.config/clash",
+          "/Users/higuaifan/Desktop/hi/小工具/红果短剧",
+          "/Users/higuaifan/Desktop/hi/小工具/NAS",
+          "/Users/higuaifan/Desktop/hi/小工具/claude",
+          "/Users/higuaifan/Desktop/vimo/claude-ecosystem/packages/shared-core",
+          "/Users/higuaifan/Desktop/vimo/claude-ecosystem",
+          "/Users/higuaifan/Desktop/vimo/claude-ecosystem/packages/clash-server",
+          "/Users/higuaifan/Desktop/vimo/claude-ecosystem/packages",
+          "/Users/higuaifan/Desktop/vimo/vlaude/vlaude-watcher",
+          "/Users/higuaifan/Desktop/vimo/vlaude/vlaude-cli"
+        ]
+      },
+      "sessionId": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "e951e3c4-4732-4d04-850c-bbb2e43c2bdd",
+          "a6f754e4-d3fb-405e-8fef-e19f5afa18ee",
+          "0f9a4ad4-48ad-40ec-b0eb-5e8e4c407036",
+          "176e3507-7b8b-4b5e-9dd8-aa4b00773e55",
+          "5191e9e1-692f-45d8-9dde-d68fb8b1eae8",
+          "819c3d4a-bd89-4340-a8b9-f861030f05af",
+          "06880974-ed15-4fd3-8715-cc5427b7a57b",
+          "365fdb58-2ebd-408c-8183-f294c9583fba",
+          "3b99d1f0-476d-422e-a069-ede61fd39b75",
+          "49f36791-e4c7-4eb2-9627-03e66178d854"
+        ]
+      },
+      "version": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "2.0.33",
+          "2.0.31",
+          "2.0.42",
+          "2.0.37",
+          "2.0.41",
+          "2.0.36",
+          "1.0.102",
+          "2.0.25",
+          "2.0.26",
+          "2.0.30"
+        ]
+      },
+      "gitBranch": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "",
+          "main",
+          "feature/sparkle-auto-update",
+          "gh-pages",
+          "feature/tencent-video-support",
+          "experiment/obs-raw-h264",
+          "master",
+          "dev",
+          "feature/happy-integration-backup"
+        ]
+      },
+      "agentId": {
+        "count": 1165,
+        "percentage": "1.27",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "0faa75a0",
+          "7601923c",
+          "45d7ac05",
+          "a3ba7e4e",
+          "029f500b",
+          "15e8c2a5",
+          "5b562cc3",
+          "89a6cf3f",
+          "8c93481f",
+          "9ffed17a"
+        ]
+      },
+      "message": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "object"
+        ],
+        "sampleValues": [
+          "{model, id, type, role, content, stop_reason, stop_sequence, usage}",
+          "{model, id, type, role, content, stop_reason, stop_sequence, usage, context_management}",
+          "{id, container, model, role, stop_reason, stop_sequence, type, usage, content, context_management}",
+          "{id, container, model, role, stop_reason, stop_sequence, type, usage, content}",
+          "{id, model, role, stop_reason, stop_sequence, type, usage, content}"
+        ]
+      },
+      "requestId": {
+        "count": 91208,
+        "percentage": "99.44",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "req_011CUqDyBiWfp3UffHjBeVXM",
+          "req_011CUqDyBGUZ5e6aPJyisrNt",
+          "req_011CUjLspzUtFKk7tk65gCkn",
+          "req_011CUjLtphemu1jRUeXuL2Vg",
+          "req_011CUjLuPrCgTUbXdr92ioWE",
+          "req_011CUjLus3pTb9VSNDYZKCp1",
+          "req_011CUjLxNSCgWeMTmkognQAX",
+          "req_011CUjLzhAPSQYzVsTmaSrXQ",
+          "req_011CUjM1cj1kDvRT6X8yChqW",
+          "req_011CUjM2RqCf77XMSJAwSt9a"
+        ]
+      },
+      "type": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "assistant"
+        ]
+      },
+      "uuid": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "5c680472-0489-44a6-ada6-9daa996e0b55",
+          "b0c02cb8-7046-407e-856e-e2f01d023e46",
+          "db0c33bd-c20a-425e-a824-43d0c2522765",
+          "20b59ba5-132e-4b78-80da-e4b14f149894",
+          "3ecf7461-6027-467c-b789-bd0af5b1f47d",
+          "9ab6ac27-ef0c-4fb1-9e65-6b354e176ca5",
+          "5421b43e-f7e8-456b-a7eb-97d6e531ecae",
+          "f0b905e4-cefd-463d-8802-5aaf035ae165",
+          "7e007e62-adcd-4c1c-aa8b-65f3adbc8813",
+          "07ee16b3-7530-4915-bdd5-b7debc514265"
+        ]
+      },
+      "timestamp": {
+        "count": 91725,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "2025-11-05T18:35:02.068Z",
+          "2025-11-05T18:34:58.790Z",
+          "2025-11-02T16:02:04.197Z",
+          "2025-11-02T16:02:05.193Z",
+          "2025-11-02T16:02:05.560Z",
+          "2025-11-02T16:02:05.786Z",
+          "2025-11-02T16:02:07.069Z",
+          "2025-11-02T16:02:14.798Z",
+          "2025-11-02T16:02:15.693Z",
+          "2025-11-02T16:02:16.485Z"
+        ]
+      },
+      "isApiErrorMessage": {
+        "count": 91,
+        "percentage": "0.10",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      }
+    },
+    "samples": [
+      {
+        "parentUuid": "cfb50b95-933d-4ab4-ae6c-1f7d3843bb57",
+        "isSidechain": true,
+        "userType": "external",
+        "cwd": "/Users/higuaifan/.config/clash",
+        "sessionId": "e951e3c4-4732-4d04-850c-bbb2e43c2bdd",
+        "version": "2.0.33",
+        "gitBranch": "",
+        "agentId": "0faa75a0",
+        "message": "{model, id, type, role, content, stop_reason, stop_sequence, usage}",
+        "requestId": "req_011CUqDyBiWfp3UffHjBeVXM",
+        "type": "assistant",
+        "uuid": "5c680472-0489-44a6-ada6-9daa996e0b55",
+        "timestamp": "2025-11-05T18:35:02.068Z"
+      },
+      {
+        "parentUuid": "b501fbed-326a-4ece-9636-2f36ca39cdba",
+        "isSidechain": true,
+        "userType": "external",
+        "cwd": "/Users/higuaifan/.config/clash",
+        "sessionId": "e951e3c4-4732-4d04-850c-bbb2e43c2bdd",
+        "version": "2.0.33",
+        "gitBranch": "",
+        "agentId": "7601923c",
+        "message": "{model, id, type, role, content, stop_reason, stop_sequence, usage}",
+        "requestId": "req_011CUqDyBGUZ5e6aPJyisrNt",
+        "type": "assistant",
+        "uuid": "b0c02cb8-7046-407e-856e-e2f01d023e46",
+        "timestamp": "2025-11-05T18:34:58.790Z"
+      },
+      {
+        "parentUuid": "9ee808d9-158a-4fc9-9c18-d6ddba6ae970",
+        "isSidechain": false,
+        "userType": "external",
+        "cwd": "/Users/higuaifan/Desktop/hi/小工具/红果短剧",
+        "sessionId": "a6f754e4-d3fb-405e-8fef-e19f5afa18ee",
+        "version": "2.0.31",
+        "gitBranch": "",
+        "message": "{model, id, type, role, content, stop_reason, stop_sequence, usage}",
+        "requestId": "req_011CUjLspzUtFKk7tk65gCkn",
+        "type": "assistant",
+        "uuid": "db0c33bd-c20a-425e-a824-43d0c2522765",
+        "timestamp": "2025-11-02T16:02:04.197Z"
+      }
+    ]
+  },
+  "summary": {
+    "totalCount": 564,
+    "fields": {
+      "type": {
+        "count": 564,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "summary"
+        ]
+      },
+      "summary": {
+        "count": 564,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "AI Request Optimization Discussion",
+          "Claude Code CLI Documentation",
+          "Claude Code CLI: Initial Setup and Usage",
+          "Backend Service Build and Restart Process",
+          "NAS文件分析和清理项目规划",
+          "NAS 文件树扫描系统开发",
+          "NAS file scanning system with AI-assisted recursive exploration",
+          "NAS扫描工具:文件夹分析标签与筛选",
+          "NAS File Management Tool: Tag-Based Analysis System",
+          "Claude Code Agent Configuration & MCP Router Implementation Discussion"
+        ]
+      },
+      "leafUuid": {
+        "count": 564,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "a49db710-9163-4710-a76b-96c03e75692b",
+          "df4deddc-d9d7-4f42-8db3-3c8715e8967b",
+          "ba3a4dd1-5b1c-42cb-99e4-cedb336f4477",
+          "b0eea4b8-a0fa-4e5a-a605-6160e1e22195",
+          "d072d5b7-9d6b-4a61-876f-bcf33606803c",
+          "a3b1b876-b514-4d91-98c9-225b544e5971",
+          "f2e272e6-fdf1-4432-8fff-8d2a29a25339",
+          "1a40c596-394c-4871-a8f1-1db50e9add3e",
+          "87162db1-fde3-4b94-974f-76630f988a9a",
+          "314d34e3-2989-4652-b6e1-fedeb4b8479f"
+        ]
+      }
+    },
+    "samples": [
+      {
+        "type": "summary",
+        "summary": "AI Request Optimization Discussion",
+        "leafUuid": "a49db710-9163-4710-a76b-96c03e75692b"
+      },
+      {
+        "type": "summary",
+        "summary": "Claude Code CLI Documentation",
+        "leafUuid": "df4deddc-d9d7-4f42-8db3-3c8715e8967b"
+      },
+      {
+        "type": "summary",
+        "summary": "Claude Code CLI: Initial Setup and Usage",
+        "leafUuid": "ba3a4dd1-5b1c-42cb-99e4-cedb336f4477"
+      }
+    ]
+  },
+  "file-history-snapshot": {
+    "totalCount": 86275,
+    "fields": {
+      "type": {
+        "count": 86275,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "file-history-snapshot"
+        ]
+      },
+      "messageId": {
+        "count": 86275,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "9ee808d9-158a-4fc9-9c18-d6ddba6ae970",
+          "713fda54-f5f9-4ee6-8b74-c3ac45b40452",
+          "8e887012-d3d8-4b0b-8203-67deee3e1be6",
+          "040ad5af-0017-4162-ae68-472284f0cc97",
+          "51d99fae-3e5f-417f-8a56-7e702892a663",
+          "de049e0d-31b9-4f0c-8826-4a1a7bd7cc0a",
+          "0269efd7-2d9b-4a2d-814c-4120375b6950",
+          "eb80e243-111d-41aa-99b0-17507414f79e",
+          "832e2c8b-25e0-4a4f-96e2-0e6f20d041c5",
+          "5946144f-2d86-49d0-a2a2-68d508a8fbb1"
+        ]
+      },
+      "snapshot": {
+        "count": 86275,
+        "percentage": "100.00",
+        "types": [
+          "object"
+        ],
+        "sampleValues": [
+          "{messageId, trackedFileBackups, timestamp}"
+        ]
+      },
+      "isSnapshotUpdate": {
+        "count": 86275,
+        "percentage": "100.00",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      }
+    },
+    "samples": [
+      {
+        "type": "file-history-snapshot",
+        "messageId": "9ee808d9-158a-4fc9-9c18-d6ddba6ae970",
+        "snapshot": "{messageId, trackedFileBackups, timestamp}",
+        "isSnapshotUpdate": false
+      },
+      {
+        "type": "file-history-snapshot",
+        "messageId": "713fda54-f5f9-4ee6-8b74-c3ac45b40452",
+        "snapshot": "{messageId, trackedFileBackups, timestamp}",
+        "isSnapshotUpdate": true
+      },
+      {
+        "type": "file-history-snapshot",
+        "messageId": "8e887012-d3d8-4b0b-8203-67deee3e1be6",
+        "snapshot": "{messageId, trackedFileBackups, timestamp}",
+        "isSnapshotUpdate": false
+      }
+    ]
+  },
+  "system": {
+    "totalCount": 2138,
+    "fields": {
+      "parentUuid": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "string",
+          "object"
+        ],
+        "sampleValues": [
+          "cdea30f6-ac8e-474e-90ea-02c2678b1816",
+          "df2a4c81-4c20-4c06-a01d-20393c1d5d88",
+          "ffe77aa7-f9b4-4ea4-ba51-38cf1d5514d1",
+          "5abf34a8-3f2a-4207-afe5-f498d66eefab",
+          "143ef6cf-dba5-494e-9c10-c13289f8b5dd",
+          "f80b93c7-2c08-4cf2-8a24-9bf87d76d396",
+          "dad0d7eb-16d6-4d37-a702-82a886f9f34a",
+          "380f23a2-872c-4aa5-af73-12bac2fa84c0",
+          "19f76de9-63a0-428e-9dad-58d49108f63f",
+          "b77fdff1-d74b-45af-ac22-75786755b301"
+        ]
+      },
+      "isSidechain": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      },
+      "userType": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "external"
+        ]
+      },
+      "cwd": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "/Users/higuaifan/Desktop/hi/小工具/红果短剧",
+          "/Users/higuaifan/Desktop/hi/小工具/NAS",
+          "/Users/higuaifan/Desktop/hi/小工具/claude",
+          "/Users/higuaifan/Desktop/vimo/vlaude/vlaude-watcher",
+          "/Users/higuaifan/Desktop/vimo/vlaude/vlaude-cli",
+          "/Users/higuaifan/Desktop/hi/小工具/claude/packages/vlaude-daemon",
+          "/Users/higuaifan/Desktop/hi/小工具/claude/packages/vlaude-server",
+          "/Users/higuaifan/Desktop/hi/小工具/claude/packages/vlaude-cli",
+          "/Users/higuaifan/Desktop/hi/小工具/claude/packages/shared-core",
+          "/Users/higuaifan/Desktop/hi/小工具/claude/packages/vlaude-ios"
+        ]
+      },
+      "sessionId": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "a6f754e4-d3fb-405e-8fef-e19f5afa18ee",
+          "0f9a4ad4-48ad-40ec-b0eb-5e8e4c407036",
+          "176e3507-7b8b-4b5e-9dd8-aa4b00773e55",
+          "5191e9e1-692f-45d8-9dde-d68fb8b1eae8",
+          "819c3d4a-bd89-4340-a8b9-f861030f05af",
+          "06880974-ed15-4fd3-8715-cc5427b7a57b",
+          "3b99d1f0-476d-422e-a069-ede61fd39b75",
+          "365fdb58-2ebd-408c-8183-f294c9583fba",
+          "f76d488a-ff4c-459e-a007-a5dfaaeede4a",
+          "49f36791-e4c7-4eb2-9627-03e66178d854"
+        ]
+      },
+      "version": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "2.0.31",
+          "2.0.42",
+          "2.0.37",
+          "2.0.41",
+          "2.0.36",
+          "1.0.102",
+          "2.0.26",
+          "2.0.25",
+          "2.0.27",
+          "2.0.35"
+        ]
+      },
+      "gitBranch": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "",
+          "main",
+          "feature/sparkle-auto-update",
+          "feature/tencent-video-support",
+          "dev"
+        ]
+      },
+      "type": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "system"
+        ]
+      },
+      "subtype": {
+        "count": 2114,
+        "percentage": "98.88",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "local_command",
+          "compact_boundary",
+          "stop_hook_summary",
+          "api_error",
+          "informational"
+        ]
+      },
+      "content": {
+        "count": 1132,
+        "percentage": "52.95",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "<command-name>/mcp</command-name>\n            <command-message>mcp</command-message>\n            <co",
+          "<local-command-stdout>MCP dialog dismissed</local-command-stdout>",
+          "Conversation compacted",
+          "<command-name>/agents</command-name>\n            <command-message>agents</command-message>\n         ",
+          "<local-command-stdout>Agents dialog dismissed</local-command-stdout>",
+          "\u001b[1mStop\u001b[22m [/Users/higuaifan/Desktop/vimo/claude-hooks/claude-hook-complete.js] completed success",
+          "<command-name>/usage</command-name>\n            <command-message>usage</command-message>\n           ",
+          "<local-command-stdout>Status dialog dismissed</local-command-stdout>",
+          "<command-name>/memory</command-name>\n            <command-message>memory</command-message>\n         ",
+          "<local-command-stdout>Cancelled memory editing</local-command-stdout>"
+        ]
+      },
+      "level": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "info",
+          "suggestion",
+          "error"
+        ]
+      },
+      "timestamp": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "2025-11-02T16:06:03.901Z",
+          "2025-11-02T17:52:52.216Z",
+          "2025-11-02T19:12:16.032Z",
+          "2025-11-02T20:30:52.733Z",
+          "2025-11-03T04:37:13.430Z",
+          "2025-11-16T05:06:56.673Z",
+          "2025-11-16T05:09:19.420Z",
+          "2025-11-16T05:11:25.314Z",
+          "2025-11-16T05:15:16.068Z",
+          "2025-11-16T05:16:36.140Z"
+        ]
+      },
+      "uuid": {
+        "count": 2138,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "df2a4c81-4c20-4c06-a01d-20393c1d5d88",
+          "9a892f9e-12df-42e7-8f28-462d4f7c3102",
+          "a29759d7-b1a0-4e86-b709-f9d3103b9463",
+          "1fc372d3-0d31-47ff-a8a9-011b20d9abcc",
+          "a485c5ea-ecff-4e3b-8315-b29ebf7a06dc",
+          "a7c240cb-4ac6-4a9e-90db-13f1ccfd6a4d",
+          "353950b6-e19d-4098-93cd-75bb182117f9",
+          "f4a5d119-d267-4e80-9ac4-22b6729f4e8b",
+          "7d4dc4c3-6e16-4d57-858b-9d12e9b4ebb6",
+          "5c52f518-f91e-4e87-a9c6-31eef14fe263"
+        ]
+      },
+      "isMeta": {
+        "count": 1132,
+        "percentage": "52.95",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      },
+      "logicalParentUuid": {
+        "count": 423,
+        "percentage": "19.78",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "8a9ca0dd-6f89-46d5-b33a-dff3e2e7cdd5",
+          "8876dfb9-6be8-4fd0-9f19-35d8b45535e5",
+          "d381006d-eab2-4755-b789-af59a79a1df9",
+          "c8b5276e-d7ff-425c-976e-c8a4c6a54e9b",
+          "aa4cd08e-b5e5-4e82-90c6-8a4cd97d9373",
+          "a3b1b876-b514-4d91-98c9-225b544e5971",
+          "f2e272e6-fdf1-4432-8fff-8d2a29a25339",
+          "1a40c596-394c-4871-a8f1-1db50e9add3e",
+          "64282e7f-330b-4f3c-b338-e83b870fca88",
+          "3f8d3987-1115-4927-a730-d6cd1dfcd319"
+        ]
+      },
+      "compactMetadata": {
+        "count": 423,
+        "percentage": "19.78",
+        "types": [
+          "object"
+        ],
+        "sampleValues": [
+          "{trigger, preTokens}"
+        ]
+      },
+      "hookCount": {
+        "count": 560,
+        "percentage": "26.19",
+        "types": [
+          "number"
+        ],
+        "sampleValues": []
+      },
+      "hookInfos": {
+        "count": 560,
+        "percentage": "26.19",
+        "types": [
+          "object"
+        ],
+        "sampleValues": [
+          "{0}"
+        ]
+      },
+      "hookErrors": {
+        "count": 560,
+        "percentage": "26.19",
+        "types": [
+          "object"
+        ],
+        "sampleValues": [
+          "{}"
+        ]
+      },
+      "preventedContinuation": {
+        "count": 560,
+        "percentage": "26.19",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      },
+      "stopReason": {
+        "count": 560,
+        "percentage": "26.19",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          ""
+        ]
+      },
+      "hasOutput": {
+        "count": 560,
+        "percentage": "26.19",
+        "types": [
+          "boolean"
+        ],
+        "sampleValues": []
+      },
+      "toolUseID": {
+        "count": 1073,
+        "percentage": "50.19",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "c576c1cb-fba0-4828-8b45-d61f0ce19fbd",
+          "0016999c-d593-48ee-afbf-95985624a8a2",
+          "dcfdd334-33ec-4340-a6bc-5c35936dd599",
+          "62743981-cb07-4324-b2ff-4586a4d435b9",
+          "3c70c325-87b7-4dc0-8cd2-8a383659c366",
+          "54fb4519-9f6e-456a-8226-fcc93342ee83",
+          "e2115314-f815-4533-b6a0-7e4034fac61a",
+          "a8b5793f-2bf8-4dd0-a4b2-71c8172d2cf3",
+          "26228b96-6da5-47e0-8b35-b9cbeab38608",
+          "6c46d323-9fb1-4779-9d17-f9e743a57547"
+        ]
+      },
+      "cause": {
+        "count": 303,
+        "percentage": "14.17",
+        "types": [
+          "object"
+        ],
+        "sampleValues": [
+          "{}"
+        ]
+      },
+      "error": {
+        "count": 446,
+        "percentage": "20.86",
+        "types": [
+          "object"
+        ],
+        "sampleValues": [
+          "{cause}",
+          "{}",
+          "{status, headers, requestID}"
+        ]
+      },
+      "retryInMs": {
+        "count": 446,
+        "percentage": "20.86",
+        "types": [
+          "number"
+        ],
+        "sampleValues": []
+      },
+      "retryAttempt": {
+        "count": 446,
+        "percentage": "20.86",
+        "types": [
+          "number"
+        ],
+        "sampleValues": []
+      },
+      "maxRetries": {
+        "count": 446,
+        "percentage": "20.86",
+        "types": [
+          "number"
+        ],
+        "sampleValues": []
+      }
+    },
+    "samples": [
+      {
+        "parentUuid": "cdea30f6-ac8e-474e-90ea-02c2678b1816",
+        "isSidechain": false,
+        "userType": "external",
+        "cwd": "/Users/higuaifan/Desktop/hi/小工具/红果短剧",
+        "sessionId": "a6f754e4-d3fb-405e-8fef-e19f5afa18ee",
+        "version": "2.0.31",
+        "gitBranch": "",
+        "type": "system",
+        "subtype": "local_command",
+        "content": "<command-name>/mcp</command-name>\n            <command-message>mcp</command-message>\n            <command-args></command-args>",
+        "level": "info",
+        "timestamp": "2025-11-02T16:06:03.901Z",
+        "uuid": "df2a4c81-4c20-4c06-a01d-20393c1d5d88",
+        "isMeta": false
+      },
+      {
+        "parentUuid": "df2a4c81-4c20-4c06-a01d-20393c1d5d88",
+        "isSidechain": false,
+        "userType": "external",
+        "cwd": "/Users/higuaifan/Desktop/hi/小工具/红果短剧",
+        "sessionId": "a6f754e4-d3fb-405e-8fef-e19f5afa18ee",
+        "version": "2.0.31",
+        "gitBranch": "",
+        "type": "system",
+        "subtype": "local_command",
+        "content": "<local-command-stdout>MCP dialog dismissed</local-command-stdout>",
+        "level": "info",
+        "timestamp": "2025-11-02T16:06:03.901Z",
+        "uuid": "9a892f9e-12df-42e7-8f28-462d4f7c3102",
+        "isMeta": false
+      },
+      {
+        "parentUuid": null,
+        "logicalParentUuid": "8a9ca0dd-6f89-46d5-b33a-dff3e2e7cdd5",
+        "isSidechain": false,
+        "userType": "external",
+        "cwd": "/Users/higuaifan/Desktop/hi/小工具/红果短剧",
+        "sessionId": "a6f754e4-d3fb-405e-8fef-e19f5afa18ee",
+        "version": "2.0.31",
+        "gitBranch": "",
+        "type": "system",
+        "subtype": "compact_boundary",
+        "content": "Conversation compacted",
+        "isMeta": false,
+        "timestamp": "2025-11-02T17:52:52.216Z",
+        "uuid": "a29759d7-b1a0-4e86-b709-f9d3103b9463",
+        "level": "info",
+        "compactMetadata": "{trigger, preTokens}"
+      }
+    ]
+  },
+  "queue-operation": {
+    "totalCount": 141,
+    "fields": {
+      "type": {
+        "count": 141,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "queue-operation"
+        ]
+      },
+      "operation": {
+        "count": 141,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "enqueue",
+          "dequeue",
+          "remove",
+          "popAll"
+        ]
+      },
+      "timestamp": {
+        "count": 141,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "2025-11-03T03:08:06.616Z",
+          "2025-11-03T03:08:12.148Z",
+          "2025-11-16T08:14:01.709Z",
+          "2025-11-16T08:14:01.875Z",
+          "2025-11-14T09:59:32.085Z",
+          "2025-11-14T09:59:33.920Z",
+          "2025-11-15T17:27:47.528Z",
+          "2025-11-15T17:42:05.173Z",
+          "2025-11-16T06:45:57.514Z",
+          "2025-11-16T06:46:18.651Z"
+        ]
+      },
+      "content": {
+        "count": 93,
+        "percentage": "65.96",
+        "types": [
+          "string",
+          "object"
+        ],
+        "sampleValues": [
+          "继续",
+          "无效",
+          "刚刚没启动日志服务，现在重启了下，请你继续",
+          "然后你打算如何推进业务逻辑",
+          "Error: Cannot find module '@nestjs/axios'\nRequire stack:\n- /Users/higuaifan/Desktop/hi/小工具/claude/pa",
+          "[Nest] 84727  - 11/16/2025, 3:51:33 PM     LOG [DataCollectorService] 📦 DataCollectorService 初始化完成\n",
+          "{0}",
+          "/Users/higuaifan/Desktop/hi/小工具/english/ETerm/ETerm/ContentView.swift:46:7 Type 'TranslationManager'",
+          "/Users/higuaifan/Desktop/hi/小工具/english/ETerm/ETerm/ContentView.swift:91:11 Type 'TerminalWrapperVie",
+          "看不到"
+        ]
+      },
+      "sessionId": {
+        "count": 141,
+        "percentage": "100.00",
+        "types": [
+          "string"
+        ],
+        "sampleValues": [
+          "a6f754e4-d3fb-405e-8fef-e19f5afa18ee",
+          "176e3507-7b8b-4b5e-9dd8-aa4b00773e55",
+          "365fdb58-2ebd-408c-8183-f294c9583fba",
+          "9aa60dfe-b2c6-4722-b44f-6f452e4dddbd",
+          "c8243e2e-25b6-4325-90d4-3b9818330424",
+          "f76d488a-ff4c-459e-a007-a5dfaaeede4a",
+          "29d2048e-9be2-47d0-b8ed-029f5cb61ca7",
+          "9ada9db9-5acc-41a0-8774-53164fe76f77",
+          "4b5c9323-d240-4375-b240-508bf4831dd5",
+          "25f95c01-5d05-4abb-a891-87bbc2424e80"
+        ]
+      }
+    },
+    "samples": [
+      {
+        "type": "queue-operation",
+        "operation": "enqueue",
+        "timestamp": "2025-11-03T03:08:06.616Z",
+        "content": "继续",
+        "sessionId": "a6f754e4-d3fb-405e-8fef-e19f5afa18ee"
+      },
+      {
+        "type": "queue-operation",
+        "operation": "dequeue",
+        "timestamp": "2025-11-03T03:08:12.148Z",
+        "sessionId": "a6f754e4-d3fb-405e-8fef-e19f5afa18ee"
+      },
+      {
+        "type": "queue-operation",
+        "operation": "enqueue",
+        "timestamp": "2025-11-16T08:14:01.709Z",
+        "content": "无效",
+        "sessionId": "176e3507-7b8b-4b5e-9dd8-aa4b00773e55"
+      }
+    ]
+  }
+}

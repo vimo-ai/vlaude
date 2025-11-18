@@ -1,0 +1,45 @@
+# Dependencies
+node_modules
+pnpm-lock.yaml
+
+# Build outputs
+dist
+*.tsbuildinfo
+coverage
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Xcode user-specific files
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Database
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+!prisma/*.db
+
+# Temporary files
+tmp/
+temp/
+.cache/

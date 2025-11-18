@@ -1,0 +1,349 @@
+# User 消息 17 种场景完整清单
+
+> 基于对 **50,147 条** user 消息的分析
+> 数据来源：`/scripts/user-message-scenarios.json`
+> 分析脚本：`/scripts/analyze-user-message-types.js`
+
+---
+
+## 📊 占比汇总
+
+| 类别 | 场景数 | 消息数 | 占比 |
+|------|--------|--------|------|
+| **应该显示** | 9 种 | 8,912 | 17.77% |
+| **不应该显示** | 8 种 | 41,235 | 82.23% |
+| **总计** | 17 种 | 50,147 | 100% |
+
+---
+
+## ✅ 应该显示的场景（17.77%）
+
+### 1. 用户消息+思考元数据 - 13.29% (6,669 条)
+
+**特征组合**: `thinkingMetadata + content:string`
+
+**真实示例**:
+```json
+{
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": "看下当前项目，重点是/rpc-view和frida-server..."
+  },
+  "thinkingMetadata": {
+    "thinkingBudget": 10000,
+    "thinkingEnabled": true
+  }
+}
+```
+
+**处理方案**:
+- ✅ 正常显示为用户消息
+- 可选展示思考图标（💭）
+- Swift: `DisplayMessage.thinkingMetadata` 字段
+
+---
+
+### 2. 用户中断请求 - 2.41% (1,208 条)
+
+**特征组合**: `content:array[text]`
+
+**真实示例**:
+```json
+{
+  "message": {
+    "content": [{
+      "type": "text",
+      "text": "[Request interrupted by user for tool use]"
+    }]
+  }
+}
+```
+
+**处理方案**:
+- ✅ 显示为系统提示："⏸️ 用户中断了请求"
+- Swift: `DisplayMessage.isInterrupted = true`
+- UI: 特殊样式（灰色、斜体等）
+
+---
+
+### 3. 普通文本消息 - 1.15% (578 条)
+
+**特征组合**: `content:string`
+
+**真实示例**:
+```json
+{
+  "message": {
+    "content": "你好"
+  }
+}
+```
+
+**处理方案**:
+- ✅ 标准的用户消息显示
+- 无特殊标识
+
+---
+
+### 4. 用户消息+思考+文本数组 - 0.72% (362 条)
+
+**特征组合**: `thinkingMetadata + content:array[text]`
+
+**处理方案**:
+- ✅ 同场景 1，但需要解析数组中的文本
+
+---
+
+### 5. 用户消息+思考+图片 - 0.14% (71 条)
+
+**特征组合**: `thinkingMetadata + content:array[image, text]`
+
+**真实示例**:
+```json
+{
+  "message": {
+    "content": [
+      {
+        "type": "image",
+        "source": {
+          "type": "base64",
+          "media_type": "image/png",
+          "data": "iVBORw0KGgo..."
+        }
+      },
+      {
+        "type": "text",
+        "text": "这是什么错误？"
+      }
+    ]
+  },
+  "thinkingMetadata": {...}
+}
+```
+
+**处理方案**:
+- ✅ 显示图片 + 文本
+- Swift: `DisplayMessage.images: [ImageData]`
+
+---
+
+### 6. 纯图片消息 - 0.04% (21 条)
+
+**特征组合**: `content:array[image]`
+
+**处理方案**:
+- ✅ 只显示图片，无文本
+
+---
+
+### 7-9. 多图片消息 - 0.01% (3 条)
+
+**特征组合**:
+- `thinkingMetadata + content:array[image, image, text]`
+- `thinkingMetadata + content:array[image, image, image, text]`
+- `thinkingMetadata + content:array[image, image, image, image, image, text]`
+
+**处理方案**:
+- ✅ 显示多张图片 + 文本
+
+---
+
+## ❌ 不应该显示的场景（82.23%）
+
+### 1. 工具执行结果 - 80.96% (40,602 条) ⭐ **最重要**
+
+**特征组合**: `toolUseResult + hasToolResult + content:array[tool_result]`
+
+**真实示例**:
+```json
+{
+  "type": "user",
+  "message": {
+    "role": "user",
+    "content": [{
+      "type": "tool_result",
+      "content": "文件内容...",
+      "is_error": false,
+      "tool_use_id": "toolu_01Bgx7Ph539BpQoGUxEfveut"
+    }]
+  },
+  "toolUseResult": {
+    "toolName": "Read",
+    "result": "...",
+    "isError": false
+  }
+}
+```
+
+**处理方案**:
+- ❌ **不作为独立用户消息显示**
+- ✅ **合并到 Assistant 消息的工具调用中**
+- Swift: `MessageTransformer` 自动合并
+- UI: 显示在 Assistant 消息内部
+
+```
+┌─────────────────────────────────────┐
+│ 🤖 Assistant                        │
+│ 让我读取这个文件                      │
+│                                     │
+│ 🔧 调用工具: Read                    │
+│   📄 file_path: /path/to/file       │
+│   ✅ 执行成功                         │
+│   └─ 文件内容...                     │
+└─────────────────────────────────────┘
+```
+
+---
+
+### 2. 压缩摘要 - 0.80% (400 条)
+
+**特征组合**: `visibleInTranscriptOnly + compactSummary + content:string`
+
+**真实示例**:
+```json
+{
+  "message": {
+    "content": "This session is being continued from a previous conversation..."
+  },
+  "isVisibleInTranscriptOnly": true,
+  "isCompactSummary": true
+}
+```
+
+**处理方案**:
+- ❌ 完全不显示
+- 原因：会话压缩的内部机制，用户不需要看到
+
+---
+
+### 3. 元数据消息（字符串） - 0.32% (162 条)
+
+**特征组合**: `isMeta + content:string`
+
+**处理方案**:
+- ❌ 不显示
+- 原因：系统内部元数据
+
+---
+
+### 4. 元数据消息（数组） - 0.09% (45 条)
+
+**特征组合**: `isMeta + content:array[text]`
+
+**真实示例**:
+```json
+{
+  "message": {
+    "content": [{
+      "type": "text",
+      "text": "Caveat: The messages below were generated by the user while running local commands..."
+    }]
+  },
+  "isMeta": true
+}
+```
+
+**处理方案**:
+- ❌ 不显示
+- 原因：Slash command 扩展内容、Caveat 提示等
+
+---
+
+### 5. 压缩摘要（数组） - 0.04% (21 条)
+
+**特征组合**: `visibleInTranscriptOnly + compactSummary + content:array[text]`
+
+**处理方案**:
+- ❌ 不显示
+
+---
+
+### 6. 仅 Transcript 可见 - 0.01% (4 条)
+
+**特征组合**: `visibleInTranscriptOnly + content:array[text]`
+
+**处理方案**:
+- ❌ 不显示
+- 原因：仅调试可见
+
+---
+
+### 7. 工具结果（无 toolUseResult） - 0.01% (1 条)
+
+**特征组合**: `hasToolResult + content:array[tool_result]`
+
+**处理方案**:
+- ❌ 不显示
+- ✅ 合并到 Assistant 消息
+
+---
+
+### 8. 元数据+文档 - 0.00% (0 条)
+
+**特征组合**: `isMeta + content:array[document]`
+
+**处理方案**:
+- ❌ 不显示
+
+---
+
+## 🔍 过滤规则总结
+
+### Swift 端过滤逻辑
+
+```swift
+func shouldDisplayUserMessage(_ msg: Message) -> Bool {
+    // 1. 工具执行结果 - 不显示
+    if msg.toolUseResult != nil { return false }
+    if hasToolResultInContent(msg) { return false }
+
+    // 2. 仅 Transcript 可见 - 不显示
+    if msg.isVisibleInTranscriptOnly == true { return false }
+
+    // 3. 压缩摘要 - 不显示
+    if msg.isCompactSummary == true { return false }
+
+    // 4. 元数据消息 - 不显示
+    if msg.isMeta == true { return false }
+
+    return true  // 其他情况显示
+}
+```
+
+---
+
+## 📁 数据文件位置
+
+- **JSON 报告**: `/scripts/user-message-scenarios.json` (7.8MB，包含所有样本数据)
+- **分析脚本**: `/scripts/analyze-user-message-types.js`
+- **实现文件**: `/packages/Vlaude/Vlaude/Services/MessageTransformer.swift`
+
+---
+
+## ✅ 实现状态
+
+| 场景 | MessageTransformer 支持 | UI 实现 |
+|------|------------------------|---------|
+| 1. 思考元数据 | ✅ | ⬜ |
+| 2. 中断消息 | ✅ | ⬜ |
+| 3. 普通文本 | ✅ | ⬜ |
+| 4. 文本数组 | ✅ | ⬜ |
+| 5. 图片消息 | ✅ | ⬜ |
+| 工具结果合并 | ✅ | ⬜ |
+| 压缩摘要过滤 | ✅ | - |
+| 元数据过滤 | ✅ | - |
+
+---
+
+## 🎯 下一步行动
+
+1. ⬜ 实现 UI 组件显示不同类型的消息
+2. ⬜ 测试 MessageTransformer 的增量更新
+3. ⬜ 实现工具执行的 UI 展示（折叠/展开）
+4. ⬜ 实现图片消息的显示
+5. ⬜ 实现中断消息的特殊样式
+
+---
+
+**最后更新**: 2025-11-17
