@@ -4,7 +4,8 @@
   "description": "Vlaude CLI - Command line interface for managing Claude Code sessions",
   "main": "dist/cli.js",
   "bin": {
-    "vlaude": "./dist/cli.js"
+    "vlaude": "./dist/cli.js",
+    "vlaude-statusline": "./dist/statusline.js"
   },
   "scripts": {
     "build": "tsc",
