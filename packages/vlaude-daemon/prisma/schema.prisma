@@ -1,0 +1,104 @@
+/**
+ * ==========================================
+ * Prisma Schema 编写规范
+ * ==========================================
+ *
+ * 1. **Generator 配置**
+ *    - client: 必须保留，用于生成 Prisma Client
+ *    - json: 用于 JSON 字段类型生成（需要时保留）
+ *
+ * 2. **Model 命名规范**
+ *    - 使用 camelCase（小驼峰）命名 model
+ *    - 数据库表名使用 snake_case（通过 @@map 映射）
+ *    - 字段名使用 camelCase，数据库列名使用 snake_case（通过 @map 映射）
+ *
+ * 3. **必需字段（标准模板）**
+ *    每个 model 必须包含以下系统字段：
+ *    ```prisma
+ *    createTime DateTime @default(now()) @map("create_time")
+ *    modifyTime DateTime @updatedAt @map("modify_time")
+ *    delete     Boolean  @default(false)
+ *    ```
+ *
+ * 4. **JSON 字段标注（使用 prisma-json-types-generator）**
+ *    为 JSON 字段添加类型注释：
+ *    ```prisma
+ *    /// [TypeName]
+ *    metadata Json?
+ *    ```
+ *    然后在对应的类型文件中定义 `TypeName` 类型
+ *
+ * 5. **关联关系规范**
+ *    - 外键字段使用 `<relationName>Id` 格式
+ *    - 外键列名使用 `<relation_name>_id` 格式
+ *    - 明确标注 @relation，包括 fields 和 references
+ *    示例：
+ *    ```prisma
+ *    ownerId Int    @map("owner_id")
+ *    owner   User   @relation(fields: [ownerId], references: [id])
+ *    ```
+ *
+ * 6. **索引规范**
+ *    - 常用查询字段添加索引：@@index([fieldName])
+ *    - 联合查询添加联合索引：@@index([field1, field2])
+ *    - 唯一约束：@unique 或 @@unique([field1, field2])
+ *
+ * 7. **注释规范**
+ *    - 每个 model 前添加业务说明注释
+ *    - 复杂字段添加行内注释
+ *    - 使用分隔线组织不同模块
+ *
+ * 8. **同步 PDMap**
+ *    ⚠️ 每次添加/删除 model 后，必须同步更新 `src/module/prisma/service/root.service.ts` 中的 PDMap 接口
+ *
+ * 9. **示例模板**
+ *    ```prisma
+ *    // 用户扩展信息表
+ *    model userExtension {
+ *      userId         Int       @id @map("user_id")
+ *      lastActiveTime DateTime? @map("last_active_time")
+ *
+ *      // 系统字段
+ *      createTime DateTime @default(now()) @map("create_time")
+ *      modifyTime DateTime @updatedAt @map("modify_time")
+ *      delete     Boolean  @default(false)
+ *
+ *      // 关联关系
+ *      posts Post[]
+ *
+ *      @@map("user_extension")
+ *      @@index([lastActiveTime])
+ *    }
+ *    ```
+ */
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+generator json {
+  provider = "prisma-json-types-generator"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// =================== 用户模块 ===================
+// 注意：用户数据存储在独立的用户服务中，这里只保留用户ID的引用
+// 如果需要存储用户相关的业务数据，请在对应的业务表中添加userId字段
+
+// 示例：如果需要存储用户的业务数据，可以这样定义：
+// model UserProfile {
+//   id     Int @id @default(autoincrement())
+//   userId Int @unique @map("user_id") // 引用用户服务中的用户ID
+//   // 其他业务字段...
+//
+//   // 系统字段
+//   createTime DateTime @default(now()) @map("create_time")
+//   modifyTime DateTime @updatedAt @map("modify_time")
+//   delete     Boolean  @default(false)
+//
+//   @@map("user_profile")
+// }

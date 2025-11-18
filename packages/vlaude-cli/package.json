@@ -1,0 +1,26 @@
+{
+  "name": "@vlaude/cli",
+  "version": "0.0.1",
+  "description": "Vlaude CLI - Command line interface for managing Claude Code sessions",
+  "main": "dist/cli.js",
+  "bin": {
+    "vlaude": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/cli.ts",
+    "start": "node dist/cli.js"
+  },
+  "keywords": ["vlaude", "claude", "cli"],
+  "author": "Claude",
+  "license": "MIT",
+  "dependencies": {
+    "socket.io-client": "^4.8.1",
+    "chalk": "^5.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.2",
+    "tsx": "^4.20.6"
+  }
+}
