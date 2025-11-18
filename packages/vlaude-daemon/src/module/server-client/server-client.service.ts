@@ -112,6 +112,17 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
       this.eventEmitter.emit('session.resumePush', { sessionId: data.sessionId });
     });
 
+    // 监听来自 server 的监听新 session 请求
+    this.socket.on('server:watchNewSession', async (data) => {
+      this.logger.log(`📡 [Watch New Session] 收到监听新Session请求`);
+      this.logger.log(`   CLI ID: ${data.clientId}`);
+      this.logger.log(`   项目路径: ${data.projectPath}`);
+      this.eventEmitter.emit('daemon.watchNewSession', {
+        clientId: data.clientId,
+        projectPath: data.projectPath,
+      });
+    });
+
     // 监听来自 server 的新会话发现事件
     this.socket.on('server:sessionDiscovered', async (data) => {
       await this.handleSessionDiscovered(data);
