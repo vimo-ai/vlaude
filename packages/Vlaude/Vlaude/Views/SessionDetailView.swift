@@ -15,6 +15,10 @@ struct SessionDetailView: View {
     @State private var inputText = ""
     @State private var selectedMessageForDetail: DisplayMessage?
 
+    // 权限请求相关状态
+    @State private var showApprovalAlert = false
+    @State private var currentApprovalRequest: (requestId: String, toolName: String, description: String)?
+
     var body: some View {
         VStack(spacing: 0) {
             // 消息列表
@@ -142,6 +146,43 @@ struct SessionDetailView: View {
         }
         .sheet(item: $selectedMessageForDetail) { message in
             MessageDetailSheet(message: message)
+        }
+        // 权限请求 Alert
+        .approvalAlert(
+            isPresented: $showApprovalAlert,
+            requestId: currentApprovalRequest?.requestId ?? "",
+            toolName: currentApprovalRequest?.toolName ?? "",
+            description: currentApprovalRequest?.description ?? ""
+        ) {
+            // 用户点击"允许"
+            if let requestId = currentApprovalRequest?.requestId {
+                WebSocketManager.shared.sendApprovalResponse(
+                    requestId: requestId,
+                    approved: true
+                )
+            }
+            showApprovalAlert = false
+        } onDeny: {
+            // 用户点击"拒绝"
+            if let requestId = currentApprovalRequest?.requestId {
+                WebSocketManager.shared.sendApprovalResponse(
+                    requestId: requestId,
+                    approved: false,
+                    reason: "用户拒绝"
+                )
+            }
+            showApprovalAlert = false
+        }
+        // 监听权限请求通知
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ApprovalRequest"))) { notification in
+            print("🔐 [UI] 收到权限请求通知")
+            if let requestId = notification.userInfo?["requestId"] as? String,
+               let toolName = notification.userInfo?["toolName"] as? String,
+               let description = notification.userInfo?["description"] as? String {
+                print("🔐 [UI] 设置权限请求数据: \(toolName)")
+                currentApprovalRequest = (requestId, toolName, description)
+                showApprovalAlert = true
+            }
         }
     }
 
