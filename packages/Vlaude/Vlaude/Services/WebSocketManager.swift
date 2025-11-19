@@ -14,6 +14,7 @@ enum WebSocketEvent: String {
     case messageNew = "message:new"
     case projectUpdated = "project:updated"
     case sessionUpdated = "session:updated"
+    case approvalRequest = "approval-request"  // 权限请求
 }
 
 // MARK: - WebSocket 消息结构
@@ -63,6 +64,16 @@ struct AnyCodable: Codable {
             try container.encode(bool)
         }
     }
+}
+
+// MARK: - 权限请求消息结构
+struct ApprovalRequest: Codable {
+    let requestId: String
+    let sessionId: String
+    let toolName: String
+    let input: [String: AnyCodable]?
+    let toolUseID: String
+    let description: String
 }
 
 // MARK: - WebSocket Manager
@@ -161,6 +172,12 @@ class WebSocketManager: ObservableObject {
         socket.on("session:updated") { [weak self] data, ack in
             print("🔔 [Socket.IO] 原始 session:updated 事件触发!")
             self?.handleBusinessEvent(.sessionUpdated, data: data)
+        }
+
+        // 监听权限请求
+        socket.on("approval-request") { [weak self] data, ack in
+            print("🔔 [Socket.IO] 收到权限请求!")
+            self?.handleApprovalRequest(data: data)
         }
     }
 
@@ -296,5 +313,79 @@ class WebSocketManager: ObservableObject {
 
     func off(_ event: WebSocketEvent) {
         eventHandlers[event] = nil
+    }
+
+    // MARK: - 权限请求处理
+
+    private func handleApprovalRequest(data: [Any]) {
+        print("🔐 [Socket.IO] 处理权限请求")
+
+        guard let payload = data.first else {
+            print("⚠️ [Socket.IO] 权限请求数据为空")
+            return
+        }
+
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: payload)
+            let decoder = JSONDecoder()
+            let request = try decoder.decode(ApprovalRequest.self, from: jsonData)
+
+            print("🔐 [Socket.IO] 权限请求解析成功:")
+            print("   RequestID: \(request.requestId)")
+            print("   Tool: \(request.toolName)")
+            print("   Description: \(request.description)")
+
+            // 触发权限请求事件回调
+            eventHandlers[.approvalRequest]?.forEach { handler in
+                // 将 ApprovalRequest 包装成 WebSocketMessage 格式
+                let message = WebSocketMessage(
+                    sessionId: request.sessionId,
+                    message: nil,
+                    projectPath: nil,
+                    metadata: nil
+                )
+                handler(message)
+            }
+
+            // 同时通过通知发送，方便 ViewModel 监听
+            NotificationCenter.default.post(
+                name: NSNotification.Name("ApprovalRequest"),
+                object: nil,
+                userInfo: [
+                    "requestId": request.requestId,
+                    "toolName": request.toolName,
+                    "description": request.description
+                ]
+            )
+
+        } catch {
+            print("❌ [Socket.IO] 权限请求解析失败: \(error)")
+        }
+    }
+
+    /// 发送权限响应
+    func sendApprovalResponse(requestId: String, approved: Bool, reason: String? = nil) {
+        guard isConnected else {
+            print("⚠️ [Socket.IO] 未连接,无法发送权限响应")
+            return
+        }
+
+        var payload: [String: Any] = [
+            "requestId": requestId,
+            "approved": approved
+        ]
+
+        if let reason = reason {
+            payload["reason"] = reason
+        }
+
+        socket.emit("approval-response", payload)
+
+        print("✅ [Socket.IO] 已发送权限响应:")
+        print("   RequestID: \(requestId)")
+        print("   Approved: \(approved)")
+        if let reason = reason {
+            print("   Reason: \(reason)")
+        }
     }
 }
