@@ -53,6 +53,14 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
   // Session 的客户端类型管理：sessionId -> { cli: clientId | null, swift: Set<clientId> }
   private sessionClients = new Map<string, { cli: string | null; swift: Set<string> }>();
 
+  // UUID 匹配状态管理（用于双重确认 sessionId）
+  // projectPath -> { uuids: Set<uuid>, sessionIds: Set<sessionId>, clientId: string }
+  private uuidMatching = new Map<string, {
+    uuids: Set<string>;           // CLI 报告的 UUID
+    sessionIds: Set<string>;      // Daemon 检测到的 sessionId
+    clientId: string;             // CLI 的 clientId
+  }>();
+
   // Daemon 服务地址
   private readonly DAEMON_URL = 'http://localhost:10006';
 
@@ -158,6 +166,37 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   /**
+   * CLI 报告检测到的 UUID（通过 Monkey Patch fd 3）
+   */
+  @SubscribeMessage('cli:reportUUID')
+  handleCliReportUUID(
+    @MessageBody() data: { uuid: string; projectPath: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const { uuid, projectPath } = data;
+
+    this.logger.log(`🔑 [UUID 报告] CLI ${client.id} 报告 UUID: ${uuid.substring(0, 8)}...`);
+    this.logger.log(`   项目路径: ${projectPath}`);
+
+    // 初始化或获取匹配状态
+    if (!this.uuidMatching.has(projectPath)) {
+      this.uuidMatching.set(projectPath, {
+        uuids: new Set(),
+        sessionIds: new Set(),
+        clientId: client.id,
+      });
+    }
+
+    const matchState = this.uuidMatching.get(projectPath)!;
+    matchState.uuids.add(uuid);
+
+    // 尝试匹配
+    this.tryMatchSession(projectPath);
+
+    return { success: true };
+  }
+
+  /**
    * CLI 请求监听新 session 创建
    */
   @SubscribeMessage('watch-new-session')
@@ -169,6 +208,15 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     this.logger.log(`👀 [监听新Session] CLI 请求监听: ${client.id}`);
     this.logger.log(`   项目路径: ${projectPath}`);
+
+    // 初始化 UUID 匹配状态
+    if (!this.uuidMatching.has(projectPath)) {
+      this.uuidMatching.set(projectPath, {
+        uuids: new Set(),
+        sessionIds: new Set(),
+        clientId: client.id,
+      });
+    }
 
     // 通知 Daemon 开始监听新 session
     this.eventEmitter.emit('daemon.watchNewSession', {
@@ -301,11 +349,13 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     try {
       // V2: 只传递 projectPath，Daemon 内部查表
+      // V3: 添加 clientId 用于权限请求
       const response = await firstValueFrom(
         this.httpService.post(`${this.DAEMON_URL}/sessions/send-message`, {
           sessionId,
           text,
           projectPath: clientInfo.projectPath,
+          clientId: client.id,  // 添加 iOS 客户端 ID
         }),
       );
 
@@ -440,8 +490,23 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
    */
   @OnEvent('app.notifyNewSessionCreated')
   handleNotifyNewSessionCreatedEvent(data: { clientId: string; sessionId: string; projectPath: string }) {
-    this.logger.log(`📥 [事件监听] 收到新Session创建事件: ${data.sessionId}`);
-    this.notifyNewSessionCreated(data.clientId, data.sessionId, data.projectPath);
+    this.logger.log(`📥 [事件监听] 收到新Session创建事件: ${data.sessionId.substring(0, 8)}...`);
+    this.logger.log(`   项目路径: ${data.projectPath}`);
+
+    // 获取或初始化匹配状态
+    if (!this.uuidMatching.has(data.projectPath)) {
+      this.uuidMatching.set(data.projectPath, {
+        uuids: new Set(),
+        sessionIds: new Set(),
+        clientId: data.clientId,
+      });
+    }
+
+    const matchState = this.uuidMatching.get(data.projectPath)!;
+    matchState.sessionIds.add(data.sessionId);
+
+    // 尝试匹配
+    this.tryMatchSession(data.projectPath);
   }
 
   /**
@@ -527,5 +592,87 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
   handleNotifySessionUpdateEvent(data: { sessionId: string; metadata: any }) {
     this.logger.log(`📥 [事件监听] 收到会话更新事件: ${data.sessionId}`);
     this.notifySessionUpdate(data.sessionId, data.metadata);
+  }
+
+  /**
+   * 尝试匹配 UUID 和 sessionId（双重确认）
+   */
+  private tryMatchSession(projectPath: string) {
+    const matchState = this.uuidMatching.get(projectPath);
+    if (!matchState) return;
+
+    const { uuids, sessionIds, clientId } = matchState;
+
+    // 找到匹配的 sessionId（同时在 uuids 和 sessionIds 中）
+    for (const sessionId of sessionIds) {
+      if (uuids.has(sessionId)) {
+        this.logger.log(`✅ [UUID 匹配成功] ${sessionId.substring(0, 8)}...`);
+        this.logger.log(`   项目路径: ${projectPath}`);
+        this.logger.log(`   CLI: ${clientId}`);
+
+        // 通知 CLI sessionId 已确认
+        this.server.to(clientId).emit('server:sessionConfirmed', { sessionId });
+
+        // 清理匹配状态
+        this.uuidMatching.delete(projectPath);
+        return;
+      }
+    }
+
+    // 没有匹配，记录当前状态
+    this.logger.log(`⏳ [UUID 匹配中] 等待匹配...`);
+    this.logger.log(`   项目路径: ${projectPath}`);
+    this.logger.log(`   UUID 数量: ${uuids.size}`);
+    this.logger.log(`   SessionId 数量: ${sessionIds.size}`);
+  }
+
+  // =================== 权限请求相关 ===================
+
+  /**
+   * 监听来自 DaemonGateway 的权限请求事件
+   */
+  @OnEvent('app.sendApprovalRequest')
+  handleSendApprovalRequestEvent(data: {
+    requestId: string;
+    sessionId: string;
+    clientId: string;
+    toolName: string;
+    input: any;
+    toolUseID: string;
+    description: string;
+  }) {
+    this.logger.log(`🔐 [权限请求] 转发给 iOS 客户端`);
+    this.logger.log(`   RequestId: ${data.requestId}`);
+    this.logger.log(`   ClientId: ${data.clientId}`);
+    this.logger.log(`   Tool: ${data.toolName}`);
+
+    // 通过 WebSocket 发送给 iOS 客户端
+    this.server.to(data.clientId).emit('approval-request', {
+      requestId: data.requestId,
+      sessionId: data.sessionId,
+      toolName: data.toolName,
+      input: data.input,
+      toolUseID: data.toolUseID,
+      description: data.description,
+    });
+  }
+
+  /**
+   * iOS 客户端发送权限响应
+   */
+  @SubscribeMessage('approval-response')
+  handleApprovalResponse(
+    @MessageBody() data: { requestId: string; approved: boolean; reason?: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`✅ [权限响应] 收到 iOS 响应`);
+    this.logger.log(`   RequestId: ${data.requestId}`);
+    this.logger.log(`   Approved: ${data.approved}`);
+    this.logger.log(`   ClientId: ${client.id}`);
+
+    // 通过事件转发给 DaemonGateway
+    this.eventEmitter.emit('daemon.sendApprovalResponse', data);
+
+    return { success: true };
   }
 }
