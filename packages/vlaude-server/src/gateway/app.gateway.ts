@@ -180,6 +180,28 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   /**
+   * CLI 请求查找新创建的 session
+   */
+  @SubscribeMessage('find-new-session')
+  handleFindNewSession(
+    @MessageBody() data: { projectPath: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const { projectPath } = data;
+
+    this.logger.log(`🔍 [查找新Session] CLI 请求查找: ${client.id}`);
+    this.logger.log(`   项目路径: ${projectPath}`);
+
+    // 通知 Daemon 查找新 session
+    this.eventEmitter.emit('daemon.findNewSession', {
+      clientId: client.id,
+      projectPath,
+    });
+
+    return { success: true, message: `开始查找项目的新 session: ${projectPath}` };
+  }
+
+  /**
    * 客户端订阅某个会话的消息（兼容旧的 API）
    */
   @SubscribeMessage('session:subscribe')
@@ -327,6 +349,32 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
   /**
    * Daemon 调用：通知 CLI 新 session 已创建
    */
+  notifyNewSessionFound(clientId: string, sessionId: string, projectPath: string) {
+    this.logger.log(`✅ [新Session查找] 通知 CLI: ${clientId}`);
+    this.logger.log(`   SessionId: ${sessionId}`);
+    this.logger.log(`   ProjectPath: ${projectPath}`);
+
+    this.server.to(clientId).emit('new-session-found', {
+      sessionId,
+      projectPath,
+    });
+  }
+
+  notifyNewSessionNotFound(clientId: string) {
+    this.logger.log(`❌ [新Session查找] 通知 CLI 未找到: ${clientId}`);
+
+    this.server.to(clientId).emit('new-session-not-found', {});
+  }
+
+  notifyWatchStarted(clientId: string, projectPath: string) {
+    this.logger.log(`👀 [监听器启动] 通知 CLI: ${clientId}`);
+    this.logger.log(`   ProjectPath: ${projectPath}`);
+
+    this.server.to(clientId).emit('watch-started', {
+      projectPath,
+    });
+  }
+
   notifyNewSessionCreated(clientId: string, sessionId: string, projectPath: string) {
     this.logger.log(`🆕 [新Session创建] 通知 CLI: ${clientId}`);
     this.logger.log(`   SessionId: ${sessionId}`);
@@ -361,23 +409,39 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   /**
-   * 监听来自 Daemon 的新 session 创建通知
+   * 监听来自 DaemonGateway 的新 session 查找成功事件
    */
-  @SubscribeMessage('daemon:newSessionCreated')
-  handleDaemonNewSessionCreated(
-    @MessageBody() data: { clientId: string; sessionId: string; projectPath: string },
-  ) {
-    const { clientId, sessionId, projectPath } = data;
+  @OnEvent('app.notifyNewSessionFound')
+  handleNotifyNewSessionFoundEvent(data: { clientId: string; sessionId: string; projectPath: string; encodedDirName: string }) {
+    this.logger.log(`📥 [事件监听] 收到新Session查找成功事件: ${data.sessionId}`);
+    this.notifyNewSessionFound(data.clientId, data.sessionId, data.projectPath);
+  }
 
-    this.logger.log(`🆕 [Daemon通知] 新Session已创建`);
-    this.logger.log(`   ClientId: ${clientId}`);
-    this.logger.log(`   SessionId: ${sessionId}`);
-    this.logger.log(`   ProjectPath: ${projectPath}`);
+  /**
+   * 监听来自 DaemonGateway 的未找到 session 事件
+   */
+  @OnEvent('app.notifyNewSessionNotFound')
+  handleNotifyNewSessionNotFoundEvent(data: { clientId: string; projectPath: string }) {
+    this.logger.log(`📥 [事件监听] 收到未找到新Session事件`);
+    this.notifyNewSessionNotFound(data.clientId);
+  }
 
-    // 调用 notifyNewSessionCreated 通知 CLI
-    this.notifyNewSessionCreated(clientId, sessionId, projectPath);
+  /**
+   * 监听来自 DaemonGateway 的监听器启动事件
+   */
+  @OnEvent('app.notifyWatchStarted')
+  handleNotifyWatchStartedEvent(data: { clientId: string; projectPath: string }) {
+    this.logger.log(`📥 [事件监听] 收到监听器启动事件`);
+    this.notifyWatchStarted(data.clientId, data.projectPath);
+  }
 
-    return { success: true };
+  /**
+   * 监听来自 DaemonGateway 的新 session 创建事件
+   */
+  @OnEvent('app.notifyNewSessionCreated')
+  handleNotifyNewSessionCreatedEvent(data: { clientId: string; sessionId: string; projectPath: string }) {
+    this.logger.log(`📥 [事件监听] 收到新Session创建事件: ${data.sessionId}`);
+    this.notifyNewSessionCreated(data.clientId, data.sessionId, data.projectPath);
   }
 
   /**

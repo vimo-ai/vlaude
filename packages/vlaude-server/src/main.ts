@@ -19,7 +19,7 @@ async function bootstrap() {
   const fastifyAdapter = new FastifyAdapter();
   fastifyAdapter.register(fastifyMultipart , {})
 
-  const app = await NestFactory.create(AppModule, fastifyAdapter ,);
+  const app = await NestFactory.create(AppModule, fastifyAdapter);
 
   // 使用 Socket.IO adapter
   app.useWebSocketAdapter(new IoAdapter(app));

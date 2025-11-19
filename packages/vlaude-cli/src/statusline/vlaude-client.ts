@@ -1,67 +1,49 @@
-import { io } from 'socket.io-client';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import type { VlaudeStatus } from './types';
 
-const SERVER_URL = 'http://localhost:10005';
-
 /**
- * 连接到 vlaude-server 获取当前状态
+ * 从状态文件获取 vlaude WebSocket 连接状态
+ *
+ * CLI 主进程会在 socket 连接状态变化时更新这个文件，
+ * statusline 通过读取文件来判断 WebSocket 是否连接，
+ * 避免了频繁创建临时 WebSocket 连接产生的日志噪音。
+ *
+ * 状态文件位置：{projectPath}/.vlaude/session-{sessionId}.status
  */
 export async function getVlaudeStatus(sessionId: string | null): Promise<VlaudeStatus> {
-  return new Promise((resolve) => {
-    // 如果没有 sessionId，说明不在 vlaude 会话中
-    if (!sessionId) {
-      resolve({ connected: false });
-      return;
+  // 如果没有 sessionId，说明不在 vlaude 会话中
+  if (!sessionId) {
+    return { connected: false };
+  }
+
+  // 状态文件在当前项目的 .vlaude 目录下
+  // statusline 运行在项目目录中，所以直接使用 process.cwd()
+  const projectPath = process.cwd();
+  const statusFile = join(projectPath, '.vlaude', `session-${sessionId}.status`);
+
+  try {
+    // 检查文件是否存在
+    if (!existsSync(statusFile)) {
+      return { connected: false };
     }
 
-    let resolved = false;
-    let socket: ReturnType<typeof io> | null = null;
+    // 读取状态文件
+    const content = readFileSync(statusFile, 'utf-8');
+    const status = JSON.parse(content);
 
-    const cleanup = () => {
-      if (!resolved) {
-        resolved = true;
-        if (socket) {
-          socket.close();
-        }
-      }
+    // 检查时间戳是否过期（5秒内的状态才有效）
+    const age = Date.now() - status.timestamp;
+    if (age > 5000) {
+      return { connected: false };
+    }
+
+    return {
+      connected: status.connected,
+      mode: status.mode || 'local',
     };
-
-    try {
-      socket = io(SERVER_URL, {
-        timeout: 100,
-        reconnection: false,
-        transports: ['websocket'], // 只用 WebSocket，更快
-      });
-
-      socket.on('connect', () => {
-        // 连接成功
-        cleanup();
-        resolve({
-          connected: true,
-          mode: 'local',
-        });
-      });
-
-      socket.on('connect_error', (error) => {
-        // 连接失败
-        cleanup();
-        resolve({ connected: false });
-      });
-
-      socket.on('error', () => {
-        cleanup();
-        resolve({ connected: false });
-      });
-    } catch (error) {
-      cleanup();
-      resolve({ connected: false });
-      return;
-    }
-
-    // 超时处理 - 缩短到 100ms
-    setTimeout(() => {
-      cleanup();
-      resolve({ connected: false });
-    }, 100);
-  });
+  } catch (error) {
+    // 文件读取失败或解析失败，返回未连接
+    return { connected: false };
+  }
 }

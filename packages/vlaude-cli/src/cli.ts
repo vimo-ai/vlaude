@@ -3,6 +3,8 @@
 import { spawn, ChildProcess } from 'child_process';
 import { io, Socket } from 'socket.io-client';
 import { homedir } from 'os';
+import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { join } from 'path';
 import chalk from 'chalk';
 
 const SERVER_URL = 'http://localhost:10005';
@@ -45,6 +47,63 @@ async function getSessionId(args: string[]): Promise<SessionInfo | null> {
 let currentClaudeProcess: ChildProcess | null = null;
 let currentSwitchHandler: (() => void) | null = null;
 let currentRemoteModeResolver: (() => void) | null = null;
+let statusUpdateInterval: NodeJS.Timeout | null = null;
+
+/**
+ * 轮询检测 Claude Code 创建的新 session 文件
+ * 通过 daemon 扫描所有项目目录，找到最新创建的 session 文件
+ */
+function pollForNewSessionFile(socket: Socket, projectPath: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error('Timeout waiting for session file creation'));
+    }, 30000);
+
+    // 向 daemon 请求查找新 session
+    socket.emit('find-new-session', { projectPath });
+
+    // 等待 daemon 响应
+    socket.once('new-session-found', (data: { sessionId: string; projectPath: string }) => {
+      clearTimeout(timeout);
+      resolve(data.sessionId);
+    });
+
+    socket.once('new-session-not-found', () => {
+      clearTimeout(timeout);
+      reject(new Error('No new session found'));
+    });
+  });
+}
+
+/**
+ * 更新 socket 连接状态文件
+ * statusline 会读取这个文件来判断 WebSocket 是否连接
+ *
+ * 状态文件存储在项目的 .vlaude 目录下：
+ * {projectPath}/.vlaude/session-{sessionId}.status
+ */
+function updateSocketStatus(sessionId: string | null, connected: boolean, mode: 'local' | 'remote', projectPath: string) {
+  if (!sessionId) return;
+
+  try {
+    // 确保 .vlaude 目录存在
+    const vlaudeDir = join(projectPath, '.vlaude');
+    if (!existsSync(vlaudeDir)) {
+      mkdirSync(vlaudeDir, { recursive: true });
+    }
+
+    // 写入状态文件
+    const statusFile = join(vlaudeDir, `session-${sessionId}.status`);
+    writeFileSync(statusFile, JSON.stringify({
+      sessionId,
+      connected,
+      mode,
+      timestamp: Date.now()
+    }), 'utf-8');
+  } catch (error) {
+    // 静默失败，不影响主流程
+  }
+}
 
 /**
  * 本地模式：运行 Claude Code
@@ -190,13 +249,66 @@ async function main() {
   const projectPath = getCurrentProjectPath();
 
   // 创建全局 socket 监听模式切换
-  const controlSocket = io(SERVER_URL);
+  const controlSocket = io(SERVER_URL, {
+    reconnection: true,              // 启用自动重连
+    reconnectionDelay: 1000,         // 重连延迟 1秒
+    reconnectionDelayMax: 5000,      // 最大重连延迟 5秒
+    reconnectionAttempts: Infinity,  // 无限重试
+    timeout: 20000,                  // 连接超时 20秒
+  });
+
+  let isFirstConnect = true;
 
   controlSocket.on('connect', () => {
+    if (isFirstConnect) {
+      console.log(chalk.green('✅ Connected to Vlaude server'));
+      isFirstConnect = false;
+    }
+
     if (currentSessionId) {
       controlSocket.emit('join', { sessionId: currentSessionId, clientType: 'cli', projectPath });
-      // Connected to Vlaude server - status will be shown by vlaude-statusline
+      updateSocketStatus(currentSessionId, true, mode, projectPath);
     }
+
+    // 启动状态文件心跳更新（每 2 秒）
+    // 确保 statusline 能持续读取到最新的连接状态
+    if (statusUpdateInterval) clearInterval(statusUpdateInterval);
+    statusUpdateInterval = setInterval(() => {
+      if (currentSessionId) {
+        updateSocketStatus(currentSessionId, controlSocket.connected, mode, projectPath);
+      }
+    }, 2000);
+  });
+
+  controlSocket.on('disconnect', (reason) => {
+    console.log(chalk.yellow(`⚠️ Disconnected from server: ${reason}`));
+    if (currentSessionId) {
+      updateSocketStatus(currentSessionId, false, mode, projectPath);
+    }
+
+    // 停止心跳
+    if (statusUpdateInterval) {
+      clearInterval(statusUpdateInterval);
+      statusUpdateInterval = null;
+    }
+  });
+
+  controlSocket.on('reconnect', (attemptNumber) => {
+    console.log(chalk.green(`🔄 Reconnected to server (after ${attemptNumber} attempts)`));
+  });
+
+  controlSocket.on('reconnect_attempt', (attemptNumber) => {
+    if (attemptNumber === 1 || attemptNumber % 3 === 0) {
+      console.log(chalk.gray(`🔄 Reconnecting... (attempt ${attemptNumber})`));
+    }
+  });
+
+  controlSocket.on('connect_error', (error) => {
+    console.log(chalk.red(`❌ Connection error: ${error.message}`));
+  });
+
+  controlSocket.on('reconnect_failed', () => {
+    console.log(chalk.red('❌ Failed to reconnect after max attempts'));
   });
 
   controlSocket.on('remote-connect', () => {
@@ -231,32 +343,18 @@ async function main() {
   while (!shouldExit) {
     if (mode === 'local') {
       try {
-        // 如果没有 sessionId，请求 Daemon 监听新 session 创建
+        // 如果没有 sessionId，启动新的 Claude 进程并检测 session
         if (!currentSessionId) {
-          // Requesting Daemon to watch for new session files
-          // 发送监听请求
-          controlSocket.emit('watch-new-session', { projectPath });
-
-          // 等待新 session 创建的通知
-          const newSessionPromise = new Promise<string>((resolve, reject) => {
-            const timeout = setTimeout(() => {
-              reject(new Error('Timeout waiting for new session creation'));
-            }, 30000);
-
-            controlSocket.once('new-session-created', (data: { sessionId: string; projectPath: string }) => {
-              clearTimeout(timeout);
-              // Session created - status will be shown by vlaude-statusline
-              resolve(data.sessionId);
-            });
-          });
-
-          // 同时启动 Claude 进程
+          // 启动 Claude 进程
           const claudePromise = runLocalMode(args, 'new-session');
+
+          // 查找 session 文件（daemon 会轮询重试）
+          const sessionIdPromise = pollForNewSessionFile(controlSocket, projectPath);
 
           try {
             // 等待新 session ID
             currentSessionId = await Promise.race([
-              newSessionPromise,
+              sessionIdPromise,
               claudePromise.then(() => {
                 throw new Error('Claude exited before session was created');
               })
@@ -265,7 +363,8 @@ async function main() {
             // 成功获取到 sessionId，加入 server
             if (controlSocket.connected) {
               controlSocket.emit('join', { sessionId: currentSessionId, clientType: 'cli', projectPath });
-              // Session joined - status will be shown by vlaude-statusline
+              // 创建状态文件，让 statusline 显示连接状态
+              updateSocketStatus(currentSessionId, true, mode, projectPath);
             }
 
             // 继续等待 Claude 进程完成
@@ -274,6 +373,7 @@ async function main() {
               shouldExit = true;
             } else if (result === 'switch') {
               mode = 'remote';
+              updateSocketStatus(currentSessionId, controlSocket.connected, mode, projectPath);
             }
           } catch (error) {
             console.error(chalk.red('Error creating session:'), error);
@@ -288,6 +388,7 @@ async function main() {
             shouldExit = true;
           } else if (result === 'switch') {
             mode = 'remote';
+            updateSocketStatus(currentSessionId, controlSocket.connected, mode, projectPath);
           }
         }
       } catch (error) {
@@ -303,11 +404,18 @@ async function main() {
       const result = await runRemoteMode(currentSessionId, SERVER_URL);
       if (result === 'switch') {
         mode = 'local';
+        updateSocketStatus(currentSessionId, controlSocket.connected, mode, projectPath);
         // 通知 Server 恢复 FileWatcher 推送（切回 Local 模式）
         console.log(chalk.blue('📡 Notifying server to resume FileWatcher...'));
         controlSocket.emit('cli:resumeLocal', { sessionId: currentSessionId });
       }
     }
+  }
+
+  // 清理心跳定时器
+  if (statusUpdateInterval) {
+    clearInterval(statusUpdateInterval);
+    statusUpdateInterval = null;
   }
 
   controlSocket.close();

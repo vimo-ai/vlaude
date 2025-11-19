@@ -43,9 +43,11 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
    * 连接到 server
    */
   private async connect() {
-    this.logger.log(`Connecting to server at ${this.serverUrl}`);
+    // 连接到 DaemonGateway 的命名空间
+    const daemonUrl = `${this.serverUrl}/daemon`;
+    this.logger.log(`Connecting to server at ${daemonUrl}`);
 
-    this.socket = io(this.serverUrl, {
+    this.socket = io(daemonUrl, {
       transports: ['websocket'],
       reconnection: true,
       reconnectionDelay: 1000,
@@ -61,7 +63,6 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
    */
   private setupEventHandlers() {
     this.socket.on('connect', () => {
-      this.logger.log(`Connected to server: ${this.socket.id}`);
       this.reconnectAttempts = 0;
       // 注册 daemon
       this.registerDaemon();
@@ -123,6 +124,17 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
       });
     });
 
+    // 监听来自 server 的查找新 session 请求
+    this.socket.on('server:findNewSession', async (data) => {
+      this.logger.log(`🔍 [Find New Session] 收到查找新Session请求`);
+      this.logger.log(`   CLI ID: ${data.clientId}`);
+      this.logger.log(`   项目路径: ${data.projectPath}`);
+      this.eventEmitter.emit('daemon.findNewSession', {
+        clientId: data.clientId,
+        projectPath: data.projectPath,
+      });
+    });
+
     // 监听来自 server 的新会话发现事件
     this.socket.on('server:sessionDiscovered', async (data) => {
       await this.handleSessionDiscovered(data);
@@ -142,8 +154,6 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
       version: '0.0.1',
       timestamp: new Date().toISOString(),
     });
-
-    this.logger.log('Daemon registered to server');
   }
 
   /**
@@ -283,6 +293,62 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.logger.log(`Notified server of new message in session ${sessionId}`);
+    return true;
+  }
+
+  /**
+   * 通知 Server 找到了新 session
+   */
+  async notifyNewSessionFound(clientId: string, sessionId: string, projectPath: string, encodedDirName: string) {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot notify session found');
+      return false;
+    }
+
+    this.socket.emit('daemon:newSessionFound', {
+      clientId,
+      sessionId,
+      projectPath,
+      encodedDirName,
+    });
+
+    this.logger.log(`📤 [通知 Server] 找到新Session: sessionId=${sessionId}`);
+    return true;
+  }
+
+  /**
+   * 通知 Server 未找到新 session
+   */
+  async notifyNewSessionNotFound(clientId: string, projectPath: string) {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot notify session not found');
+      return false;
+    }
+
+    this.socket.emit('daemon:newSessionNotFound', {
+      clientId,
+      projectPath,
+    });
+
+    this.logger.log(`📤 [通知 Server] 未找到新Session`);
+    return true;
+  }
+
+  /**
+   * 通知 Server 监听器已启动
+   */
+  async notifyWatchStarted(clientId: string, projectPath: string) {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot notify watch started');
+      return false;
+    }
+
+    this.socket.emit('daemon:watchStarted', {
+      clientId,
+      projectPath,
+    });
+
+    this.logger.log(`📤 [通知 Server] 监听器已启动: clientId=${clientId}`);
     return true;
   }
 
