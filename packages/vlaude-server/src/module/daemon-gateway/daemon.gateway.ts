@@ -467,4 +467,48 @@ export class DaemonGateway
 
     return { success: true };
   }
+
+  /**
+   * 接收 Daemon 的权限请求（转发给 AppGateway）
+   */
+  @SubscribeMessage('daemon:approvalRequest')
+  handleApprovalRequest(
+    @MessageBody() data: {
+      requestId: string;
+      sessionId: string;
+      clientId: string;
+      toolName: string;
+      input: any;
+      toolUseID: string;
+      description: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🔐 [权限请求] 收到 Daemon 的权限请求`);
+    this.logger.log(`   RequestId: ${data.requestId}`);
+    this.logger.log(`   Tool: ${data.toolName}`);
+    this.logger.log(`   ClientId: ${data.clientId}`);
+
+    // 通过事件转发给 AppGateway，让它推送给 iOS 客户端
+    this.eventEmitter.emit('app.sendApprovalRequest', data);
+  }
+
+  /**
+   * 监听来自 AppGateway 的权限响应事件
+   */
+  @OnEvent('daemon.sendApprovalResponse')
+  handleSendApprovalResponse(data: { requestId: string; approved: boolean; reason?: string }) {
+    this.logger.log(`✅ [权限响应] 转发给 Daemon`);
+    this.logger.log(`   RequestId: ${data.requestId}`);
+    this.logger.log(`   Approved: ${data.approved}`);
+
+    const daemons = Array.from(this.connectedDaemons.values());
+    if (daemons.length === 0) {
+      this.logger.warn(`⚠️ [权限响应] 没有 Daemon 连接`);
+      return;
+    }
+
+    const daemon = daemons[0];
+    daemon.socket.emit('server:approvalResponse', data);
+  }
 }
