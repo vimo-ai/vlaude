@@ -43,3 +43,8 @@ xcuserdata/
 tmp/
 temp/
 .cache/
+
+# Vlaude runtime files
+.vlaude/
+*.tgz
+.pnpm/
