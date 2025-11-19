@@ -131,18 +131,36 @@ export class DataCollectorService implements OnModuleInit {
     try {
       const dirs = await fsPromises.readdir(this.claudeProjectsPath);
       const projectName = path.basename(projectPath);
-      let candidateDir: { encodedDirName: string; mtime: Date } | null = null;
+
+      // 计算前缀（到第一个中文字符之前）用于优化过滤
+      const prefix = this.getEncodedPrefix(projectPath);
+      this.logger.debug(`计算编码前缀: ${projectPath} → ${prefix || '(无前缀)'}`);
+
+      // 前缀过滤：分离候选目录和跳过的目录
+      const candidateDirs: string[] = [];
+      const skippedDirs: string[] = [];
 
       for (const encodedDirName of dirs) {
-        // 跳过已知的编码目录
-        if (Array.from(this.pathToEncodedDirCache.values()).includes(encodedDirName)) {
-          continue;
-        }
-
         const projectDir = path.join(this.claudeProjectsPath, encodedDirName);
         const stat = await fsPromises.stat(projectDir);
         if (!stat.isDirectory()) continue;
 
+        // 前缀匹配：如果前缀完全不同，跳过（性能优化）
+        if (prefix && !encodedDirName.startsWith(prefix)) {
+          skippedDirs.push(encodedDirName);
+          continue;
+        }
+
+        candidateDirs.push(encodedDirName);
+      }
+
+      this.logger.debug(`前缀匹配结果: ${candidateDirs.length} 个候选目录, ${skippedDirs.length} 个跳过`);
+
+      let candidateDir: { encodedDirName: string; mtime: Date } | null = null;
+
+      // 扫描候选目录（删除了原有的"跳过已知编码目录"逻辑，以支持多个真实路径映射到同一编码目录）
+      for (const encodedDirName of candidateDirs) {
+        const projectDir = path.join(this.claudeProjectsPath, encodedDirName);
         const files = await fsPromises.readdir(projectDir);
         const jsonlFiles = files.filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'));
 
@@ -477,6 +495,35 @@ export class DataCollectorService implements OnModuleInit {
       this.logger.error(`统计文件行数失败 ${filePath}: ${error.message}`);
       return 0;
     }
+  }
+
+  /**
+   * 提取路径的编码前缀（到第一个中文字符之前）
+   * 用于优化目录扫描性能
+   *
+   * @example
+   * /Users/xxx/小工具/claude/test → -Users-xxx-
+   * /Users/xxx/project → -Users-xxx-project
+   */
+  private getEncodedPrefix(projectPath: string): string {
+    // 找到第一个非 ASCII 字符（中文等）的位置
+    let prefixEnd = 0;
+    for (let i = 0; i < projectPath.length; i++) {
+      const char = projectPath[i];
+      // 非 ASCII 字符（中文、emoji 等）
+      if (char.charCodeAt(0) > 127) {
+        break;
+      }
+      prefixEnd = i + 1;
+    }
+
+    // 如果整个路径都是 ASCII，取全路径
+    const prefix = projectPath.substring(0, prefixEnd);
+
+    // 转换：/ 替换为 -（Claude Code 的编码规则）
+    const encoded = prefix.replace(/\//g, '-');
+
+    return encoded;
   }
 
   /**
