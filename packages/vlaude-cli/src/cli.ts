@@ -3,8 +3,10 @@
 import { spawn, ChildProcess } from 'child_process';
 import { io, Socket } from 'socket.io-client';
 import { homedir } from 'os';
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
-import { join } from 'path';
+import { writeFileSync, mkdirSync, existsSync, watch, readFileSync, unlinkSync } from 'fs';
+import { join, resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
+import { createInterface } from 'readline';
 import chalk from 'chalk';
 
 const SERVER_URL = 'http://localhost:10005';
@@ -19,6 +21,27 @@ interface SessionInfo {
  */
 function getCurrentProjectPath(): string {
   return process.cwd();
+}
+
+
+/**
+ * 获取 vlaude 自定义 Claude 启动器的路径
+ */
+function getClaudeLauncherPath(): string {
+  // 在开发环境中，启动器位于 scripts/claude-launcher.cjs
+  // 在生产环境中，启动器会被打包到 dist/scripts/
+  const scriptPath = join(__dirname, '..', 'scripts', 'claude-launcher.cjs');
+  if (existsSync(scriptPath)) {
+    return scriptPath;
+  }
+
+  // 尝试从 dist 查找
+  const distPath = join(__dirname, 'scripts', 'claude-launcher.cjs');
+  if (existsSync(distPath)) {
+    return distPath;
+  }
+
+  throw new Error('Claude launcher script not found');
 }
 
 /**
@@ -50,29 +73,107 @@ let currentRemoteModeResolver: (() => void) | null = null;
 let statusUpdateInterval: NodeJS.Timeout | null = null;
 
 /**
- * 轮询检测 Claude Code 创建的新 session 文件
- * 通过 daemon 扫描所有项目目录，找到最新创建的 session 文件
+ * 监听 Statusline 发出的 session 切换信号
+ *
+ * 工作原理：
+ * 1. Statusline 检测到 session_id 变化（内部 /resume）
+ * 2. 写入信号文件：.vlaude/session-switch.signal
+ * 3. CLI 监听这个文件的变化
+ * 4. 读取新的 sessionId 并调用回调
+ *
+ * 这个机制可以检测到 Claude Code 内部的 /resume 切换！
  */
-function pollForNewSessionFile(socket: Socket, projectPath: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      reject(new Error('Timeout waiting for session file creation'));
-    }, 30000);
+function startSessionSwitchMonitor(
+  projectPath: string,
+  onSwitch: (sessionId: string) => void
+): () => void {
+  const vlaudeDir = join(projectPath, '.vlaude');
+  const signalFile = join(vlaudeDir, 'session-switch.signal');
 
-    // 向 daemon 请求查找新 session
-    socket.emit('find-new-session', { projectPath });
+  // 确保目录存在
+  if (!existsSync(vlaudeDir)) {
+    mkdirSync(vlaudeDir, { recursive: true });
+  }
 
-    // 等待 daemon 响应
-    socket.once('new-session-found', (data: { sessionId: string; projectPath: string }) => {
-      clearTimeout(timeout);
-      resolve(data.sessionId);
-    });
+  // 监听 .vlaude 目录
+  const watcher = watch(vlaudeDir, (event, filename) => {
+    // 忽略状态文件的变化，只关注信号文件
+    if (!filename || filename.endsWith('.status') || filename === 'last-session-id') {
+      return;
+    }
 
-    socket.once('new-session-not-found', () => {
-      clearTimeout(timeout);
-      reject(new Error('No new session found'));
-    });
+    if (filename === 'session-switch.signal') {
+      try {
+        // 读取信号文件
+        if (existsSync(signalFile)) {
+          const data = JSON.parse(readFileSync(signalFile, 'utf-8'));
+          const newSessionId = data.currentSessionId;
+
+          // 调用回调
+          onSwitch(newSessionId);
+
+          // 删除信号文件（避免重复触发）
+          try {
+            unlinkSync(signalFile);
+          } catch (err) {
+            // 删除失败，忽略
+          }
+        }
+      } catch (err) {
+        // 文件读取或解析失败，忽略
+      }
+    }
   });
+
+  return () => watcher.close();
+}
+
+/**
+ * 检测 Claude Code 生成的 UUID（通过 Monkey Patch fd 3）
+ *
+ * 工作原理：
+ * 1. 从 Claude 启动器的 fd 3 接收 UUID（通过 Monkey Patch crypto.randomUUID）
+ * 2. 将 UUID 通过 WebSocket 发送给 Server
+ * 3. Server 协调 Daemon 的文件系统检测进行匹配
+ * 4. 匹配成功后，Server 通知 CLI 确认的 sessionId
+ */
+function detectUUIDFromLauncher(
+  childProcess: ChildProcess,
+  controlSocket: any,
+  projectPath: string
+): () => void {
+  // 监听 fd 3（接收 Claude 启动器发送的 UUID）
+  let readlineInterface: ReturnType<typeof createInterface> | null = null;
+  if (childProcess.stdio[3]) {
+    readlineInterface = createInterface({
+      input: childProcess.stdio[3] as any,
+      crlfDelay: Infinity
+    });
+
+    readlineInterface.on('line', (line) => {
+      try {
+        const message = JSON.parse(line);
+        if (message.type === 'uuid') {
+          const uuid = message.value;
+          console.log(chalk.gray(`  UUID detected: ${uuid.substring(0, 8)}...`));
+
+          // 通过 WebSocket 发送 UUID 给 Server
+          if (controlSocket.connected) {
+            controlSocket.emit('cli:reportUUID', { uuid, projectPath });
+          }
+        }
+      } catch (err) {
+        // 非 JSON 行，忽略
+      }
+    });
+  }
+
+  // 返回清理函数
+  return () => {
+    if (readlineInterface) {
+      readlineInterface.close();
+    }
+  };
 }
 
 /**
@@ -109,71 +210,89 @@ function updateSocketStatus(sessionId: string | null, connected: boolean, mode: 
  * 本地模式：运行 Claude Code
  * 返回 'exit' 表示正常退出，'switch' 表示需要切换到 remote 模式
  *
- * 注意：切换到 remote 模式时会杀掉 Claude CLI 进程
- * 因为 Daemon 会使用 claude-agent-sdk 的 query() 方法接管会话
+ * 新架构：
+ * - 使用自定义 Claude 启动器（Monkey Patch crypto.randomUUID）
+ * - 通过 fd 3 接收 UUID
+ * - 双向匹配确定 sessionId
  */
 function runLocalMode(
   args: string[],
-  sessionId: string
+  sessionId: string | null,
+  projectPath: string,
+  controlSocket: any,
+  onSessionFound: (sessionId: string) => void
 ): Promise<'exit' | 'switch'> {
   return new Promise((resolve, reject) => {
-    // Local mode - status will be shown by vlaude-statusline
+    let cleanupDetector: (() => void) | null = null;
 
-    // 不需要 pause stdin，因为 stdio: 'inherit' 会让子进程直接接管
-    // process.stdin.pause();
+    try {
+      // 获取自定义 Claude 启动器路径
+      const launcherPath = getClaudeLauncherPath();
 
-    // Use the latest claude from ~/.claude/local/claude
-    // This ensures we use the auto-updated version (2.0.43) instead of
-    // potentially outdated global installations (e.g., nvm's 2.0.36)
-    const claudePath = process.env.CLAUDE_CLI_PATH ||
-                       (homedir() + '/.claude/local/claude');
+      // 启动 Claude Code（通过自定义启动器）
+      // 注意：stdio 的第 4 个参数（fd 3）设置为 'pipe'，用于接收 UUID
+      currentClaudeProcess = spawn('node', [launcherPath, ...args], {
+        stdio: ['inherit', 'inherit', 'inherit', 'pipe'],  // fd 3 用于接收 UUID
+        cwd: projectPath,
+        env: {
+          ...process.env,
+          DISABLE_AUTOUPDATER: '1'
+        }
+      });
 
-    currentClaudeProcess = spawn(claudePath, args, {
-      stdio: 'inherit',
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        DISABLE_AUTOUPDATER: '1'
-      }
-    });
-
-    let shouldSwitch = false;
-
-    // 注册切换回调（存储到全局变量）
-    currentSwitchHandler = () => {
-      shouldSwitch = true;
-      if (currentClaudeProcess) {
-        console.log(chalk.yellow('\n📱 Mobile device connected, switching to remote mode...'));
-        console.log(chalk.yellow('   Stopping local Claude CLI (Daemon will take over using SDK)'));
-        currentClaudeProcess.kill('SIGTERM');
-      }
-    };
-
-    currentClaudeProcess.on('exit', (code) => {
-      currentClaudeProcess = null;
-      currentSwitchHandler = null;
-
-      // 不需要 resume，因为我们没有 pause
-      // process.stdin.resume();
-
-      if (shouldSwitch) {
-        resolve('switch');
-      } else if (code === 0) {
-        resolve('exit');
+      // 如果是新 session（没有 --resume），需要检测 UUID 并发送给 Server
+      if (!sessionId) {
+        cleanupDetector = detectUUIDFromLauncher(
+          currentClaudeProcess,
+          controlSocket,
+          projectPath
+        );
       } else {
-        reject(new Error(`Claude process exited with code ${code}`));
+        // --resume 场景，直接使用已知的 sessionId
+        onSessionFound(sessionId);
       }
-    });
 
-    currentClaudeProcess.on('error', (error) => {
-      currentClaudeProcess = null;
-      currentSwitchHandler = null;
+      let shouldSwitch = false;
 
-      // 不需要 resume，因为我们没有 pause
-      // process.stdin.resume();
+      // 注册切换回调（存储到全局变量）
+      currentSwitchHandler = () => {
+        shouldSwitch = true;
+        if (currentClaudeProcess) {
+          console.log(chalk.yellow('\n📱 Mobile device connected, switching to remote mode...'));
+          console.log(chalk.yellow('   Stopping local Claude CLI (Daemon will take over using SDK)'));
+          currentClaudeProcess.kill('SIGTERM');
+        }
+      };
 
+      currentClaudeProcess.on('exit', (code) => {
+        if (cleanupDetector) {
+          cleanupDetector();
+          cleanupDetector = null;
+        }
+        currentClaudeProcess = null;
+        currentSwitchHandler = null;
+
+        if (shouldSwitch) {
+          resolve('switch');
+        } else if (code === 0) {
+          resolve('exit');
+        } else {
+          reject(new Error(`Claude process exited with code ${code}`));
+        }
+      });
+
+      currentClaudeProcess.on('error', (error) => {
+        if (cleanupDetector) {
+          cleanupDetector();
+          cleanupDetector = null;
+        }
+        currentClaudeProcess = null;
+        currentSwitchHandler = null;
+        reject(error);
+      });
+    } catch (error) {
       reject(error);
-    });
+    }
   });
 }
 
@@ -241,12 +360,36 @@ function runRemoteMode(sessionId: string, serverURL: string): Promise<'switch'> 
  */
 async function main() {
   const args = process.argv.slice(2);
+  const projectPath = getCurrentProjectPath();
+
+  // 读取 package.json
+  const pkgPath = join(__dirname, '..', 'package.json');
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+
+  // 处理 --version 参数
+  if (args.includes('--version') || args.includes('-v')) {
+    console.log(chalk.cyan('╭─────────────────────────────────────╮'));
+    console.log(chalk.cyan('│') + chalk.bold.white('  Vlaude CLI') + '                       ' + chalk.cyan('│'));
+    console.log(chalk.cyan('├─────────────────────────────────────┤'));
+    console.log(chalk.cyan('│') + '  Version: ' + chalk.green(pkg.version) + '                     ' + chalk.cyan('│'));
+    console.log(chalk.cyan('│') + '  Server:  ' + chalk.blue(SERVER_URL) + chalk.cyan('│'));
+    console.log(chalk.cyan('╰─────────────────────────────────────╯'));
+    console.log('');
+
+    // 继续透传给 Claude Code
+    // 这样既显示 vlaude 信息，也显示 Claude 信息
+  }
+
+  // 显示启动日志
+  console.log(chalk.gray('━'.repeat(60)));
+  console.log(chalk.cyan(`🚀 Vlaude CLI v${pkg.version}`) + chalk.gray(` | Server: ${SERVER_URL}`));
+  console.log(chalk.gray('━'.repeat(60)));
+
   const sessionInfo = await getSessionId(args);
 
   let mode: 'local' | 'remote' = 'local';
   let shouldExit = false;
   let currentSessionId: string | null = sessionInfo?.sessionId || null;
-  const projectPath = getCurrentProjectPath();
 
   // 创建全局 socket 监听模式切换
   const controlSocket = io(SERVER_URL, {
@@ -261,7 +404,11 @@ async function main() {
 
   controlSocket.on('connect', () => {
     if (isFirstConnect) {
-      console.log(chalk.green('✅ Connected to Vlaude server'));
+      console.log(chalk.green('✅ Connected to Vlaude Server'));
+      console.log(chalk.gray(`   Project: ${projectPath}`));
+      if (currentSessionId) {
+        console.log(chalk.gray(`   Session: ${currentSessionId.substring(0, 8)}...`));
+      }
       isFirstConnect = false;
     }
 
@@ -311,6 +458,12 @@ async function main() {
     console.log(chalk.red('❌ Failed to reconnect after max attempts'));
   });
 
+  // 监听 Server 确认的 sessionId（UUID 匹配成功）
+  controlSocket.on('server:sessionConfirmed', (data: { sessionId: string }) => {
+    console.log(chalk.green(`✓ Session confirmed: ${data.sessionId.substring(0, 8)}...`));
+    handleSessionFound(data.sessionId);
+  });
+
   controlSocket.on('remote-connect', () => {
     console.log(chalk.yellow('\n📱 [EVENT] remote-connect received!'));
     console.log(chalk.yellow(`   Current mode: ${mode}`));
@@ -339,57 +492,50 @@ async function main() {
     }
   });
 
+  // Session 检测回调（支持多次调用 - 内部 /resume 切换）
+  const handleSessionFound = (sessionId: string) => {
+    const previousSessionId = currentSessionId;
+
+    // 如果是同一个 session，不需要处理
+    if (previousSessionId === sessionId) {
+      return;
+    }
+
+    // 切换 session
+    if (previousSessionId) {
+      // 离开旧 session
+      if (controlSocket.connected) {
+        controlSocket.emit('leave', { sessionId: previousSessionId });
+        // 清理旧 session 的状态文件
+        updateSocketStatus(previousSessionId, false, mode, projectPath);
+      }
+    }
+
+    // 更新当前 session
+    currentSessionId = sessionId;
+
+    // 加入新 session
+    if (controlSocket.connected) {
+      controlSocket.emit('join', { sessionId, clientType: 'cli', projectPath });
+      updateSocketStatus(sessionId, true, mode, projectPath);
+    }
+  };
+
+  // 启动 Statusline 信号监听器（检测内部 /resume 切换）
+  const cleanupSessionSwitchMonitor = startSessionSwitchMonitor(projectPath, handleSessionFound);
+
   // 主循环
   while (!shouldExit) {
     if (mode === 'local') {
       try {
-        // 如果没有 sessionId，启动新的 Claude 进程并检测 session
-        if (!currentSessionId) {
-          // 启动 Claude 进程
-          const claudePromise = runLocalMode(args, 'new-session');
+        // 运行 Claude Code（新 session 或 --resume）
+        const result = await runLocalMode(args, currentSessionId, projectPath, controlSocket, handleSessionFound);
 
-          // 查找 session 文件（daemon 会轮询重试）
-          const sessionIdPromise = pollForNewSessionFile(controlSocket, projectPath);
-
-          try {
-            // 等待新 session ID
-            currentSessionId = await Promise.race([
-              sessionIdPromise,
-              claudePromise.then(() => {
-                throw new Error('Claude exited before session was created');
-              })
-            ]);
-
-            // 成功获取到 sessionId，加入 server
-            if (controlSocket.connected) {
-              controlSocket.emit('join', { sessionId: currentSessionId, clientType: 'cli', projectPath });
-              // 创建状态文件，让 statusline 显示连接状态
-              updateSocketStatus(currentSessionId, true, mode, projectPath);
-            }
-
-            // 继续等待 Claude 进程完成
-            const result = await claudePromise;
-            if (result === 'exit') {
-              shouldExit = true;
-            } else if (result === 'switch') {
-              mode = 'remote';
-              updateSocketStatus(currentSessionId, controlSocket.connected, mode, projectPath);
-            }
-          } catch (error) {
-            console.error(chalk.red('Error creating session:'), error);
-            shouldExit = true;
-          }
-        } else {
-          // 使用 --resume 运行
-          const resumeArgs = ['--resume', currentSessionId];
-          const result = await runLocalMode(resumeArgs, currentSessionId);
-
-          if (result === 'exit') {
-            shouldExit = true;
-          } else if (result === 'switch') {
-            mode = 'remote';
-            updateSocketStatus(currentSessionId, controlSocket.connected, mode, projectPath);
-          }
+        if (result === 'exit') {
+          shouldExit = true;
+        } else if (result === 'switch') {
+          mode = 'remote';
+          updateSocketStatus(currentSessionId, controlSocket.connected, mode, projectPath);
         }
       } catch (error) {
         console.error(chalk.red('Error in local mode:'), error);
@@ -417,6 +563,9 @@ async function main() {
     clearInterval(statusUpdateInterval);
     statusUpdateInterval = null;
   }
+
+  // 清理 session switch monitor
+  cleanupSessionSwitchMonitor();
 
   controlSocket.close();
   console.log(chalk.gray('\nVlaude CLI exited'));
