@@ -18,7 +18,7 @@ async function bootstrap() {
   const fastifyAdapter = new FastifyAdapter();
   fastifyAdapter.register(fastifyMultipart , {})
 
-  const app = await NestFactory.create(AppModule, fastifyAdapter ,);
+  const app = await NestFactory.create(AppModule, fastifyAdapter);
   app.enableCors();
   app.useGlobalFilters(new AllExceptionsFilter());
   app.useGlobalPipes(new ValidationPipe({

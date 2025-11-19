@@ -318,10 +318,13 @@ export class SessionService {
    */
   async getSessionsByProjectPath(projectPath: string, limit: number = 20, offset: number = 0) {
     try {
+      const startTime = Date.now();
       this.logger.log(`📋 获取会话列表，projectPath=${projectPath}, limit=${limit}, offset=${offset}`);
 
       // V2: 从 Daemon 获取文件系统的会话元数据
+      const t1 = Date.now();
       const daemonSessions = await this.fetchSessionsFromDaemon(projectPath, limit, offset);
+      this.logger.log(`⏱️ [性能] fetchSessionsFromDaemon 耗时: ${Date.now() - t1}ms`);
 
       if (daemonSessions.length === 0) {
         this.logger.warn('Daemon 未返回任何会话');
@@ -337,16 +340,32 @@ export class SessionService {
       this.logger.log(`📦 Daemon 返回 ${daemonSessions.length} 个会话`);
 
       // 2. 增量更新策略：对比 mtime 和 lineCount，识别新/旧会话
+      const t2 = Date.now();
       const { newSessions, unchangedSessions } = await this.categorizeSessions(daemonSessions);
+      this.logger.log(`⏱️ [性能] categorizeSessions 耗时: ${Date.now() - t2}ms`);
 
       this.logger.log(`🆕 新会话: ${newSessions.length} 个, 📦 未变化: ${unchangedSessions.length} 个`);
 
-      // 3. 更新数据库缓存（只更新有变化的会话）
+      // 3. 对 mtime 变化的会话，获取最后一条消息
       if (newSessions.length > 0) {
-        await this.updateSessionCache(newSessions, projectPath);
+        const t3 = Date.now();
+        await this.fetchLastMessagesForSessions(newSessions, projectPath);
+        this.logger.log(`⏱️ [性能] fetchLastMessagesForSessions 耗时: ${Date.now() - t3}ms`);
+
+        // 4. ⚡ 异步更新数据库缓存（不阻塞响应）
+        const t4 = Date.now();
+        this.updateSessionCache(newSessions, projectPath)
+          .then(() => {
+            this.logger.log(`⏱️ [性能] updateSessionCache 异步完成，耗时: ${Date.now() - t4}ms`);
+          })
+          .catch((error) => {
+            this.logger.error(`异步更新缓存失败: ${error.message}`);
+          });
+        this.logger.log(`⏱️ [性能] updateSessionCache 已启动异步任务`);
       }
 
-      // 4. 从数据库查询完整数据（包括缓存的 lastMessage）
+      // 5. 从数据库查询完整数据（包括缓存的 lastMessage）
+      const t5 = Date.now();
       const sessionIds = daemonSessions.map(s => s.sessionId);
       const sessions = await this.prisma.session.findMany({
         where: {
@@ -363,8 +382,9 @@ export class SessionService {
           },
         },
       });
+      this.logger.log(`⏱️ [性能] 查询数据库获取完整数据 耗时: ${Date.now() - t5}ms`);
 
-      // 5. 混合使用缓存和实时数据
+      // 6. 混合使用缓存和实时数据
       const newSessionIds = new Set(newSessions.map(s => s.sessionId));
       const sessionsWithLastMessage = sessions.map(session => {
         const isNewSession = newSessionIds.has(session.sessionId);
@@ -372,7 +392,6 @@ export class SessionService {
         if (isNewSession) {
           // 新会话或有变化的会话：使用 Daemon 返回的 lastMessage
           const daemonSession = daemonSessions.find(ds => ds.sessionId === session.sessionId);
-          this.logger.debug(`[新会话] ${session.sessionId}: lastMessage=${daemonSession?.lastMessage ? 'exists' : 'null'}`);
           return {
             ...session,
             messages: undefined, // 移除 messages 字段
@@ -381,7 +400,6 @@ export class SessionService {
         } else {
           // 未变化的会话：使用数据库缓存的 lastMessage
           const cachedMessage = session.messages?.[0];
-          this.logger.debug(`[缓存会话] ${session.sessionId}: cachedMessage=${cachedMessage ? 'exists' : 'null'}, metadata=${cachedMessage?.metadata ? 'exists' : 'null'}`);
           return {
             ...session,
             messages: undefined, // 移除 messages 字段
@@ -390,7 +408,7 @@ export class SessionService {
         }
       });
 
-      // 6. 获取总数并判断是否还有更多
+      // 7. 获取总数并判断是否还有更多
       const project = await this.prisma.project.findUnique({
         where: { path: projectPath },
       });
@@ -399,7 +417,9 @@ export class SessionService {
       }) : 0;
       const hasMore = offset + sessionsWithLastMessage.length < total;
 
+      const totalTime = Date.now() - startTime;
       this.logger.log(`✅ 返回 ${sessionsWithLastMessage.length} 个会话 (offset=${offset}, total=${total}, hasMore=${hasMore}, ${newSessions.length} 个使用实时数据, ${unchangedSessions.length} 个使用缓存)`);
+      this.logger.log(`⏱️ [性能] 总耗时: ${totalTime}ms`);
       return { sessions: sessionsWithLastMessage, total, hasMore };
 
     } catch (error) {
@@ -444,8 +464,6 @@ export class SessionService {
     try {
       const url = `${this.daemonBaseUrl}/sessions?projectPath=${encodeURIComponent(projectPath)}&limit=${limit}&offset=${offset}`;
 
-      this.logger.debug(`🔗 调用 Daemon API: ${url}`);
-
       const response = await fetch(url);
 
       if (!response.ok) {
@@ -466,17 +484,58 @@ export class SessionService {
   }
 
   /**
+   * 为 mtime 变化的会话获取最后一条消息
+   */
+  private async fetchLastMessagesForSessions(sessions: DaemonSessionMetadata[], projectPath: string) {
+    this.logger.log(`📨 开始获取 ${sessions.length} 个会话的最后一条消息`);
+
+    // 并发获取所有会话的最后一条消息
+    await Promise.all(
+      sessions.map(async (session) => {
+        try {
+          // 调用 Daemon API 获取最后一条消息
+          const result = await this.daemonGateway.requestSessionMessages(
+            session.sessionId,
+            projectPath,
+            1,    // limit: 只要1条
+            0,    // offset: 0
+            'desc', // order: 倒序，获取最后一条
+          );
+
+          if (result?.messages?.[0]) {
+            // 将最后一条消息附加到 session 对象上
+            session.lastMessage = result.messages[0];
+          }
+        } catch (error) {
+          this.logger.error(`获取会话 ${session.sessionId} 的最后一条消息失败: ${error.message}`);
+        }
+      })
+    );
+
+    this.logger.log(`✅ 已获取 ${sessions.filter(s => s.lastMessage).length} 个会话的最后一条消息`);
+  }
+
+  /**
    * 分类会话：识别新会话和未变化会话 (3新7旧策略)
    */
   private async categorizeSessions(daemonSessions: DaemonSessionMetadata[]) {
     const newSessions: DaemonSessionMetadata[] = [];
     const unchangedSessions: DaemonSessionMetadata[] = [];
 
+    // ⚠️ 性能优化：批量查询所有会话，避免 N+1 问题
+    const sessionIds = daemonSessions.map(s => s.sessionId);
+    const t1 = Date.now();
+    const dbSessions = await this.prisma.session.findMany({
+      where: { sessionId: { in: sessionIds } },
+    });
+    this.logger.log(`⏱️ [categorizeSessions] 批量查询 ${sessionIds.length} 个会话耗时: ${Date.now() - t1}ms`);
+
+    // 创建 sessionId -> dbSession 的映射
+    const dbSessionMap = new Map(dbSessions.map(s => [s.sessionId, s]));
+
     for (const daemonSession of daemonSessions) {
-      // 从数据库查询该会话
-      const dbSession = await this.prisma.session.findUnique({
-        where: { sessionId: daemonSession.sessionId },
-      });
+      // 从 Map 中查询该会话（O(1) 时间复杂度）
+      const dbSession = dbSessionMap.get(daemonSession.sessionId);
 
       const daemonMtime = new Date(daemonSession.lastMtime);
 
@@ -497,6 +556,7 @@ export class SessionService {
 
   /**
    * 更新数据库缓存 (只更新变化的会话，不解析消息)
+   * 优化：使用并发批量操作，大幅提升性能
    */
   private async updateSessionCache(sessions: DaemonSessionMetadata[], projectPath: string) {
     // 先查找或创建项目
@@ -515,55 +575,50 @@ export class SessionService {
       });
     }
 
-    for (const session of sessions) {
-      try {
-        // 1. 更新或创建会话记录
-        const dbSession = await this.prisma.session.upsert({
-          where: { sessionId: session.sessionId },
-          update: {
-            projectPath,  // V2: 更新 projectPath
-            messageCount: session.lineCount,  // V2: 更新消息数量(使用行数)
-            lastMtime: new Date(session.lastMtime),
-            lastParsedLine: session.lineCount,  // V2: 更新已解析行数(使用总行数)
-            updatedAt: new Date(),
-          },
-          create: {
-            sessionId: session.sessionId,
-            projectId: project.id,
-            projectPath,  // V2: 保存 projectPath
-            messageCount: session.lineCount,  // V2: 初始消息数量(使用行数)
-            lastMtime: new Date(session.lastMtime),
-            createdAt: new Date(session.createdAt),
-            lastParsedLine: session.lineCount,  // V2: 初始已解析行数(使用总行数)
-            lastFileSize: BigInt(0),
-          },
-        });
-
-        // 2. 存储最后一条消息到缓存（只在会话有变化时更新）
+    // ⚡ 性能优化：并发处理所有会话，而不是串行
+    await Promise.all(
+      sessions.map(async (session) => {
         try {
-          const lastMessage = session.lastMessage;
-          this.logger.debug(`检查 lastMessage: session=${session.sessionId}, exists=${!!lastMessage}`);
+          // 1. 更新或创建会话记录
+          const dbSession = await this.prisma.session.upsert({
+            where: { sessionId: session.sessionId },
+            update: {
+              projectPath,
+              messageCount: session.lineCount,
+              lastMtime: new Date(session.lastMtime),
+              lastParsedLine: session.lineCount,
+              updatedAt: new Date(),
+            },
+            create: {
+              sessionId: session.sessionId,
+              projectId: project.id,
+              projectPath,
+              messageCount: session.lineCount,
+              lastMtime: new Date(session.lastMtime),
+              createdAt: new Date(session.createdAt),
+              lastParsedLine: session.lineCount,
+              lastFileSize: BigInt(0),
+            },
+          });
 
+          // 2. 存储最后一条消息到缓存
+          const lastMessage = session.lastMessage;
           if (lastMessage) {
-            // 直接存储完整的 metadata，不做复杂的 content 提取
-            // role 用于简单标识消息类型
             const role = lastMessage.message?.role || lastMessage.type || 'unknown';
             const timestamp = new Date(lastMessage.timestamp || Date.now());
-
-            this.logger.debug(`准备存储 lastMessage: sessionId=${dbSession.id}, role=${role}`);
 
             await this.prisma.message.upsert({
               where: {
                 sessionId_sequence: {
                   sessionId: dbSession.id,
-                  sequence: 0, // sequence = 0 表示"最后一条消息缓存"
+                  sequence: 0,
                 },
               },
               update: {
                 role,
-                content: '', // content 字段留空，前端从 metadata 解析
+                content: '',
                 timestamp,
-                metadata: lastMessage, // 完整的 JSON 数据
+                metadata: lastMessage,
               },
               create: {
                 sessionId: dbSession.id,
@@ -574,18 +629,12 @@ export class SessionService {
                 metadata: lastMessage,
               },
             });
-
-            this.logger.debug(`✅ lastMessage 已存储: sessionId=${dbSession.id}, role=${role}`);
           }
-        } catch (messageError) {
-          this.logger.error(`❌ 缓存最后一条消息失败 ${session.sessionId}: ${messageError.message}`, messageError.stack);
+        } catch (error) {
+          this.logger.error(`更新会话缓存失败 ${session.sessionId}: ${error.message}`);
         }
-
-        this.logger.debug(`✅ 会话缓存已更新: ${session.sessionId}`);
-      } catch (error) {
-        this.logger.error(`更新会话缓存失败 ${session.sessionId}: ${error.message}`);
-      }
-    }
+      })
+    );
   }
 
   /**

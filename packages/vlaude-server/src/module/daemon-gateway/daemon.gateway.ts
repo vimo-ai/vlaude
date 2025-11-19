@@ -20,6 +20,7 @@ import { PrismaService } from '../../shared/database/prisma.service';
  * 接收来自 daemon 的 WebSocket 连接
  */
 @WebSocketGateway({
+  namespace: '/daemon',
   cors: {
     origin: '*',
   },
@@ -325,6 +326,30 @@ export class DaemonGateway
   }
 
   /**
+   * 监听来自 AppGateway 的查找新 session 事件
+   */
+  @OnEvent('daemon.findNewSession')
+  handleFindNewSessionEvent(data: { clientId: string; projectPath: string }) {
+    this.logger.log(`📥 [事件监听] 收到查找新Session事件`);
+    this.logger.log(`   CLI ID: ${data.clientId}`);
+    this.logger.log(`   项目路径: ${data.projectPath}`);
+
+    const daemons = Array.from(this.connectedDaemons.values());
+    if (daemons.length === 0) {
+      this.logger.warn(`⚠️ [查找新Session] 没有 Daemon 连接`);
+      return;
+    }
+
+    const daemon = daemons[0];
+    daemon.socket.emit('server:findNewSession', {
+      clientId: data.clientId,
+      projectPath: data.projectPath,
+    });
+
+    this.logger.log(`✅ [查找新Session] 已通知 Daemon 开始查找`);
+  }
+
+  /**
    * 监听来自 AppGateway 的监听新 session 事件
    */
   @OnEvent('daemon.watchNewSession')
@@ -367,5 +392,79 @@ export class DaemonGateway
 
     // 通知 Daemon 刷新项目路径映射
     daemon.socket.emit('server:sessionDiscovered', data);
+  }
+
+  /**
+   * 接收 Daemon 推送的新 session 查找结果
+   */
+  @SubscribeMessage('daemon:newSessionFound')
+  handleNewSessionFound(
+    @MessageBody() data: { clientId: string; sessionId: string; projectPath: string; encodedDirName: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`✅ [Daemon通知] 找到新Session`);
+    this.logger.log(`   ClientId: ${data.clientId}`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
+    this.logger.log(`   ProjectPath: ${data.projectPath}`);
+
+    // 通过事件转发给 AppGateway，让它通知 CLI
+    this.eventEmitter.emit('app.notifyNewSessionFound', data);
+
+    return { success: true };
+  }
+
+  /**
+   * 接收 Daemon 推送的未找到 session 通知
+   */
+  @SubscribeMessage('daemon:newSessionNotFound')
+  handleNewSessionNotFound(
+    @MessageBody() data: { clientId: string; projectPath: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`❌ [Daemon通知] 未找到新Session`);
+    this.logger.log(`   ClientId: ${data.clientId}`);
+    this.logger.log(`   ProjectPath: ${data.projectPath}`);
+
+    // 通过事件转发给 AppGateway，让它通知 CLI
+    this.eventEmitter.emit('app.notifyNewSessionNotFound', data);
+
+    return { success: true };
+  }
+
+  /**
+   * 接收 Daemon 推送的监听器启动通知
+   */
+  @SubscribeMessage('daemon:watchStarted')
+  handleWatchStarted(
+    @MessageBody() data: { clientId: string; projectPath: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`👀 [Daemon通知] 监听器已启动`);
+    this.logger.log(`   ClientId: ${data.clientId}`);
+    this.logger.log(`   ProjectPath: ${data.projectPath}`);
+
+    // 通过事件转发给 AppGateway，让它通知 CLI
+    this.eventEmitter.emit('app.notifyWatchStarted', data);
+
+    return { success: true };
+  }
+
+  /**
+   * 接收 Daemon 推送的新 session 创建通知
+   */
+  @SubscribeMessage('daemon:newSessionCreated')
+  handleNewSessionCreated(
+    @MessageBody() data: { clientId: string; sessionId: string; projectPath: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🆕 [Daemon通知] 新Session已创建`);
+    this.logger.log(`   ClientId: ${data.clientId}`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
+    this.logger.log(`   ProjectPath: ${data.projectPath}`);
+
+    // 通过事件转发给 AppGateway，让它通知 CLI
+    this.eventEmitter.emit('app.notifyNewSessionCreated', data);
+
+    return { success: true };
   }
 }

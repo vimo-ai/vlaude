@@ -58,40 +58,24 @@ export class SessionController {
 
       this.logger.log(`📋 收到会话列表请求，projectPath=${projectPath}, limit=${limit}`);
 
-      // V2: 从文件系统读取会话
+      // V2: 从文件系统读取会话（只返回元数据，不读取消息内容）
       const sessions = await this.dataCollector.collectSessions(projectPath, limit);
 
-      // 为每个会话获取最后一条消息
-      const sessionsWithLastMessage = await Promise.all(
-        sessions.map(async (s) => {
-          // 获取最后一条消息
-          const messagesResult = await this.dataCollector.getSessionMessages(
-            s.id,
-            projectPath,
-            1,    // limit: 只要1条
-            0,    // offset: 0
-            'desc', // order: 倒序，获取最后一条
-          );
+      // 只返回元数据，不读取消息（交给 Server 端根据 mtime 变化按需读取）
+      const sessionsMetadata = sessions.map((s) => ({
+        sessionId: s.id,
+        projectPath: s.projectPath,
+        lastMtime: s.lastUpdated,
+        createdAt: s.createdAt,
+        lineCount: s.messageCount,
+      }));
 
-          const lastMessage = messagesResult?.messages?.[0] || null;
-
-          return {
-            sessionId: s.id,
-            projectPath: s.projectPath,
-            lastMtime: s.lastUpdated,
-            createdAt: s.createdAt,
-            lineCount: s.messageCount,  // 文件总行数
-            lastMessage,  // 最后一条消息
-          };
-        }),
-      );
-
-      this.logger.log(`✅ 返回 ${sessionsWithLastMessage.length} 个会话（含最后一条消息）`);
+      this.logger.log(`✅ 返回 ${sessionsMetadata.length} 个会话`);
 
       return {
         success: true,
-        data: sessionsWithLastMessage,
-        total: sessionsWithLastMessage.length,
+        data: sessionsMetadata,
+        total: sessionsMetadata.length,
         source: 'filesystem',
       };
     } catch (error) {

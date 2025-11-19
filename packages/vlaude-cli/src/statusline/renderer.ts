@@ -5,31 +5,33 @@ import { formatTokens, type TokenMetrics } from './tokens';
 import type { GitChanges } from './git';
 
 /**
- * 渲染进度条（带渐变炫光效果）
+ * 渲染进度条（从绿色渐变到黄色再渐变到红色）
  */
 function renderProgressBar(percentage: number, barLength: number = 10): string {
   const filled = Math.round((percentage / 100) * barLength);
   const empty = barLength - filled;
 
-  // 根据百分比决定主色调和 RGB 值
-  let rgb: [number, number, number];
-  if (percentage >= 80) {
-    rgb = [255, 0, 0]; // 红色
-  } else if (percentage >= 60) {
-    rgb = [255, 255, 0]; // 黄色
-  } else {
-    rgb = [0, 255, 0]; // 绿色
-  }
-
-  // 创建渐变效果的进度条 - 从左到右逐渐变亮
+  // 创建渐变效果的进度条 - 从左到右颜色从绿色渐变到黄色再到红色
   let filledBar = '';
   for (let i = 0; i < filled; i++) {
-    // 计算亮度因子（0.6 到 1.0）
-    const brightnessFactor = 0.6 + (i / filled) * 0.4;
+    // 计算当前位置在整个进度条中的比例 (0 到 1)
+    const position = i / (barLength - 1);
 
-    const r = Math.round(rgb[0] * brightnessFactor);
-    const g = Math.round(rgb[1] * brightnessFactor);
-    const b = Math.round(rgb[2] * brightnessFactor);
+    let r: number, g: number, b: number;
+
+    if (position < 0.5) {
+      // 前半段：绿色 (0,255,0) → 黄色 (255,255,0)
+      const t = position * 2; // 0 到 1
+      r = Math.round(255 * t);
+      g = 255;
+      b = 0;
+    } else {
+      // 后半段：黄色 (255,255,0) → 红色 (255,0,0)
+      const t = (position - 0.5) * 2; // 0 到 1
+      r = 255;
+      g = Math.round(255 * (1 - t));
+      b = 0;
+    }
 
     filledBar += chalk.rgb(r, g, b)('█');
   }
@@ -72,9 +74,9 @@ export function renderStatusLine(
   // 3. Token 使用情况
   if (tokenMetrics) {
     parts.push(
-      chalk.blue(`In: ${formatTokens(tokenMetrics.inputTokens)}`) +
-      chalk.gray(' | ') +
-      chalk.cyan(`Out: ${formatTokens(tokenMetrics.outputTokens)}`)
+      chalk.blue(`↑ ${formatTokens(tokenMetrics.inputTokens)}`) +
+      ' ' +
+      chalk.cyan(`↓ ${formatTokens(tokenMetrics.outputTokens)}`)
     );
   }
 
