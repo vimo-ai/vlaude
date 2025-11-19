@@ -425,6 +425,8 @@
 				DEVELOPMENT_TEAM = 9VJYR7FQU6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Vlaude 需要访问麦克风以支持语音输入消息";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Vlaude 需要使用语音识别功能将您的语音转换为文字";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -457,6 +459,8 @@
 				DEVELOPMENT_TEAM = 9VJYR7FQU6;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Vlaude 需要访问麦克风以支持语音输入消息";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Vlaude 需要使用语音识别功能将您的语音转换为文字";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
