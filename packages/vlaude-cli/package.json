@@ -8,10 +8,14 @@
     "vlaude-statusline": "./dist/statusline.js"
   },
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r scripts dist/",
     "dev": "tsx src/cli.ts",
     "start": "node dist/cli.js"
   },
+  "files": [
+    "dist",
+    "scripts"
+  ],
   "keywords": ["vlaude", "claude", "cli"],
   "author": "Claude",
   "license": "MIT",
