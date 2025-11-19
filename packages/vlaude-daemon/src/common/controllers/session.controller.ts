@@ -98,9 +98,9 @@ export class SessionController {
    */
   @Post('send-message')
   async sendMessage(
-    @Body() data: { sessionId: string; text: string; projectPath: string },
+    @Body() data: { sessionId: string; text: string; projectPath: string; clientId?: string },
   ) {
-    const { sessionId, text, projectPath } = data;
+    const { sessionId, text, projectPath, clientId } = data;
 
     this.logger.log(`📥 [Remote 模式] 收到消息请求`);
     this.logger.log(`   Session: ${sessionId}`);
@@ -155,6 +155,50 @@ export class SessionController {
         options: {
           resume: sessionId,
           cwd: projectPath,
+          // 权限请求回调
+          canUseTool: async (toolName, input, options) => {
+            const { toolUseID, signal } = options;
+
+            // 如果没有 clientId，自动拒绝（无法请求权限）
+            if (!clientId) {
+              this.logger.warn(`⚠️ [权限] 没有 clientId，自动拒绝: ${toolName}`);
+              return {
+                behavior: 'deny',
+                message: '无法请求权限：客户端未连接',
+              };
+            }
+
+            try {
+              // 通过 ServerClient 请求用户权限
+              const result = await this.serverClient.requestApproval(
+                sessionId,
+                clientId,
+                toolName,
+                input,
+                toolUseID,
+              );
+
+              if (result.approved) {
+                return {
+                  behavior: 'allow',
+                  updatedInput: input,
+                };
+              } else {
+                return {
+                  behavior: 'deny',
+                  message: result.reason || '用户拒绝',
+                  interrupt: true,
+                };
+              }
+            } catch (error) {
+              this.logger.error(`❌ [权限] 请求失败: ${error.message}`);
+              return {
+                behavior: 'deny',
+                message: `权限请求失败: ${error.message}`,
+                interrupt: false,
+              };
+            }
+          },
         },
       });
 

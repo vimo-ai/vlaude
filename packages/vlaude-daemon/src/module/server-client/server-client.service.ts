@@ -16,6 +16,12 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
   private readonly maxReconnectAttempts = 10;
   private dataCollectorService: any; // 延迟注入避免循环依赖
 
+  // 权限请求 Promise 管理
+  private approvalPromises = new Map<string, {
+    resolve: (result: { approved: boolean; reason?: string }) => void;
+    reject: (error: Error) => void;
+  }>();
+
   constructor(
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
@@ -138,6 +144,11 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
     // 监听来自 server 的新会话发现事件
     this.socket.on('server:sessionDiscovered', async (data) => {
       await this.handleSessionDiscovered(data);
+    });
+
+    // 监听来自 server 的权限响应
+    this.socket.on('server:approvalResponse', (data: { requestId: string; approved: boolean; reason?: string }) => {
+      this.handleApprovalResponse(data);
     });
   }
 
@@ -524,5 +535,103 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
     this.socket.emit('daemon:sessionDeleted', { sessionId, projectPath });
     this.logger.log(`🗑️ 通知 Server: 会话已删除 (${sessionId})`);
     return true;
+  }
+
+  // =================== 权限请求相关方法 ===================
+
+  /**
+   * 请求用户权限确认
+   * @param sessionId 会话 ID
+   * @param clientId 客户端 ID (iOS)
+   * @param toolName 工具名称
+   * @param input 工具参数
+   * @param toolUseID 工具调用 ID
+   * @param timeout 超时时间（毫秒）
+   * @returns Promise<{ approved: boolean; reason?: string }>
+   */
+  async requestApproval(
+    sessionId: string,
+    clientId: string,
+    toolName: string,
+    input: Record<string, unknown>,
+    toolUseID: string,
+    timeout = 60000,
+  ): Promise<{ approved: boolean; reason?: string }> {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot request approval');
+      return { approved: false, reason: 'Server 未连接' };
+    }
+
+    const requestId = `${sessionId}-${toolUseID}`;
+
+    this.logger.log(`🔐 [权限请求] 发送给 iOS 客户端`);
+    this.logger.log(`   RequestID: ${requestId}`);
+    this.logger.log(`   Tool: ${toolName}`);
+    this.logger.log(`   SessionID: ${sessionId}`);
+
+    // 发送权限请求给 Server
+    this.socket.emit('daemon:approvalRequest', {
+      requestId,
+      sessionId,
+      clientId,
+      toolName,
+      input,
+      toolUseID,
+      description: this.formatToolDescription(toolName, input),
+    });
+
+    // 等待响应
+    return new Promise((resolve, reject) => {
+      // 保存 Promise 的 resolve/reject
+      this.approvalPromises.set(requestId, { resolve, reject });
+
+      // 设置超时
+      setTimeout(() => {
+        if (this.approvalPromises.has(requestId)) {
+          this.approvalPromises.delete(requestId);
+          this.logger.warn(`⚠️ [权限请求] 超时: ${requestId}`);
+          resolve({ approved: false, reason: '请求超时' });
+        }
+      }, timeout);
+    });
+  }
+
+  /**
+   * 处理来自 Server 的权限响应
+   */
+  private handleApprovalResponse(data: { requestId: string; approved: boolean; reason?: string }) {
+    const { requestId, approved, reason } = data;
+
+    this.logger.log(`✅ [权限响应] 收到响应: ${requestId}`);
+    this.logger.log(`   批准: ${approved}`);
+    if (reason) {
+      this.logger.log(`   原因: ${reason}`);
+    }
+
+    const promise = this.approvalPromises.get(requestId);
+    if (promise) {
+      promise.resolve({ approved, reason });
+      this.approvalPromises.delete(requestId);
+    } else {
+      this.logger.warn(`⚠️ [权限响应] 未找到对应的请求: ${requestId}`);
+    }
+  }
+
+  /**
+   * 格式化工具描述（给用户看的友好文本）
+   */
+  private formatToolDescription(toolName: string, input: Record<string, unknown>): string {
+    switch (toolName) {
+      case 'Bash':
+        return `执行命令: ${input.command}`;
+      case 'Write':
+        return `写入文件: ${input.file_path}`;
+      case 'Edit':
+        return `修改文件: ${input.file_path}`;
+      case 'Delete':
+        return `删除文件: ${input.file_path}`;
+      default:
+        return `调用工具: ${toolName}`;
+    }
   }
 }
