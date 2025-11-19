@@ -5,13 +5,17 @@ import { formatTokens, type TokenMetrics } from './tokens';
 import type { GitChanges } from './git';
 
 /**
- * 渲染进度条（从绿色渐变到黄色再渐变到红色）
+ * 渲染进度条
+ * - 0-15%: 深灰色（低风险区）
+ * - 15%+: 绿→黄→红渐变（15%开始绿色，逐渐变黄变红）
+ * - 真实 90% 时进度条填满（因为 70-80% 就该 compose 了）
  */
 function renderProgressBar(percentage: number, barLength: number = 10): string {
-  const filled = Math.round((percentage / 100) * barLength);
+  // 将真实 0-90% 映射到进度条 0-100%，这样 90% 时进度条填满
+  const displayPercentage = Math.min(100, (percentage / 90) * 100);
+  const filled = Math.round((displayPercentage / 100) * barLength);
   const empty = barLength - filled;
 
-  // 创建渐变效果的进度条 - 从左到右颜色从绿色渐变到黄色再到红色
   let filledBar = '';
   for (let i = 0; i < filled; i++) {
     // 计算当前位置在整个进度条中的比例 (0 到 1)
@@ -19,18 +23,24 @@ function renderProgressBar(percentage: number, barLength: number = 10): string {
 
     let r: number, g: number, b: number;
 
-    if (position < 0.5) {
-      // 前半段：绿色 (0,255,0) → 黄色 (255,255,0)
-      const t = position * 2; // 0 到 1
-      r = Math.round(255 * t);
-      g = 255;
-      b = 0;
+    // 0-15%: 使用深灰色
+    if (percentage < 15) {
+      r = g = b = 120; // 深灰色
     } else {
-      // 后半段：黄色 (255,255,0) → 红色 (255,0,0)
-      const t = (position - 0.5) * 2; // 0 到 1
-      r = 255;
-      g = Math.round(255 * (1 - t));
-      b = 0;
+      // 15% 以上: 绿→黄→红渐变
+      if (position < 0.5) {
+        // 前半段：绿色 (0,255,0) → 黄色 (255,255,0)
+        const t = position * 2; // 0 到 1
+        r = Math.round(255 * t);
+        g = 255;
+        b = 0;
+      } else {
+        // 后半段：黄色 (255,255,0) → 红色 (255,0,0)
+        const t = (position - 0.5) * 2; // 0 到 1
+        r = 255;
+        g = Math.round(255 * (1 - t));
+        b = 0;
+      }
     }
 
     filledBar += chalk.rgb(r, g, b)('█');
@@ -68,7 +78,7 @@ export function renderStatusLine(
   if (contextLength !== null) {
     const maxTokens = getModelMaxTokens(data.model?.id);
     const percentage = Math.min(100, (contextLength / maxTokens) * 100);
-    parts.push(renderProgressBar(percentage));
+    parts.push(renderProgressBar(percentage) + ' ' + chalk.gray(`${percentage.toFixed(1)}%`));
   }
 
   // 3. Token 使用情况
