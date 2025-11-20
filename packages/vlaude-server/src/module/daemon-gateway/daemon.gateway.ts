@@ -218,6 +218,18 @@ export class DaemonGateway
   }
 
   /**
+   * Daemon 推送 Metrics 更新（转发给 AppGateway）
+   */
+  @SubscribeMessage('daemon:metricsUpdate')
+  handleMetricsUpdate(
+    @MessageBody() data: { sessionId: string; metrics: any },
+    @ConnectedSocket() client: Socket,
+  ) {
+    // 通过事件转发给 AppGateway，推送到订阅了该会话的 Swift 客户端
+    this.eventEmitter.emit('app.notifyMetricsUpdate', data);
+  }
+
+  /**
    * Daemon 推送项目更新（转发给 AppGateway）
    */
   @SubscribeMessage('daemon:projectUpdate')

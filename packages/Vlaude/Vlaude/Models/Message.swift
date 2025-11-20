@@ -271,6 +271,103 @@ public struct ToolExecution: Identifiable {
         // 默认显示所有参数
         return input.map { "\($0.key): \($0.value)" }.joined(separator: "\n")
     }
+
+    // MARK: - Diff 渲染相关
+
+    /// 判断是否是 Edit 工具（需要特殊的 diff 显示）
+    public var isEditTool: Bool {
+        name == "Edit"
+    }
+
+    /// 判断工具结果是否应该用 Markdown 渲染
+    /// 目前支持：Edit 工具的代码 diff
+    public var shouldRenderAsMarkdown: Bool {
+        guard let content = result?.content else { return false }
+
+        // Edit 工具返回的内容包含代码片段，适合 Markdown 渲染
+        if isEditTool {
+            return true
+        }
+
+        // 可以扩展其他需要 Markdown 渲染的工具
+        return false
+    }
+
+    /// 将工具结果格式化为 Markdown
+    /// 用于在 UI 中优雅地显示代码 diff 等内容
+    public var formattedResultAsMarkdown: String? {
+        guard shouldRenderAsMarkdown, let content = result?.content else { return nil }
+
+        if isEditTool {
+            // Edit 工具返回的 content 格式：
+            // "The file xxx has been updated. Here's the result of running `cat -n`..."
+            // 后面跟着带行号的代码片段，直接用 swift 代码块包装
+
+            // 提取文件扩展名以确定语言
+            let fileExt = extractFileExtension(from: content)
+            let language = languageForExtension(fileExt)
+
+            return """
+```\(language)
+\(content)
+```
+"""
+        }
+
+        // TODO: 未来可以支持其他工具的 Markdown 格式化
+        return nil
+    }
+
+    // MARK: - 升级方案备注
+    // 🚀 方案二：专业 Diff 组件（待实现）
+    // 利用 Message 中的 toolUseResult 字段，可以获取：
+    // - oldString: 修改前的代码
+    // - newString: 修改后的代码
+    // - originalFile: 完整的原始文件
+    //
+    // 实现思路：
+    // 1. 在 ToolExecution 中添加 toolUseResult 引用
+    // 2. 创建 DiffView 组件，支持：
+    //    - Unified Diff（统一视图，类似 git diff）
+    //    - Split Diff（左右对比视图）
+    //    - 语法高亮
+    //    - 行级 diff 和字符级 diff
+    // 3. 可选使用算法库（如 Difference）生成精确的 diff
+
+    // MARK: - Helper Methods
+
+    private func extractFileExtension(from content: String) -> String {
+        // 从 "The file /path/to/file.swift has been updated..." 中提取扩展名
+        if let filePathMatch = content.range(of: #"/[^\s]+\.\w+"#, options: .regularExpression) {
+            let filePath = String(content[filePathMatch])
+            if let ext = filePath.split(separator: ".").last {
+                return String(ext)
+            }
+        }
+        return "txt"
+    }
+
+    private func languageForExtension(_ ext: String) -> String {
+        switch ext.lowercased() {
+        case "swift": return "swift"
+        case "ts", "tsx": return "typescript"
+        case "js", "jsx": return "javascript"
+        case "py": return "python"
+        case "rs": return "rust"
+        case "go": return "go"
+        case "java": return "java"
+        case "kt": return "kotlin"
+        case "rb": return "ruby"
+        case "cpp", "cc", "cxx": return "cpp"
+        case "c": return "c"
+        case "h", "hpp": return "cpp"
+        case "json": return "json"
+        case "yaml", "yml": return "yaml"
+        case "md": return "markdown"
+        case "sh", "bash": return "bash"
+        default: return "text"
+        }
+    }
 }
 
 // 消息内部结构
@@ -425,7 +522,8 @@ enum JSONValue: Codable {
 
 struct MessageListResponse: Codable {
     let success: Bool
-    let data: [Message]
-    let total: Int
-    let hasMore: Bool
+    let data: [Message]?
+    let total: Int?
+    let hasMore: Bool?
+    let message: String?
 }

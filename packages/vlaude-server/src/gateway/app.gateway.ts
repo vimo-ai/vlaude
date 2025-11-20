@@ -457,6 +457,22 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect, OnM
   }
 
   /**
+   * 推送 Metrics 更新到订阅了该会话的客户端
+   */
+  notifyMetricsUpdate(sessionId: string, metrics: any) {
+    const subscription = this.sessionSubscriptions.get(sessionId);
+
+    if (subscription && subscription.subscribers.size > 0) {
+      subscription.subscribers.forEach((clientId) => {
+        this.server.to(clientId).emit('statusline:metricsUpdate', {
+          sessionId,
+          ...metrics,
+        });
+      });
+    }
+  }
+
+  /**
    * Daemon 调用：通知 CLI 新 session 已创建
    */
   notifyNewSessionFound(clientId: string, sessionId: string, projectPath: string) {
@@ -659,6 +675,14 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect, OnM
   handleNotifyNewMessageEvent(data: { sessionId: string; message: any }) {
     this.logger.log(`📥 [事件监听] 收到新消息事件: ${data.sessionId}`);
     this.notifyNewMessage(data.sessionId, data.message);
+  }
+
+  /**
+   * 监听来自 DaemonGateway 的 Metrics 更新事件
+   */
+  @OnEvent('app.notifyMetricsUpdate')
+  handleNotifyMetricsUpdateEvent(data: { sessionId: string; metrics: any }) {
+    this.notifyMetricsUpdate(data.sessionId, data.metrics);
   }
 
   /**

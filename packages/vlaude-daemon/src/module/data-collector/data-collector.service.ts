@@ -29,6 +29,16 @@ interface ClaudeSession {
   messageCount: number;
 }
 
+interface SessionMetrics {
+  connected: boolean;
+  mode: string;
+  contextLength: number;
+  contextPercentage: number;
+  inputTokens: number;
+  outputTokens: number;
+  timestamp: number;
+}
+
 @Injectable()
 export class DataCollectorService implements OnModuleInit {
   private readonly logger = new Logger(DataCollectorService.name);
@@ -58,9 +68,6 @@ export class DataCollectorService implements OnModuleInit {
 
 
   async onModuleInit() {
-    this.logger.log('📦 DataCollectorService 初始化完成');
-    this.logger.log(`📁 Claude Projects 路径: ${this.claudeProjectsPath}`);
-
     // V2: 启动时预加载项目路径映射
     await this.preloadPathCache();
   }
@@ -117,16 +124,12 @@ export class DataCollectorService implements OnModuleInit {
 
       try {
         await fsPromises.access(projectDir);
-        this.logger.debug(`项目已在缓存中且目录有效: ${projectPath} → ${encodedDirName}`);
         return;
       } catch {
         this.logger.warn(`⚠️ 缓存的映射无效，目录不存在: ${projectDir}`);
-        this.logger.log(`🗑️ 清除无效缓存，重新扫描`);
         this.pathToEncodedDirCache.delete(projectPath);
       }
     }
-
-    this.logger.log(`🔍 扫描新项目: ${projectPath}`);
 
     try {
       const dirs = await fsPromises.readdir(this.claudeProjectsPath);
@@ -134,7 +137,6 @@ export class DataCollectorService implements OnModuleInit {
 
       // 计算前缀（到第一个中文字符之前）用于优化过滤
       const prefix = this.getEncodedPrefix(projectPath);
-      this.logger.debug(`计算编码前缀: ${projectPath} → ${prefix || '(无前缀)'}`);
 
       // 前缀过滤：分离候选目录和跳过的目录
       const candidateDirs: string[] = [];
@@ -154,8 +156,6 @@ export class DataCollectorService implements OnModuleInit {
         candidateDirs.push(encodedDirName);
       }
 
-      this.logger.debug(`前缀匹配结果: ${candidateDirs.length} 个候选目录, ${skippedDirs.length} 个跳过`);
-
       let candidateDir: { encodedDirName: string; mtime: Date } | null = null;
 
       // 扫描候选目录（删除了原有的"跳过已知编码目录"逻辑，以支持多个真实路径映射到同一编码目录）
@@ -172,7 +172,6 @@ export class DataCollectorService implements OnModuleInit {
 
           if (realPath === projectPath) {
             this.pathToEncodedDirCache.set(realPath, encodedDirName);
-            this.logger.log(`✅ 新项目已加入缓存: ${projectPath} → ${encodedDirName}`);
             return;
           }
         }
@@ -197,7 +196,6 @@ export class DataCollectorService implements OnModuleInit {
       // 如果找到候选目录，使用它
       if (candidateDir) {
         this.pathToEncodedDirCache.set(projectPath, candidateDir.encodedDirName);
-        this.logger.log(`✅ 通过目录名和时间匹配找到项目: ${projectPath} → ${candidateDir.encodedDirName}`);
         return;
       }
 
@@ -228,11 +226,8 @@ export class DataCollectorService implements OnModuleInit {
    */
   async collectAndSendData() {
     try {
-      this.logger.log('开始采集 Claude Code 数据...');
-
       // 1. 采集项目数据
       const projects = await this.collectProjects();
-      this.logger.log(`采集到 ${projects.length} 个项目`);
 
       // 2. 发送项目数据到 server
       if (projects.length > 0) {
@@ -242,7 +237,6 @@ export class DataCollectorService implements OnModuleInit {
       // 3. 采集会话元数据（V2: 使用 limit 参数 + encodedDirName）
       for (const project of projects) {
         const sessions = await this.collectSessions(project.path, 20); // 最新 20 个会话
-        this.logger.log(`项目 ${project.name} 有 ${sessions.length} 个会话`);
 
         // 4. 发送会话元数据到 server
         if (sessions.length > 0) {
@@ -252,8 +246,6 @@ export class DataCollectorService implements OnModuleInit {
           );
         }
       }
-
-      this.logger.log('数据采集完成');
     } catch (error) {
       this.logger.error(`数据采集失败: ${error.message}`);
     }
@@ -325,7 +317,6 @@ export class DataCollectorService implements OnModuleInit {
 
             // 如果无法从 JSONL 提取，跳过该项目（不再使用解码）
             if (!realProjectPath) {
-              this.logger.warn(`⚠️ 无法从 JSONL 提取项目路径，跳过: ${entry.name}`);
               continue;
             }
 
@@ -338,8 +329,6 @@ export class DataCollectorService implements OnModuleInit {
               lastAccessed: latestMtime,
               sessions: sessionFiles,
             });
-
-            this.logger.debug(`发现项目: ${projectName} (路径: ${realProjectPath}, 会话: ${sessionFiles.length}, 最后访问: ${latestMtime.toISOString()})`);
           } catch (error) {
             this.logger.error(`处理项目目录失败 ${entry.name}: ${error.message}`);
           }
@@ -373,8 +362,6 @@ export class DataCollectorService implements OnModuleInit {
     limit?: number,
   ): Promise<ClaudeSession[]> {
     try {
-      const startTime = Date.now();
-
       // V2: 从缓存查找编码目录名
       const encodedDirName = this.getEncodedDirName(projectPath);
 
@@ -392,16 +379,9 @@ export class DataCollectorService implements OnModuleInit {
         return [];
       }
 
-      const t1 = Date.now();
       const sessionFiles = await fsPromises.readdir(encodedProjectDir);
-      this.logger.log(`⏱️ [collectSessions] readdir 耗时: ${Date.now() - t1}ms, 文件数: ${sessionFiles.length}`);
 
       const sessionMetadata: ClaudeSession[] = [];
-
-      // V2 改进: 只采集元数据（mtime, fileSize, lineCount），不读取文件内容
-      const t2 = Date.now();
-      let statCount = 0;
-      let lineCountTime = 0;
 
       for (const file of sessionFiles) {
         // 只处理会话文件（UUID.jsonl），排除 agent 文件
@@ -411,12 +391,9 @@ export class DataCollectorService implements OnModuleInit {
 
           try {
             const stats = await fsPromises.stat(sessionPath);
-            statCount++;
 
             // V2: 快速统计行数，不解析 JSON（用于增量更新判断）
-            const tLineCount = Date.now();
             const lineCount = await this.countFileLines(sessionPath);
-            lineCountTime += Date.now() - tLineCount;
 
             // 检查是否为 summary 文件（只有一行且 type 为 summary）
             if (lineCount === 1) {
@@ -448,21 +425,14 @@ export class DataCollectorService implements OnModuleInit {
         }
       }
 
-      this.logger.log(`⏱️ [collectSessions] 处理文件耗时: ${Date.now() - t2}ms (stat: ${statCount}次, lineCount总计: ${lineCountTime}ms)`);
-
       // V2 改进: 按最后更新时间倒序排序
-      const t3 = Date.now();
       sessionMetadata.sort((a, b) => b.lastUpdated.getTime() - a.lastUpdated.getTime());
-      this.logger.log(`⏱️ [collectSessions] 排序耗时: ${Date.now() - t3}ms`);
 
       // 如果指定了 limit，只返回前 N 个
       if (limit && limit > 0) {
-        const result = sessionMetadata.slice(0, limit);
-        this.logger.log(`⏱️ [collectSessions] 总耗时: ${Date.now() - startTime}ms, 返回 ${result.length} 个会话`);
-        return result;
+        return sessionMetadata.slice(0, limit);
       }
 
-      this.logger.log(`⏱️ [collectSessions] 总耗时: ${Date.now() - startTime}ms, 返回 ${sessionMetadata.length} 个会话`);
       return sessionMetadata;
     } catch (error) {
       this.logger.error(`采集会话失败: ${error.message}`);
@@ -564,7 +534,6 @@ export class DataCollectorService implements OnModuleInit {
       const existing = this.fileWatchers.get(sessionId);
       if (existing) {
         existing.subscriberCount++;
-        this.logger.log(`📌 [监听] 会话已在监听中，订阅数 +1: ${sessionId} (订阅数: ${existing.subscriberCount})`);
         return;
       }
 
@@ -593,9 +562,6 @@ export class DataCollectorService implements OnModuleInit {
       });
 
       watcher.on('change', async (eventType) => {
-        this.logger.log(`🔔 [文件变化] ${eventType} - ${sessionId}`);
-        this.logger.log(`📄 文件路径: ${sessionFilePath}`);
-
         // 处理文件变化
         await this.handleSessionFileChange(projectPath, sessionId);
       });
@@ -610,11 +576,6 @@ export class DataCollectorService implements OnModuleInit {
         projectPath,
         subscriberCount: 1,
       });
-
-      this.logger.log(`✅ [开始监听] 会话: ${sessionId}`);
-      this.logger.log(`   项目: ${projectPath}`);
-      this.logger.log(`   文件: ${sessionFilePath}`);
-      this.logger.log(`   当前活跃监听数: ${this.fileWatchers.size}`);
     } catch (error) {
       this.logger.error(`❌ [监听失败] ${sessionId}: ${error.message}`);
     }
@@ -632,14 +593,11 @@ export class DataCollectorService implements OnModuleInit {
 
     // 减少订阅计数
     existing.subscriberCount--;
-    this.logger.log(`📌 [停止监听] 订阅数 -1: ${sessionId} (剩余订阅数: ${existing.subscriberCount})`);
 
     // 如果没有订阅者了，关闭监听器
     if (existing.subscriberCount <= 0) {
       existing.watcher.close();
       this.fileWatchers.delete(sessionId);
-      this.logger.log(`🛑 [关闭监听] 会话: ${sessionId}`);
-      this.logger.log(`   当前活跃监听数: ${this.fileWatchers.size}`);
     }
   }
 
@@ -650,7 +608,6 @@ export class DataCollectorService implements OnModuleInit {
     try {
       // 检查是否在 Remote 模式处理中（暂停推送）
       if (this.pausedSessions.has(sessionId)) {
-        this.logger.log(`⏸️  [跳过推送] Session 在 Remote 模式处理中: ${sessionId}`);
         return;
       }
 
@@ -660,10 +617,13 @@ export class DataCollectorService implements OnModuleInit {
       if (result && result.messages.length > 0) {
         const latestMessage = result.messages[0];
 
-        this.logger.log(`📨 检测到新消息: ${sessionId}`);
-
-        // 通知 Server 推送新消息
+        // 立即推送消息（不阻塞）
         await this.serverClient.notifyNewMessage(sessionId, latestMessage);
+
+        // 异步推送 metrics（不影响消息推送）
+        this.extractAndPushMetrics(sessionId, projectPath).catch(err => {
+          this.logger.error(`📊 Metrics 推送失败: ${err.message}`);
+        });
       }
 
       // 更新项目的 lastAccessed 时间
@@ -687,6 +647,99 @@ export class DataCollectorService implements OnModuleInit {
       }
     } catch (error) {
       this.logger.error(`处理文件变化失败: ${error.message}`);
+    }
+  }
+
+  /**
+   * 公开方法：推送初始 metrics（在 session 订阅时调用）
+   */
+  async pushInitialMetrics(sessionId: string, projectPath: string): Promise<void> {
+    await this.extractAndPushMetrics(sessionId, projectPath);
+  }
+
+  /**
+   * 异步提取并推送 metrics（不阻塞消息推送）
+   */
+  private async extractAndPushMetrics(sessionId: string, projectPath: string): Promise<void> {
+    try {
+      const metrics = await this.extractSessionMetrics(sessionId, projectPath);
+      if (metrics) {
+        await this.serverClient.notifyMetricsUpdate(sessionId, metrics);
+      }
+    } catch (error) {
+      this.logger.error(`Metrics 推送失败: ${error.message}`);
+    }
+  }
+
+  /**
+   * 从 transcript 提取 metrics
+   * 参考 statusline/context.ts 和 tokens.ts 的实现
+   * Phase 1: 直接读整个文件（简单可靠）
+   */
+  private async extractSessionMetrics(sessionId: string, projectPath: string): Promise<SessionMetrics | null> {
+    try {
+      // 先验证 projectPath 是否在缓存中
+      const encodedDirName = this.getEncodedDirName(projectPath);
+      if (!encodedDirName) {
+        return null;
+      }
+
+      // 读取所有消息（正序，从旧到新）
+      // 限制最多读取 1000 条消息以避免内存问题
+      const result = await this.getSessionMessages(sessionId, projectPath, 1000, 0, 'asc');
+      if (!result || result.messages.length === 0) {
+        return null;
+      }
+
+      // 参考 statusline/context.ts 和 tokens.ts 的实现
+      let mostRecentUsage: any = null;
+      let mostRecentTimestamp: Date | null = null;
+      let totalInput = 0;
+      let totalOutput = 0;
+
+      for (const msg of result.messages) {
+        const usage = msg.message?.usage;
+        if (!usage) continue;
+
+        // 累计所有 token 数量
+        totalInput += usage.input_tokens || 0;
+        totalOutput += usage.output_tokens || 0;
+
+        // 找最近的 main chain 消息（用于计算 context length）
+        if (!msg.isSidechain && !msg.isApiErrorMessage && msg.timestamp) {
+          const msgTime = new Date(msg.timestamp);
+          if (!mostRecentTimestamp || msgTime > mostRecentTimestamp) {
+            mostRecentTimestamp = msgTime;
+            mostRecentUsage = usage;
+          }
+        }
+      }
+
+      if (!mostRecentUsage) {
+        return null;
+      }
+
+      // 计算 context length（input tokens + cache tokens）
+      const contextLength =
+        (mostRecentUsage.input_tokens || 0) +
+        (mostRecentUsage.cache_read_input_tokens || 0) +
+        (mostRecentUsage.cache_creation_input_tokens || 0);
+
+      // 计算百分比（基于 200k context window）
+      const contextPercentage = (contextLength / 200000) * 100;
+
+      return {
+        connected: true,
+        mode: 'local',
+        contextLength,
+        contextPercentage,
+        inputTokens: totalInput,
+        outputTokens: totalOutput,
+        timestamp: Date.now(),
+      };
+    } catch (error) {
+      this.logger.error(`提取 Metrics 失败: ${error.message}`);
+      return null;
     }
   }
 
@@ -774,19 +827,13 @@ export class DataCollectorService implements OnModuleInit {
   async handleFindNewSession(data: { clientId: string; projectPath: string }) {
     const { clientId, projectPath } = data;
 
-    this.logger.log(`🔍 [查找新Session] 开始查找: clientId=${clientId}`);
-    this.logger.log(`   项目路径: ${projectPath}`);
-
     // 1. 先检查缓存中是否有映射
     let encodedDirName = this.getEncodedDirName(projectPath);
 
     // 2. 如果没有映射，刷新映射
     if (!encodedDirName) {
-      this.logger.log(`🔄 [查找新Session] 缓存中无映射，刷新中...`);
       await this.refreshProjectMapping(projectPath);
       encodedDirName = this.getEncodedDirName(projectPath);
-    } else {
-      this.logger.log(`✅ [查找新Session] 使用缓存映射: ${encodedDirName}`);
     }
 
     // 3. 如果还是没有映射，说明项目不存在
@@ -803,13 +850,9 @@ export class DataCollectorService implements OnModuleInit {
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        this.logger.debug(`🔍 [查找新Session] 第 ${attempt} 次尝试，目录: ${encodedDirName}`);
-
         const files = await fsPromises.readdir(projectDir);
         const sessionFiles = files.filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'));
         const now = Date.now();
-
-        this.logger.debug(`   Session 文件数: ${sessionFiles.length}`);
 
         let latestSession: { sessionId: string; mtime: number } | null = null;
 
@@ -817,8 +860,6 @@ export class DataCollectorService implements OnModuleInit {
           const filePath = path.join(projectDir, file);
           const fileStat = await fsPromises.stat(filePath);
           const ageInSeconds = (now - fileStat.mtimeMs) / 1000;
-
-          this.logger.debug(`   文件: ${file}, 创建于 ${ageInSeconds.toFixed(1)} 秒前`);
 
           // 只考虑最近 60 秒内创建的文件
           if (ageInSeconds < 60) {
@@ -828,16 +869,11 @@ export class DataCollectorService implements OnModuleInit {
                 sessionId,
                 mtime: fileStat.mtimeMs,
               };
-              this.logger.debug(`   ✅ 候选: ${sessionId}`);
             }
-          } else {
-            this.logger.debug(`   ⏭️  跳过（超过60秒）`);
           }
         }
 
         if (latestSession) {
-          this.logger.log(`✅ [查找新Session] 找到了: ${latestSession.sessionId} (第 ${attempt} 次尝试)`);
-          this.logger.log(`   目录: ${encodedDirName}`);
 
           // 通知 Server
           await this.serverClient.notifyNewSessionFound(
@@ -851,7 +887,6 @@ export class DataCollectorService implements OnModuleInit {
 
         // 未找到，等待后重试
         if (attempt < maxRetries) {
-          this.logger.debug(`🔄 [查找新Session] 未找到，等待 ${retryInterval}ms 后重试 (${attempt}/${maxRetries})`);
           await new Promise(resolve => setTimeout(resolve, retryInterval));
         }
       } catch (error) {
@@ -874,7 +909,6 @@ export class DataCollectorService implements OnModuleInit {
   @OnEvent('session.pausePush')
   handlePausePush(data: { sessionId: string }) {
     this.pausedSessions.add(data.sessionId);
-    this.logger.log(`⏸️  [暂停推送] Session: ${data.sessionId}`);
   }
 
   /**
@@ -883,7 +917,6 @@ export class DataCollectorService implements OnModuleInit {
   @OnEvent('session.resumePush')
   handleResumePush(data: { sessionId: string }) {
     this.pausedSessions.delete(data.sessionId);
-    this.logger.log(`▶️  [恢复推送] Session: ${data.sessionId}`);
   }
 
   /**
@@ -892,9 +925,6 @@ export class DataCollectorService implements OnModuleInit {
   @OnEvent('daemon.watchNewSession')
   async handleWatchNewSession(data: { clientId: string; projectPath: string }) {
     const { clientId, projectPath } = data;
-
-    this.logger.log(`👀 [监听新Session] 开始监听: clientId=${clientId}`);
-    this.logger.log(`   项目路径: ${projectPath}`);
 
     try {
       // 刷新项目映射（如果是新项目）
@@ -905,10 +935,8 @@ export class DataCollectorService implements OnModuleInit {
 
       // 如果仍然找不到（说明是全新项目），主动创建映射
       if (!encodedDirName) {
-        this.logger.log(`🆕 [监听新Session] 创建新项目映射: ${projectPath}`);
         encodedDirName = this.encodeProjectPath(projectPath);
         this.pathToEncodedDirCache.set(projectPath, encodedDirName);
-        this.logger.log(`   编码目录名: ${encodedDirName}`);
       }
 
       const projectDir = path.join(this.claudeProjectsPath, encodedDirName);
@@ -919,21 +947,16 @@ export class DataCollectorService implements OnModuleInit {
       } catch {
         // 目录不存在，创建它
         await fsPromises.mkdir(projectDir, { recursive: true });
-        this.logger.log(`📁 [监听新Session] 创建项目目录: ${projectDir}`);
       }
 
       // 记录当前已有的 session 文件
       const files = await fsPromises.readdir(projectDir);
       const existingFiles = new Set(files.filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-')));
 
-      this.logger.log(`   当前已有 ${existingFiles.size} 个 session 文件`);
-
       // 创建文件监听器
       const watcher = fs.watch(projectDir, async (eventType, filename) => {
         if (filename && filename.endsWith('.jsonl') && !filename.startsWith('agent-') && !existingFiles.has(filename)) {
           const sessionId = path.basename(filename, '.jsonl');
-          this.logger.log(`🆕 [检测到新Session] ${sessionId}`);
-          this.logger.log(`   文件: ${filename}`);
 
           // 停止监听
           watcher.close();
@@ -951,8 +974,6 @@ export class DataCollectorService implements OnModuleInit {
         existingFiles,
       });
 
-      this.logger.log(`✅ [监听新Session] 监听器已启动`);
-
       // 立即通知 CLI 监听器已就绪
       await this.serverClient.notifyWatchStarted(clientId, projectPath);
     } catch (error) {
@@ -968,7 +989,6 @@ export class DataCollectorService implements OnModuleInit {
     if (watchInfo) {
       watchInfo.watcher.close();
       this.newSessionWatchers.delete(clientId);
-      this.logger.log(`🛑 [停止监听新Session] clientId=${clientId}`);
     }
   }
 
@@ -1012,7 +1032,6 @@ export class DataCollectorService implements OnModuleInit {
       if (lastMessage.role === 'assistant') {
         // 如果没有 ts 字段（完成时间戳），说明正在生成
         if (!lastMessage.ts) {
-          this.logger.log(`[isSessionLoading] Session ${sessionId} 正在生成（无 ts）`);
           return true;
         }
       }
@@ -1021,7 +1040,6 @@ export class DataCollectorService implements OnModuleInit {
       const stats = await fsPromises.stat(sessionPath);
       const ageInMs = Date.now() - stats.mtimeMs;
       if (ageInMs < 5000) {
-        this.logger.log(`[isSessionLoading] Session ${sessionId} 文件最近被修改（${ageInMs}ms 前）`);
         return true;
       }
 

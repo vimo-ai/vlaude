@@ -137,12 +137,15 @@ struct SessionDetailView: View {
 
             Divider()
 
+            // 状态栏（放在输入框上方）
+            SessionStatusBar(statusData: viewModel.statusData)
+
             // 底部输入框
             MessageInputView(text: $inputText) {
                 sendMessage()
             }
         }
-        .navigationTitle("会话详情")
+        .navigationTitle(String(sessionId.prefix(8)))
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await viewModel.loadSessionDetail(sessionId: sessionId)
@@ -409,6 +412,13 @@ struct DisplayMessageBubble: View {
 }
 
 // 工具执行气泡组件
+// 💡 当前实现：使用 Markdown 渲染 Edit 工具的代码 diff
+// 🚀 未来升级（方案二）：
+//    可以创建专业的 DiffView 组件，支持：
+//    - 左右对比视图（Split Diff）
+//    - 统一 diff 视图（Unified Diff）
+//    - 字符级精确 diff 高亮
+//    - 数据来源：Message.toolUseResult 中的 oldString/newString
 struct ToolExecutionBubble: View {
     let execution: ToolExecution
     @State private var isExpanded = false
@@ -475,20 +485,31 @@ struct ToolExecutionBubble: View {
                                 .foregroundColor(.red)
                         }
 
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(displayResultContent)
-                                .font(.system(size: 12, design: .monospaced))
-                                .foregroundColor(execution.result?.isError == true ? .red : .primary)
+                        // 根据工具类型选择渲染方式
+                        if execution.shouldRenderAsMarkdown,
+                           let markdownContent = execution.formattedResultAsMarkdown {
+                            // 使用 Markdown 渲染（适用于 Edit 工具等）
+                            Markdown(markdownContent)
+                                .markdownTheme(.claudeCode)
+                                .markdownCodeSyntaxHighlighter(HighlightrCodeSyntaxHighlighter())
                                 .textSelection(.enabled)
+                        } else {
+                            // 普通文本显示
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(displayResultContent)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .foregroundColor(execution.result?.isError == true ? .red : .primary)
+                                    .textSelection(.enabled)
 
-                            if isResultLong {
-                                Button(action: {
-                                    // 不使用动画，直接切换
-                                    isExpanded.toggle()
-                                }) {
-                                    Text(isExpanded ? "收起" : "查看更多")
-                                        .font(.caption)
-                                        .foregroundColor(.blue)
+                                if isResultLong {
+                                    Button(action: {
+                                        // 不使用动画，直接切换
+                                        isExpanded.toggle()
+                                    }) {
+                                        Text(isExpanded ? "收起" : "查看更多")
+                                            .font(.caption)
+                                            .foregroundColor(.blue)
+                                    }
                                 }
                             }
                         }
@@ -510,6 +531,20 @@ struct ToolExecutionBubble: View {
 struct MessageDetailSheet: View {
     let message: DisplayMessage
     @Environment(\.dismiss) var dismiss
+
+    // 检测是否包含 Markdown 标记
+    private var hasMarkdown: Bool {
+        let content = message.textContent
+        return content.contains("```") ||       // 代码块
+               content.contains("**") ||        // 粗体
+               content.contains("__") ||        // 粗体
+               content.contains("*") ||         // 斜体
+               content.contains("_") ||         // 斜体
+               content.contains("#") ||         // 标题
+               content.contains("[") ||         // 链接
+               content.contains("|") ||         // 表格
+               content.contains(">")            // 引用
+    }
 
     var body: some View {
         NavigationView {
@@ -618,9 +653,19 @@ struct MessageDetailSheet: View {
                                 .font(.headline)
                                 .foregroundColor(.secondary)
 
-                            Text(message.textContent)
-                                .font(.body)
-                                .textSelection(.enabled)
+                            // 根据内容类型选择渲染方式
+                            if hasMarkdown {
+                                // Markdown 内容
+                                Markdown(message.textContent)
+                                    .markdownTheme(.claudeCode)
+                                    .markdownCodeSyntaxHighlighter(HighlightrCodeSyntaxHighlighter())
+                                    .textSelection(.enabled)
+                            } else {
+                                // 普通文本
+                                Text(message.textContent)
+                                    .font(.body)
+                                    .textSelection(.enabled)
+                            }
                         }
                         .padding()
                         .background(Color.gray.opacity(0.1))

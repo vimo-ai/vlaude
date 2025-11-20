@@ -308,6 +308,23 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * 通知 Server 推送 Metrics 更新到客户端
+   */
+  async notifyMetricsUpdate(sessionId: string, metrics: any) {
+    if (!this.isConnected()) {
+      this.logger.warn('未连接到 Server，无法推送 Metrics');
+      return false;
+    }
+
+    this.socket.emit('daemon:metricsUpdate', {
+      sessionId,
+      metrics,
+    });
+
+    return true;
+  }
+
+  /**
    * 通知 Server 找到了新 session
    */
   async notifyNewSessionFound(clientId: string, sessionId: string, projectPath: string, encodedDirName: string) {
@@ -429,6 +446,11 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
 
     if (this.dataCollectorService) {
       await this.dataCollectorService.startWatchingSession(sessionId, projectPath);
+
+      // 开始监听后，立即推送一次当前的 metrics
+      this.dataCollectorService.pushInitialMetrics(sessionId, projectPath).catch(err => {
+        this.logger.warn(`初始 Metrics 推送失败: ${err.message}`);
+      });
     } else {
       this.logger.error('❌ DataCollectorService not available');
     }
