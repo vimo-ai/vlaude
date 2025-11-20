@@ -590,6 +590,15 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
         if (this.approvalPromises.has(requestId)) {
           this.approvalPromises.delete(requestId);
           this.logger.warn(`⚠️ [权限请求] 超时: ${requestId}`);
+
+          // 发送超时通知给前端（通过 Server）
+          this.socket.emit('daemon:approvalTimeout', {
+            requestId,
+            sessionId,
+            clientId,
+          });
+          this.logger.log(`📤 [权限超时] 已通知前端: ${clientId}`);
+
           resolve({ approved: false, reason: '请求超时' });
         }
       }, timeout);
@@ -614,6 +623,13 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
       this.approvalPromises.delete(requestId);
     } else {
       this.logger.warn(`⚠️ [权限响应] 未找到对应的请求: ${requestId}`);
+
+      // 通知前端：这是一个延迟响应，请求已超时
+      this.socket.emit('daemon:approvalExpired', {
+        requestId,
+        message: '权限请求已超时，请重新发起操作',
+      });
+      this.logger.log(`📤 [延迟响应] 已通知前端请求已过期`);
     }
   }
 
@@ -633,5 +649,44 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
       default:
         return `调用工具: ${toolName}`;
     }
+  }
+
+  /**
+   * 通知前端 SDK 错误（停止 loading）
+   */
+  async notifySDKError(sessionId: string, clientId: string, error: { type: string; message: string }) {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot notify SDK error');
+      return false;
+    }
+
+    this.socket.emit('daemon:sdkError', {
+      sessionId,
+      clientId,
+      error,
+    });
+
+    this.logger.log(`📤 [SDK 错误] 已通知前端: ${clientId}`);
+    this.logger.log(`   Type: ${error.type}`);
+    this.logger.log(`   Message: ${error.message}`);
+    return true;
+  }
+
+  /**
+   * 通知 Server：Swift 正在活动，检查是否需要重新进入 remote mode
+   */
+  async notifySwiftActivity(sessionId: string, projectPath: string) {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot notify Swift activity');
+      return false;
+    }
+
+    this.socket.emit('daemon:swiftActivity', {
+      sessionId,
+      projectPath,
+    });
+
+    this.logger.log(`📤 [Swift 活动] 已通知 Server: ${sessionId}`);
+    return true;
   }
 }

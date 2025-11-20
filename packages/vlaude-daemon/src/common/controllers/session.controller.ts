@@ -17,6 +17,7 @@ import { DataCollectorService } from '../../module/data-collector/data-collector
 import { ServerClientService } from '../../module/server-client/server-client.service';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter2 } from '@nestjs/event-emitter';
+import { ConfigLoaderService } from '../../module/config-loader/config-loader.service';
 
 @Controller('sessions')
 export class SessionController {
@@ -26,6 +27,7 @@ export class SessionController {
     private readonly dataCollector: DataCollectorService,
     private readonly serverClient: ServerClientService,
     private readonly eventEmitter: EventEmitter2,
+    private readonly configLoader: ConfigLoaderService,
   ) {}
 
   /**
@@ -107,6 +109,13 @@ export class SessionController {
     this.logger.log(`   Project: ${projectPath}`);
     this.logger.log(`   Text length: ${text.length}`);
 
+    // 通知 Server：Swift 正在操作，检查是否需要重新进入 remote mode
+    try {
+      await this.serverClient.notifySwiftActivity(sessionId, projectPath);
+    } catch (err) {
+      this.logger.warn(`⚠️ 通知 Server Swift 活动失败: ${err.message}`);
+    }
+
     try {
       // V2: 从缓存查找编码目录名
       const encodedDirName = this.dataCollector['getEncodedDirName'](projectPath);
@@ -150,11 +159,19 @@ export class SessionController {
       this.eventEmitter.emit('session.pausePush', { sessionId });
       this.logger.log(`⏸️  [Remote] 暂停 FileWatcher 推送: ${sessionId}`);
 
+      // 加载完整的 SDK 配置（agents, MCP, hooks 等）
+      this.logger.log(`📦 [SDK] 加载配置...`);
+      const sdkConfig = await this.configLoader.getFullSdkConfig(projectPath);
+      this.logger.log(`   Agents: ${Object.keys(sdkConfig.agents || {}).length} 个`);
+      this.logger.log(`   MCP Servers: ${Object.keys(sdkConfig.mcpServers || {}).length} 个`);
+
       const result = query({
         prompt: text,
         options: {
           resume: sessionId,
           cwd: projectPath,
+          // 完整的 SDK 配置
+          ...sdkConfig,
           // 权限请求回调
           canUseTool: async (toolName, input, options) => {
             const { toolUseID, signal } = options;
@@ -271,6 +288,14 @@ export class SessionController {
       // 错误时保持暂停状态，等待 CLI 切回 Local 或用户重试
       this.logger.log(`⚠️  [Remote] 处理失败，保持暂停状态`);
 
+      // 通知前端停止 loading
+      if (clientId) {
+        await this.serverClient.notifySDKError(sessionId, clientId, {
+          type: 'sdk_error',
+          message: error.message || 'SDK 处理失败',
+        });
+      }
+
       return {
         success: false,
         message: `SDK 处理失败: ${error.message}`,
@@ -360,12 +385,18 @@ export class SessionController {
     this.logger.log(`   现有 session 数量: ${existingFiles.size}`);
     this.logger.log(`🤖 [创建对话] 使用 SDK query() 创建 session...`);
 
-    // 4. 使用 SDK query() 发送初始消息创建 session
+    // 4. 加载完整的 SDK 配置
+    const sdkConfig = await this.configLoader.getFullSdkConfig(projectPath);
+    this.logger.log(`   Agents: ${Object.keys(sdkConfig.agents || {}).length} 个`);
+    this.logger.log(`   MCP Servers: ${Object.keys(sdkConfig.mcpServers || {}).length} 个`);
+
+    // 5. 使用 SDK query() 发送初始消息创建 session
     const actualPrompt = prompt || 'Hi';
     const result = query({
       prompt: actualPrompt,
       options: {
         cwd: projectPath,
+        ...sdkConfig,
       },
     });
 
@@ -457,11 +488,17 @@ export class SessionController {
       this.logger.log(`   现有 session 数量: ${existingFiles.size}`);
       this.logger.log(`🤖 [测试] 调用 SDK query() 创建 session...`);
 
-      // 6. 使用 SDK query() 发送一个初始消息来创建 session
+      // 6. 加载完整的 SDK 配置
+      const sdkConfig = await this.configLoader.getFullSdkConfig(projectPath);
+      this.logger.log(`   Agents: ${Object.keys(sdkConfig.agents || {}).length} 个`);
+      this.logger.log(`   MCP Servers: ${Object.keys(sdkConfig.mcpServers || {}).length} 个`);
+
+      // 7. 使用 SDK query() 发送一个初始消息来创建 session
       const result = query({
         prompt: 'Hi',
         options: {
           cwd: projectPath,
+          ...sdkConfig,
         },
       });
 
@@ -512,6 +549,38 @@ export class SessionController {
       return {
         success: false,
         message: `测试失败: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * 检查 session 是否在 loading 状态
+   * POST /sessions/check-loading
+   *
+   * @param sessionId 会话 ID
+   * @param projectPath 项目路径
+   * @returns { loading: boolean }
+   */
+  @Post('check-loading')
+  async checkLoading(@Body() data: { sessionId: string; projectPath: string }) {
+    try {
+      const { sessionId, projectPath } = data;
+      this.logger.log(`[检查Loading] sessionId=${sessionId}, projectPath=${projectPath}`);
+
+      const loading = await this.dataCollector.isSessionLoading(sessionId, projectPath);
+
+      this.logger.log(`[检查Loading] 结果: ${loading ? '正在 loading' : '空闲'}`);
+
+      return {
+        success: true,
+        loading,
+      };
+    } catch (error) {
+      this.logger.error(`[检查Loading] 失败: ${error.message}`);
+      return {
+        success: false,
+        loading: false, // 出错时默认认为不在 loading
+        message: error.message,
       };
     }
   }
