@@ -12,6 +12,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../../shared/database/prisma.service';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 interface ProjectData {
   name: string;
@@ -37,6 +38,7 @@ export class ProjectService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly eventEmitter: EventEmitter2,
   ) {
     // 从环境变量读取 Daemon 地址
     const daemonPort = this.config.get<number>('DAEMON_PORT', 10006);
@@ -84,65 +86,75 @@ export class ProjectService {
    * @returns 按最新 mtime 排序的项目列表 + 分页信息
    */
   async getAllProjects(limit: number = 10, offset: number = 0) {
+    this.logger.log(`📋 获取项目列表，limit=${limit}, offset=${offset}`);
+
+    // 阶段 1: 快速响应 - 立即从数据库返回缓存（<50ms）
+    const cachedProjects = await this.prisma.project.findMany({
+      where: { isDeleted: false },
+      orderBy: { lastModified: 'desc' },
+      skip: offset,
+      take: limit,
+    });
+
+    const total = await this.prisma.project.count({
+      where: { isDeleted: false },
+    });
+    const hasMore = offset + cachedProjects.length < total;
+
+    this.logger.log(`⚡ 快速返回缓存: ${cachedProjects.length} 个项目 (total=${total})`);
+
+    // 阶段 2: 后台刷新（不阻塞响应）
+    setImmediate(() => {
+      this.refreshProjectsInBackground(limit, offset).catch(error => {
+        this.logger.error(`后台刷新失败: ${error.message}`);
+      });
+    });
+
+    return { projects: cachedProjects, total, hasMore };
+  }
+
+  /**
+   * 后台刷新项目列表（异步，不阻塞响应）
+   */
+  private async refreshProjectsInBackground(limit: number, offset: number) {
     try {
-      this.logger.log(`📋 获取项目列表，limit=${limit}, offset=${offset}`);
+      this.logger.debug(`🔄 开始后台刷新项目列表`);
 
       // 1. 从 Daemon 获取文件系统的项目元数据
       const daemonProjects = await this.fetchProjectsFromDaemon(limit, offset);
 
       if (daemonProjects.length === 0) {
-        this.logger.warn('Daemon 未返回任何项目');
-        const total = await this.prisma.project.count({
-          where: { isDeleted: false },
-        });
-        return { projects: [], total, hasMore: false };
+        this.logger.debug('后台刷新: Daemon 未返回任何项目');
+        return;
       }
 
-      this.logger.log(`📦 Daemon 返回 ${daemonProjects.length} 个项目`);
+      this.logger.debug(`📦 后台刷新: Daemon 返回 ${daemonProjects.length} 个项目`);
 
       // 2. 增量更新策略：对比 mtime，识别新/旧项目
       const { newProjects, unchangedProjects } = await this.categorizeProjects(daemonProjects);
 
-      this.logger.log(`🆕 新项目: ${newProjects.length} 个, 📦 未变化: ${unchangedProjects.length} 个`);
+      this.logger.debug(`🆕 后台刷新: 新项目 ${newProjects.length} 个, 未变化 ${unchangedProjects.length} 个`);
 
-      // 3. 对于新项目，更新数据库缓存
-      await this.updateProjectCache(newProjects);
+      // 3. 如果有新项目，更新数据库缓存
+      if (newProjects.length > 0) {
+        await this.updateProjectCache(newProjects);
 
-      // 4. 从数据库查询完整数据（不包含 sessions,项目列表页面不需要）
-      const projectPaths = daemonProjects.map(p => p.path);
-      const projects = await this.prisma.project.findMany({
-        where: {
-          path: { in: projectPaths },
-          isDeleted: false,
-        },
-        orderBy: {
-          lastModified: 'desc',
-        },
-      });
+        // 4. 通过 WebSocket 推送更新通知
+        this.eventEmitter.emit('app.notifyProjectUpdate', {
+          projectPath: 'list-updated',  // 标记为列表更新
+          metadata: {
+            updatedCount: newProjects.length,
+            projects: newProjects.map(p => p.path),
+          },
+        });
 
-      // 5. 获取总数并判断是否还有更多
-      const total = await this.prisma.project.count({
-        where: { isDeleted: false },
-      });
-      const hasMore = offset + projects.length < total;
-
-      this.logger.log(`✅ 返回 ${projects.length} 个项目 (offset=${offset}, total=${total}, hasMore=${hasMore})`);
-      return { projects, total, hasMore };
+        this.logger.log(`✅ 后台刷新完成: 更新了 ${newProjects.length} 个项目，已推送 WebSocket 通知`);
+      } else {
+        this.logger.debug(`✅ 后台刷新完成: 无变化`);
+      }
 
     } catch (error) {
-      this.logger.error(`获取项目列表失败: ${error.message}`);
-      // 降级方案：如果 Daemon 不可用，从数据库读取
-      const projects = await this.prisma.project.findMany({
-        where: { isDeleted: false },
-        orderBy: { lastModified: 'desc' },
-        skip: offset,
-        take: limit,
-      });
-      const total = await this.prisma.project.count({
-        where: { isDeleted: false },
-      });
-      const hasMore = offset + projects.length < total;
-      return { projects, total, hasMore };
+      this.logger.error(`后台刷新失败: ${error.message}`);
     }
   }
 

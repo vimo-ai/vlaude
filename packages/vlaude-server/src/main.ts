@@ -44,6 +44,10 @@ async function bootstrap() {
       await app.close();
       console.log('✅ Application closed successfully');
 
+      // 等待 500ms 确保端口完全释放（避免 TIME_WAIT 状态导致的端口占用）
+      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log('✅ Port cleanup completed');
+
       process.exit(0);
     } catch (error) {
       console.error('❌ Error during shutdown:', error);
