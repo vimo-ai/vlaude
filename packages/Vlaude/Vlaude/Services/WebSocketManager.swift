@@ -179,6 +179,24 @@ class WebSocketManager: ObservableObject {
             print("🔔 [Socket.IO] 收到权限请求!")
             self?.handleApprovalRequest(data: data)
         }
+
+        // 监听权限超时
+        socket.on("approval-timeout") { [weak self] data, ack in
+            print("⏰ [Socket.IO] 收到权限超时通知!")
+            self?.handleApprovalTimeout(data: data)
+        }
+
+        // 监听延迟响应
+        socket.on("approval-expired") { [weak self] data, ack in
+            print("⚠️ [Socket.IO] 收到延迟响应通知!")
+            self?.handleApprovalExpired(data: data)
+        }
+
+        // 监听 SDK 错误
+        socket.on("sdk-error") { [weak self] data, ack in
+            print("❌ [Socket.IO] 收到 SDK 错误通知!")
+            self?.handleSDKError(data: data)
+        }
     }
 
     private func handleBusinessEvent(_ event: WebSocketEvent, data: [Any]) {
@@ -386,6 +404,112 @@ class WebSocketManager: ObservableObject {
         print("   Approved: \(approved)")
         if let reason = reason {
             print("   Reason: \(reason)")
+        }
+    }
+
+    /// 处理权限超时通知
+    private func handleApprovalTimeout(data: [Any]) {
+        print("⏰ [Socket.IO] 处理权限超时")
+
+        guard let payload = data.first else {
+            print("⚠️ [Socket.IO] 超时通知数据为空")
+            return
+        }
+
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: payload)
+            if let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+               let requestId = json["requestId"] as? String,
+               let message = json["message"] as? String {
+
+                print("⏰ [Socket.IO] 权限超时:")
+                print("   RequestID: \(requestId)")
+                print("   Message: \(message)")
+
+                // 通过通知发送，让 ViewModel 关闭 Alert
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("ApprovalTimeout"),
+                    object: nil,
+                    userInfo: [
+                        "requestId": requestId,
+                        "message": message
+                    ]
+                )
+            }
+        } catch {
+            print("❌ [Socket.IO] 超时通知解析失败: \(error)")
+        }
+    }
+
+    /// 处理延迟响应通知
+    private func handleApprovalExpired(data: [Any]) {
+        print("⚠️ [Socket.IO] 处理延迟响应")
+
+        guard let payload = data.first else {
+            print("⚠️ [Socket.IO] 延迟响应数据为空")
+            return
+        }
+
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: payload)
+            if let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+               let requestId = json["requestId"] as? String,
+               let message = json["message"] as? String {
+
+                print("⚠️ [Socket.IO] 延迟响应:")
+                print("   RequestID: \(requestId)")
+                print("   Message: \(message)")
+
+                // 通过通知发送，让 UI 显示错误提示
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("ApprovalExpired"),
+                    object: nil,
+                    userInfo: [
+                        "requestId": requestId,
+                        "message": message
+                    ]
+                )
+            }
+        } catch {
+            print("❌ [Socket.IO] 延迟响应解析失败: \(error)")
+        }
+    }
+
+    /// 处理 SDK 错误通知
+    private func handleSDKError(data: [Any]) {
+        print("❌ [Socket.IO] 处理 SDK 错误")
+
+        guard let payload = data.first else {
+            print("⚠️ [Socket.IO] SDK 错误数据为空")
+            return
+        }
+
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: payload)
+            if let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+               let sessionId = json["sessionId"] as? String,
+               let error = json["error"] as? [String: Any],
+               let errorType = error["type"] as? String,
+               let errorMessage = error["message"] as? String {
+
+                print("❌ [Socket.IO] SDK 错误:")
+                print("   SessionId: \(sessionId)")
+                print("   Type: \(errorType)")
+                print("   Message: \(errorMessage)")
+
+                // 通过通知发送，让 ViewModel 停止 loading
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("SDKError"),
+                    object: nil,
+                    userInfo: [
+                        "sessionId": sessionId,
+                        "errorType": errorType,
+                        "errorMessage": errorMessage
+                    ]
+                )
+            }
+        } catch {
+            print("❌ [Socket.IO] SDK 错误解析失败: \(error)")
         }
     }
 }

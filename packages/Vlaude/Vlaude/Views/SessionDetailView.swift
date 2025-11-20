@@ -18,6 +18,9 @@ struct SessionDetailView: View {
     // 权限请求相关状态
     @State private var showApprovalAlert = false
     @State private var currentApprovalRequest: (requestId: String, toolName: String, description: String)?
+    @State private var showTimeoutError = false
+    @State private var showExpiredError = false
+    @State private var errorMessage = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -183,6 +186,55 @@ struct SessionDetailView: View {
                 currentApprovalRequest = (requestId, toolName, description)
                 showApprovalAlert = true
             }
+        }
+        // 监听权限超时通知
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ApprovalTimeout"))) { notification in
+            print("⏰ [UI] 收到权限超时通知")
+            if let message = notification.userInfo?["message"] as? String {
+                print("⏰ [UI] 关闭 Alert 并显示超时错误")
+                showApprovalAlert = false
+                currentApprovalRequest = nil
+                errorMessage = message
+                showTimeoutError = true
+            }
+        }
+        // 监听延迟响应通知
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ApprovalExpired"))) { notification in
+            print("⚠️ [UI] 收到延迟响应通知")
+            if let message = notification.userInfo?["message"] as? String {
+                print("⚠️ [UI] 显示延迟响应错误")
+                errorMessage = message
+                showExpiredError = true
+            }
+        }
+        // 监听 SDK 错误通知
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SDKError"))) { notification in
+            print("❌ [UI] 收到 SDK 错误通知")
+            if let sessionIdFromError = notification.userInfo?["sessionId"] as? String,
+               sessionIdFromError == sessionId,
+               let errorType = notification.userInfo?["errorType"] as? String,
+               let errorMsg = notification.userInfo?["errorMessage"] as? String {
+                print("❌ [UI] 停止 loading 并显示错误")
+                viewModel.isWaitingForResponse = false
+                errorMessage = "处理失败: \(errorMsg)"
+                showExpiredError = true
+            }
+        }
+        // 超时错误提示
+        .alert("权限请求超时", isPresented: $showTimeoutError) {
+            Button("确定", role: .cancel) {
+                showTimeoutError = false
+            }
+        } message: {
+            Text(errorMessage)
+        }
+        // 延迟响应错误提示
+        .alert("操作失败", isPresented: $showExpiredError) {
+            Button("确定", role: .cancel) {
+                showExpiredError = false
+            }
+        } message: {
+            Text(errorMessage)
         }
     }
 
