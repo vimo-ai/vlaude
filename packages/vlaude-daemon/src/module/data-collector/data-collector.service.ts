@@ -971,4 +971,64 @@ export class DataCollectorService implements OnModuleInit {
       this.logger.log(`🛑 [停止监听新Session] clientId=${clientId}`);
     }
   }
+
+  /**
+   * 检查 session 是否在 loading 状态（Claude 正在思考）
+   *
+   * 判断逻辑：
+   * 1. 读取最后一条消息
+   * 2. 如果是 assistant 消息且没有 `ts` 字段（完成时间戳），说明正在生成
+   * 3. 或者检查文件最近是否被修改（5秒内）
+   */
+  async isSessionLoading(sessionId: string, projectPath: string): Promise<boolean> {
+    try {
+      // 获取编码目录名
+      const encodedDirName = this.getEncodedDirName(projectPath);
+      if (!encodedDirName) {
+        this.logger.warn(`[isSessionLoading] 未找到项目映射: ${projectPath}`);
+        return false;
+      }
+
+      const encodedProjectDir = path.join(this.claudeProjectsPath, encodedDirName);
+      const sessionPath = path.join(encodedProjectDir, `${sessionId}.jsonl`);
+
+      // 检查文件是否存在
+      try {
+        await fsPromises.access(sessionPath);
+      } catch {
+        this.logger.warn(`[isSessionLoading] 文件不存在: ${sessionPath}`);
+        return false;
+      }
+
+      // 读取最后一条消息
+      const result = await this.getSessionMessages(sessionId, projectPath, 1, 0, 'desc');
+      if (!result || result.messages.length === 0) {
+        return false;
+      }
+
+      const lastMessage = result.messages[0];
+
+      // 检查是否是 assistant 消息且正在生成
+      if (lastMessage.role === 'assistant') {
+        // 如果没有 ts 字段（完成时间戳），说明正在生成
+        if (!lastMessage.ts) {
+          this.logger.log(`[isSessionLoading] Session ${sessionId} 正在生成（无 ts）`);
+          return true;
+        }
+      }
+
+      // 检查文件最近是否被修改（5秒内认为可能在 loading）
+      const stats = await fsPromises.stat(sessionPath);
+      const ageInMs = Date.now() - stats.mtimeMs;
+      if (ageInMs < 5000) {
+        this.logger.log(`[isSessionLoading] Session ${sessionId} 文件最近被修改（${ageInMs}ms 前）`);
+        return true;
+      }
+
+      return false;
+    } catch (error) {
+      this.logger.error(`[isSessionLoading] 检查失败: ${error.message}`);
+      return false;
+    }
+  }
 }

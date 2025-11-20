@@ -9,7 +9,7 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { ProjectService } from '../project/project.service';
 import { SessionService } from '../session/session.service';
@@ -27,7 +27,7 @@ import { PrismaService } from '../../shared/database/prisma.service';
   transports: ['websocket'],
 })
 export class DaemonGateway
-  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
+  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy
 {
   @WebSocketServer()
   server: Server;
@@ -510,5 +510,130 @@ export class DaemonGateway
 
     const daemon = daemons[0];
     daemon.socket.emit('server:approvalResponse', data);
+  }
+
+  /**
+   * 接收 Daemon 的权限超时通知（转发给 AppGateway）
+   */
+  @SubscribeMessage('daemon:approvalTimeout')
+  handleApprovalTimeout(
+    @MessageBody() data: {
+      requestId: string;
+      sessionId: string;
+      clientId: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`⏰ [权限超时] 收到 Daemon 的超时通知`);
+    this.logger.log(`   RequestId: ${data.requestId}`);
+    this.logger.log(`   ClientId: ${data.clientId}`);
+
+    // 通过事件转发给 AppGateway，让它通知 iOS 客户端
+    this.eventEmitter.emit('app.sendApprovalTimeout', data);
+  }
+
+  /**
+   * 接收 Daemon 的延迟响应通知（转发给 AppGateway）
+   */
+  @SubscribeMessage('daemon:approvalExpired')
+  handleApprovalExpired(
+    @MessageBody() data: {
+      requestId: string;
+      message: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`⚠️ [延迟响应] 收到 Daemon 的过期通知`);
+    this.logger.log(`   RequestId: ${data.requestId}`);
+    this.logger.log(`   Message: ${data.message}`);
+
+    // 通过事件转发给 AppGateway，让它通知 iOS 客户端
+    this.eventEmitter.emit('app.sendApprovalExpired', data);
+  }
+
+  /**
+   * 接收 Daemon 的 SDK 错误通知（转发给 AppGateway）
+   */
+  @SubscribeMessage('daemon:sdkError')
+  handleSDKError(
+    @MessageBody() data: {
+      sessionId: string;
+      clientId: string;
+      error: { type: string; message: string };
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`❌ [SDK 错误] 收到 Daemon 的错误通知`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
+    this.logger.log(`   ClientId: ${data.clientId}`);
+    this.logger.log(`   Error: ${data.error.message}`);
+
+    // 通过事件转发给 AppGateway，让它通知 iOS 客户端
+    this.eventEmitter.emit('app.sendSDKError', data);
+  }
+
+  /**
+   * 接收 Daemon 的 Swift 活动通知
+   * 检查该 session 的 CLI 是否在 local mode，如果是则重新触发 remote-connect
+   */
+  @SubscribeMessage('daemon:swiftActivity')
+  handleSwiftActivity(
+    @MessageBody() data: { sessionId: string; projectPath: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`📱 [Swift 活动] Session: ${data.sessionId}`);
+
+    // 通过事件转发给 AppGateway，让它检查是否需要重新进入 remote mode
+    this.eventEmitter.emit('app.checkRemoteMode', data);
+  }
+
+  /**
+   * 模块销毁时的清理逻辑 - 解决热重启端口占用问题
+   */
+  async onModuleDestroy() {
+    this.logger.log('🧹 [清理] 开始 Daemon Gateway WebSocket 清理...');
+
+    try {
+      if (!this.server) {
+        this.logger.warn('⚠️ Socket.IO Server 未初始化，跳过清理');
+        return;
+      }
+
+      // 1. 通知所有 Daemon 客户端服务器即将关闭
+      this.server.emit('server-shutdown', {
+        message: 'Server is shutting down',
+        timestamp: Date.now(),
+      });
+
+      // 2. 等待 100ms 让消息发送出去
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // 3. 断开所有 Daemon 连接
+      const sockets = await this.server.fetchSockets();
+      for (const socket of sockets) {
+        socket.disconnect(true);
+      }
+      this.logger.log(`🔌 已断开 ${sockets.length} 个 Daemon 连接`);
+
+      // 4. 清理 Daemon 记录
+      this.connectedDaemons.clear();
+
+      // 5. 关闭 Socket.IO Server (Daemon namespace)
+      await new Promise<void>((resolve, reject) => {
+        this.server.close((err) => {
+          if (err) {
+            this.logger.error('❌ 关闭 Daemon Gateway Socket.IO Server 失败:', err);
+            reject(err);
+          } else {
+            this.logger.log('✅ Daemon Gateway Socket.IO Server 已关闭');
+            resolve();
+          }
+        });
+      });
+
+    } catch (error) {
+      this.logger.error('❌ Daemon Gateway WebSocket 清理过程中出错:', error);
+      throw error;
+    }
   }
 }

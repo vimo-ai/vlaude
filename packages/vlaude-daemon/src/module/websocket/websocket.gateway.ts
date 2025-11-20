@@ -9,7 +9,7 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 
 /**
  * WebSocket Gateway for CLI communication
@@ -22,7 +22,7 @@ import { Logger } from '@nestjs/common';
   transports: ['websocket'],
 })
 export class VlaudeWebSocketGateway
-  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
+  implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy
 {
   @WebSocketServer()
   server: Server;
@@ -94,6 +94,56 @@ export class VlaudeWebSocketGateway
     const client = this.connectedClients.get(clientId);
     if (client) {
       client.emit(event, data);
+    }
+  }
+
+  /**
+   * 模块销毁时的清理逻辑 - 解决热重启端口占用问题
+   */
+  async onModuleDestroy() {
+    this.logger.log('🧹 [清理] 开始 WebSocket 清理...');
+
+    try {
+      if (!this.server) {
+        this.logger.warn('⚠️ Socket.IO Server 未初始化，跳过清理');
+        return;
+      }
+
+      // 1. 通知所有客户端服务器即将关闭
+      this.server.emit('server-shutdown', {
+        message: 'Server is shutting down',
+        timestamp: Date.now(),
+      });
+
+      // 2. 等待 100ms 让消息发送出去
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // 3. 断开所有客户端连接
+      const sockets = await this.server.fetchSockets();
+      for (const socket of sockets) {
+        socket.disconnect(true);
+      }
+      this.logger.log(`🔌 已断开 ${sockets.length} 个客户端连接`);
+
+      // 4. 清理客户端记录
+      this.connectedClients.clear();
+
+      // 5. 关闭 Socket.IO Server
+      await new Promise<void>((resolve, reject) => {
+        this.server.close((err) => {
+          if (err) {
+            this.logger.error('❌ 关闭 Socket.IO Server 失败:', err);
+            reject(err);
+          } else {
+            this.logger.log('✅ Socket.IO Server 已关闭 (端口 10007 已释放)');
+            resolve();
+          }
+        });
+      });
+
+    } catch (error) {
+      this.logger.error('❌ WebSocket 清理过程中出错:', error);
+      throw error;
     }
   }
 }

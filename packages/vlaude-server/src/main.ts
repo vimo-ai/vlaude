@@ -34,6 +34,37 @@ async function bootstrap() {
   const port = process.env.PORT || 10005;
   await app.listen(port, '0.0.0.0');
   console.log(`Vlaude Server is running on: http://localhost:${port}`);
+
+  // 优雅关闭处理 - 解决热重启时端口占用问题
+  const gracefulShutdown = async (signal: string) => {
+    console.log(`\n⚠️ Received ${signal}, starting graceful shutdown...`);
+
+    try {
+      // 停止接收新请求，触发所有模块的 onModuleDestroy 钩子
+      await app.close();
+      console.log('✅ Application closed successfully');
+
+      process.exit(0);
+    } catch (error) {
+      console.error('❌ Error during shutdown:', error);
+      process.exit(1);
+    }
+  };
+
+  // 监听退出信号
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+
+  // 监听未捕获的异常
+  process.on('uncaughtException', (error) => {
+    console.error('❌ Uncaught Exception:', error);
+    gracefulShutdown('uncaughtException');
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('❌ Unhandled Rejection at:', promise, 'reason:', reason);
+    gracefulShutdown('unhandledRejection');
+  });
 }
 
 bootstrap();

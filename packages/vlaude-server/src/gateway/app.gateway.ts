@@ -15,7 +15,7 @@ import {
   MessageBody,
   ConnectedSocket,
 } from '@nestjs/websockets';
-import { Logger } from '@nestjs/common';
+import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { HttpService } from '@nestjs/axios';
@@ -38,7 +38,7 @@ interface ClientInfo {
     origin: '*', // 生产环境需要限制
   },
 })
-export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy {
   @WebSocketServer()
   server: Server;
 
@@ -97,6 +97,60 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
   }
 
   /**
+   * CLI 请求退出 Remote 模式
+   */
+  @SubscribeMessage('cli:requestExitRemote')
+  async handleCliRequestExitRemote(
+    @MessageBody() data: { sessionId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const { sessionId } = data;
+    this.logger.log(`📱 [CLI 请求退出Remote] Session: ${sessionId}`);
+
+    // 获取 session 的 projectPath
+    const clientInfo = this.clients.get(client.id);
+    if (!clientInfo || !clientInfo.projectPath) {
+      this.logger.warn(`⚠️ 无法找到客户端信息或 projectPath: ${client.id}`);
+      client.emit('server:exitRemoteAllowed', { sessionId });
+      return { success: false, message: '无法找到项目路径' };
+    }
+
+    const { projectPath } = clientInfo;
+
+    try {
+      // 询问 Daemon：session 是否在 loading？
+      const response = await firstValueFrom(
+        this.httpService.post(`${this.DAEMON_URL}/sessions/check-loading`, {
+          sessionId,
+          projectPath,
+        }),
+      );
+
+      const loading = response.data?.loading || false;
+
+      if (loading) {
+        // 正在 loading，拒绝退出
+        this.logger.log(`⏸️ [拒绝退出] Session ${sessionId} 正在 loading`);
+        client.emit('server:exitRemoteDenied', {
+          sessionId,
+          reason: 'loading',
+        });
+      } else {
+        // 空闲，允许退出
+        this.logger.log(`✅ [允许退出] Session ${sessionId} 空闲`);
+        client.emit('server:exitRemoteAllowed', { sessionId });
+      }
+
+      return { success: true, loading };
+    } catch (error) {
+      this.logger.error(`❌ [检查Loading失败] ${error.message}`);
+      // 出错时默认允许退出
+      client.emit('server:exitRemoteAllowed', { sessionId });
+      return { success: false, message: error.message };
+    }
+  }
+
+  /**
    * 客户端加入（CLI 或 Swift）
    */
   @SubscribeMessage('join')
@@ -139,7 +193,7 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // 如果已经有 Swift 客户端在线，立即通知 CLI 进入 remote 模式
       if (sessionClientInfo.swift.size > 0) {
         this.logger.log(`📱 [Join] 检测到 Swift 客户端在线，通知 CLI 进入 remote 模式`);
-        client.emit('remote-connect');
+        client.emit('remote-connect', { sessionId });
       }
     } else if (clientType === 'swift') {
       // Swift 客户端加入
@@ -148,7 +202,7 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
       // 通知 CLI 客户端有 Swift 接管
       if (sessionClientInfo.cli) {
         this.logger.log(`📱 [Join] Swift 客户端加入，通知 CLI: ${sessionClientInfo.cli}`);
-        this.server.to(sessionClientInfo.cli).emit('remote-connect');
+        this.server.to(sessionClientInfo.cli).emit('remote-connect', { sessionId });
       }
     }
 
@@ -674,5 +728,148 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.eventEmitter.emit('daemon.sendApprovalResponse', data);
 
     return { success: true };
+  }
+
+  /**
+   * 监听来自 DaemonGateway 的权限超时事件
+   */
+  @OnEvent('app.sendApprovalTimeout')
+  handleSendApprovalTimeoutEvent(data: {
+    requestId: string;
+    sessionId: string;
+    clientId: string;
+  }) {
+    this.logger.log(`⏰ [权限超时] 通知 iOS 客户端`);
+    this.logger.log(`   RequestId: ${data.requestId}`);
+    this.logger.log(`   ClientId: ${data.clientId}`);
+
+    // 通过 WebSocket 发送给 iOS 客户端
+    this.server.to(data.clientId).emit('approval-timeout', {
+      requestId: data.requestId,
+      message: '权限请求已超时',
+    });
+  }
+
+  /**
+   * 监听来自 DaemonGateway 的延迟响应事件
+   */
+  @OnEvent('app.sendApprovalExpired')
+  handleSendApprovalExpiredEvent(data: {
+    requestId: string;
+    message: string;
+  }) {
+    this.logger.log(`⚠️ [延迟响应] 通知相关客户端`);
+    this.logger.log(`   RequestId: ${data.requestId}`);
+
+    // 广播给所有客户端（因为不知道是哪个客户端发送的延迟响应）
+    this.server.emit('approval-expired', {
+      requestId: data.requestId,
+      message: data.message,
+    });
+  }
+
+  /**
+   * 监听来自 DaemonGateway 的 SDK 错误事件
+   */
+  @OnEvent('app.sendSDKError')
+  handleSendSDKErrorEvent(data: {
+    sessionId: string;
+    clientId: string;
+    error: { type: string; message: string };
+  }) {
+    this.logger.log(`❌ [SDK 错误] 通知 iOS 客户端`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
+    this.logger.log(`   ClientId: ${data.clientId}`);
+    this.logger.log(`   Error: ${data.error.message}`);
+
+    // 通过 WebSocket 发送给 iOS 客户端
+    this.server.to(data.clientId).emit('sdk-error', {
+      sessionId: data.sessionId,
+      error: data.error,
+    });
+  }
+
+  /**
+   * 检查是否需要重新进入 Remote 模式
+   * 当 Swift 活动时触发，检查 CLI 是否在 local mode
+   */
+  @OnEvent('app.checkRemoteMode')
+  handleCheckRemoteModeEvent(data: { sessionId: string; projectPath: string }) {
+    const { sessionId } = data;
+    this.logger.log(`🔍 [检查Remote模式] Session: ${sessionId}`);
+
+    // 检查这个 session 是否有 CLI 和 Swift 客户端
+    const sessionClientInfo = this.sessionClients.get(sessionId);
+    if (!sessionClientInfo) {
+      this.logger.log(`   没有客户端信息，跳过`);
+      return;
+    }
+
+    const { cli, swift } = sessionClientInfo;
+
+    // 如果有 CLI 在线且有 Swift 客户端
+    if (cli && swift.size > 0) {
+      this.logger.log(`   CLI 在线，Swift 客户端数: ${swift.size}`);
+      this.logger.log(`   重新发送 remote-connect 给 CLI`);
+
+      // 重新发送 remote-connect，让 CLI 进入 remote mode
+      this.server.to(cli).emit('remote-connect', { sessionId });
+    } else {
+      this.logger.log(`   CLI: ${cli || 'none'}, Swift: ${swift.size}`);
+      this.logger.log(`   不需要触发 remote-connect`);
+    }
+  }
+
+  /**
+   * 模块销毁时的清理逻辑 - 解决热重启端口占用问题
+   */
+  async onModuleDestroy() {
+    this.logger.log('🧹 [清理] 开始 WebSocket 清理...');
+
+    try {
+      if (!this.server) {
+        this.logger.warn('⚠️ Socket.IO Server 未初始化，跳过清理');
+        return;
+      }
+
+      // 1. 通知所有客户端服务器即将关闭
+      this.server.emit('server-shutdown', {
+        message: 'Server is shutting down',
+        timestamp: Date.now(),
+      });
+
+      // 2. 等待 100ms 让消息发送出去
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      // 3. 断开所有客户端连接
+      const sockets = await this.server.fetchSockets();
+      for (const socket of sockets) {
+        socket.disconnect(true);
+      }
+      this.logger.log(`🔌 已断开 ${sockets.length} 个客户端连接`);
+
+      // 4. 清理所有订阅和客户端记录
+      this.sessionSubscriptions.clear();
+      this.clients.clear();
+      this.sessionClients.clear();
+      this.uuidMatching.clear();
+
+      // 5. 关闭 Socket.IO Server
+      await new Promise<void>((resolve, reject) => {
+        this.server.close((err) => {
+          if (err) {
+            this.logger.error('❌ 关闭 Socket.IO Server 失败:', err);
+            reject(err);
+          } else {
+            this.logger.log('✅ Socket.IO Server 已关闭');
+            resolve();
+          }
+        });
+      });
+
+    } catch (error) {
+      this.logger.error('❌ WebSocket 清理过程中出错:', error);
+      throw error;
+    }
   }
 }
