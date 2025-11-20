@@ -21,10 +21,7 @@ class ProjectListViewModel: ObservableObject {
     private var loadTask: Task<Void, Never>?
     private var currentOffset = 0
     private let pageSize = 10
-
-    init() {
-        setupWebSocketListeners()
-    }
+    private var isListening = false  // 监听状态标记
 
     func loadProjects(reset: Bool = false) async {
         // 防止重复加载
@@ -100,8 +97,15 @@ class ProjectListViewModel: ObservableObject {
 
     // MARK: - WebSocket 热更新
 
-    /// 设置 WebSocket 监听器
-    private func setupWebSocketListeners() {
+    /// 开始监听项目更新事件
+    func startListening() {
+        guard !isListening else {
+            print("⚠️ [ProjectListViewModel] 已在监听中，跳过重复注册")
+            return
+        }
+
+        isListening = true
+
         wsManager.on(.projectUpdated) { [weak self] message in
             guard let self = self else { return }
 
@@ -113,6 +117,29 @@ class ProjectListViewModel: ObservableObject {
                 await self.refreshSilently()
             }
         }
+
+        print("👂 [ProjectListViewModel] 开始监听项目更新")
+    }
+
+    /// 停止监听项目更新事件
+    func stopListening() {
+        guard isListening else {
+            print("⚠️ [ProjectListViewModel] 未在监听中，跳过取消")
+            return
+        }
+
+        isListening = false
+        wsManager.off(.projectUpdated)
+        print("🛑 [ProjectListViewModel] 停止监听项目更新")
+    }
+
+    deinit {
+        // deinit 不能访问 @MainActor 方法，需要直接调用 WebSocketManager
+        if isListening {
+            WebSocketManager.shared.off(.projectUpdated)
+            print("🛑 [ProjectListViewModel] deinit 时停止监听项目更新")
+        }
+        print("♻️ [ProjectListViewModel] 已销毁")
     }
 
     /// 静默刷新（后台更新，不显示 loading）

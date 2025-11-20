@@ -101,8 +101,24 @@ class APIClient {
 
         do {
             let response: MessageListResponse = try await request(path: path)
-            print("✅ [APIClient] 成功获取消息: \(response.data.count) 条")
-            return (response.data, response.total, response.hasMore)
+
+            // 检查响应是否成功
+            guard response.success else {
+                let errorMsg = response.message ?? "获取消息失败"
+                print("❌ [APIClient] 服务器返回错误: \(errorMsg)")
+                throw APIError.serverError(errorMsg)
+            }
+
+            // 确保 data 存在
+            guard let data = response.data,
+                  let total = response.total,
+                  let hasMore = response.hasMore else {
+                print("❌ [APIClient] 响应数据不完整")
+                throw APIError.serverError("响应数据不完整")
+            }
+
+            print("✅ [APIClient] 成功获取消息: \(data.count) 条")
+            return (data, total, hasMore)
         } catch {
             print("❌ [APIClient] 请求失败: \(error)")
             throw error
