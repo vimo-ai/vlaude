@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'fs';
+import { readFileSync, existsSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import type { VlaudeStatus } from './types';
 
@@ -32,8 +32,20 @@ export async function getVlaudeStatus(sessionId: string | null): Promise<VlaudeS
     const content = readFileSync(statusFile, 'utf-8');
     const status = JSON.parse(content);
 
-    // 检查时间戳是否过期（5秒内的状态才有效）
+    // 检查时间戳是否过期
     const age = Date.now() - status.timestamp;
+
+    // 超过 5 分钟：删除文件（CLI 可能异常退出）
+    if (age > 300000) {
+      try {
+        unlinkSync(statusFile);
+      } catch (err) {
+        // 删除失败，忽略
+      }
+      return { connected: false };
+    }
+
+    // 超过 5 秒：显示未连接
     if (age > 5000) {
       return { connected: false };
     }

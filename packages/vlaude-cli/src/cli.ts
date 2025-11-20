@@ -3,7 +3,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import { io, Socket } from 'socket.io-client';
 import { homedir } from 'os';
-import { writeFileSync, mkdirSync, existsSync, watch, readFileSync, unlinkSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync, watch, readFileSync, unlinkSync, appendFileSync } from 'fs';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
@@ -14,6 +14,36 @@ const DAEMON_URL = 'http://localhost:10006';
 
 interface SessionInfo {
   sessionId: string;
+}
+
+// 日志文件路径（在 main 函数中初始化）
+let logFilePath: string | null = null;
+let isDebugMode: boolean = false;  // 调试模式标志
+
+/**
+ * 写入日志到 .vlaude/cli.log
+ * 只在调试模式下（VLAUDE_DEBUG=1）才真正写入
+ */
+function log(message: string, data?: any) {
+  // 如果未开启调试模式，直接返回
+  if (!isDebugMode || !logFilePath) return;
+
+  const timestamp = new Date().toISOString();
+  let logMessage = `[${timestamp}] ${message}`;
+
+  if (data !== undefined) {
+    if (typeof data === 'object') {
+      logMessage += '\n' + JSON.stringify(data, null, 2);
+    } else {
+      logMessage += ' ' + String(data);
+    }
+  }
+
+  try {
+    appendFileSync(logFilePath, logMessage + '\n');
+  } catch (err) {
+    // 静默失败，不影响主流程
+  }
 }
 
 /**
@@ -71,6 +101,7 @@ let currentClaudeProcess: ChildProcess | null = null;
 let currentSwitchHandler: (() => void) | null = null;
 let currentRemoteModeResolver: (() => void) | null = null;
 let statusUpdateInterval: NodeJS.Timeout | null = null;
+let needsStdinCleanup: boolean = false;  // 标记是否需要清理 stdin（从 remote mode 切回时）
 
 /**
  * 监听 Statusline 发出的 session 切换信号
@@ -155,7 +186,6 @@ function detectUUIDFromLauncher(
         const message = JSON.parse(line);
         if (message.type === 'uuid') {
           const uuid = message.value;
-          console.log(chalk.gray(`  UUID detected: ${uuid.substring(0, 8)}...`));
 
           // 通过 WebSocket 发送 UUID 给 Server
           if (controlSocket.connected) {
@@ -207,6 +237,25 @@ function updateSocketStatus(sessionId: string | null, connected: boolean, mode: 
 }
 
 /**
+ * 清理 session 状态文件
+ * 在 CLI 退出时调用，删除当前 session 的状态文件
+ */
+function cleanupSessionStatus(sessionId: string | null, projectPath: string) {
+  if (!sessionId) return;
+
+  try {
+    const vlaudeDir = join(projectPath, '.vlaude');
+    const statusFile = join(vlaudeDir, `session-${sessionId}.status`);
+
+    if (existsSync(statusFile)) {
+      unlinkSync(statusFile);
+    }
+  } catch (err) {
+    // 删除失败，忽略
+  }
+}
+
+/**
  * 本地模式：运行 Claude Code
  * 返回 'exit' 表示正常退出，'switch' 表示需要切换到 remote 模式
  *
@@ -226,12 +275,64 @@ function runLocalMode(
     let cleanupDetector: (() => void) | null = null;
 
     try {
+      log('runLocalMode: Starting', {
+        sessionId,
+        hasSessionId: !!sessionId,
+        originalArgs: args,
+        hasResumeInArgs: args.includes('--resume') || args.includes('-r')
+      });
+
+      // 彻底清理 stdin 状态（仅在从 remote mode 切回时）
+      // 确保 stdin 处于正常的 cooked mode，否则会影响 Claude 子进程的输入
+      if (needsStdinCleanup && process.stdin.isTTY) {
+        log('runLocalMode: Cleaning up stdin state after remote mode');
+        try {
+          // 1. 关闭 raw mode
+          process.stdin.setRawMode(false);
+          // 2. 移除所有 data 监听器（remote mode 添加的）
+          process.stdin.removeAllListeners('data');
+          log('runLocalMode: stdin cleaned up successfully');
+        } catch (err) {
+          log('runLocalMode: stdin cleanup warning', err);
+          // 继续执行，stdin 清理失败不应该阻止启动
+        }
+        // 清理完成，重置标志
+        needsStdinCleanup = false;
+      } else if (needsStdinCleanup) {
+        log('runLocalMode: stdin cleanup skipped (not TTY)');
+        needsStdinCleanup = false;
+      }
+
       // 获取自定义 Claude 启动器路径
       const launcherPath = getClaudeLauncherPath();
 
+      // 动态构建 Claude 参数
+      let claudeArgs = [...args];
+
+      // 如果有 sessionId 但 args 里没有 --resume，添加 --resume
+      // 这样从 remote mode 切回 local 时，可以恢复原会话而不是创建新会话
+      if (sessionId && !args.includes('--resume') && !args.includes('-r')) {
+        claudeArgs = ['--resume', sessionId, ...args];
+        log('runLocalMode: Added --resume to args', {
+          sessionId,
+          claudeArgs
+        });
+      } else {
+        log('runLocalMode: Using original args', {
+          reason: !sessionId ? 'no sessionId' : 'args already has --resume',
+          claudeArgs
+        });
+      }
+
       // 启动 Claude Code（通过自定义启动器）
       // 注意：stdio 的第 4 个参数（fd 3）设置为 'pipe'，用于接收 UUID
-      currentClaudeProcess = spawn('node', [launcherPath, ...args], {
+      log('runLocalMode: Spawning Claude process', {
+        launcherPath,
+        claudeArgs,
+        cwd: projectPath
+      });
+
+      currentClaudeProcess = spawn('node', [launcherPath, ...claudeArgs], {
         stdio: ['inherit', 'inherit', 'inherit', 'pipe'],  // fd 3 用于接收 UUID
         cwd: projectPath,
         env: {
@@ -242,12 +343,14 @@ function runLocalMode(
 
       // 如果是新 session（没有 --resume），需要检测 UUID 并发送给 Server
       if (!sessionId) {
+        log('runLocalMode: Setting up UUID detector (new session)');
         cleanupDetector = detectUUIDFromLauncher(
           currentClaudeProcess,
           controlSocket,
           projectPath
         );
       } else {
+        log('runLocalMode: Using existing sessionId', sessionId);
         // --resume 场景，直接使用已知的 sessionId
         onSessionFound(sessionId);
       }
@@ -256,15 +359,22 @@ function runLocalMode(
 
       // 注册切换回调（存储到全局变量）
       currentSwitchHandler = () => {
+        log('runLocalMode: Switch handler called (remote-connect received)');
         shouldSwitch = true;
         if (currentClaudeProcess) {
           console.log(chalk.yellow('\n📱 Mobile device connected, switching to remote mode...'));
           console.log(chalk.yellow('   Stopping local Claude CLI (Daemon will take over using SDK)'));
+          log('runLocalMode: Killing Claude process');
           currentClaudeProcess.kill('SIGTERM');
         }
       };
 
       currentClaudeProcess.on('exit', (code) => {
+        log('runLocalMode: Claude process exited', {
+          code,
+          shouldSwitch
+        });
+
         if (cleanupDetector) {
           cleanupDetector();
           cleanupDetector = null;
@@ -273,15 +383,20 @@ function runLocalMode(
         currentSwitchHandler = null;
 
         if (shouldSwitch) {
+          log('runLocalMode: Resolving with "switch"');
           resolve('switch');
         } else if (code === 0) {
+          log('runLocalMode: Resolving with "exit"');
           resolve('exit');
         } else {
+          log('runLocalMode: Rejecting with error', { code });
           reject(new Error(`Claude process exited with code ${code}`));
         }
       });
 
       currentClaudeProcess.on('error', (error) => {
+        log('runLocalMode: Claude process error', error);
+
         if (cleanupDetector) {
           cleanupDetector();
           cleanupDetector = null;
@@ -300,8 +415,10 @@ function runLocalMode(
  * Remote 模式：显示等待界面
  * 注意：不再创建新的 socket，而是等待 controlSocket 的事件
  */
-function runRemoteMode(sessionId: string, serverURL: string): Promise<'switch'> {
+function runRemoteMode(sessionId: string, serverURL: string, controlSocket: any): Promise<'switch'> {
   return new Promise((resolve) => {
+    log('runRemoteMode: Entering remote mode', { sessionId });
+
     console.clear();
     console.log(chalk.yellow('📱 Remote Mode'));
     console.log(chalk.yellow('━'.repeat(60)));
@@ -325,23 +442,51 @@ function runRemoteMode(sessionId: string, serverURL: string): Promise<'switch'> 
         process.stdin.pause();
       }
       process.stdin.removeAllListeners('data');
+      controlSocket.off('server:exitRemoteAllowed', handleExitAllowed);
+      controlSocket.off('server:exitRemoteDenied', handleExitDenied);
       currentRemoteModeResolver = null;
+
+      // 标记需要清理 stdin，下次进入 local mode 时会清理
+      needsStdinCleanup = true;
+      log('runRemoteMode: cleanup complete, marked stdin for cleanup');
     };
+
+    // Server 允许退出的回调
+    const handleExitAllowed = () => {
+      log('runRemoteMode: Exit allowed by server');
+      console.log(chalk.blue('\n\n👋 Exiting remote mode...'));
+      console.log(chalk.blue('Switching back to local mode...\n'));
+      cleanup();
+      resolve('switch');
+    };
+
+    // Server 拒绝退出的回调（Claude 正在思考）
+    const handleExitDenied = (data: { reason: string }) => {
+      log('runRemoteMode: Exit denied by server', data);
+      console.log(chalk.yellow('\n⏸️  Claude is thinking, please wait...'));
+      console.log(chalk.gray('Press "q" again to exit when ready\n'));
+    };
+
+    // 监听 Server 的回复
+    controlSocket.on('server:exitRemoteAllowed', handleExitAllowed);
+    controlSocket.on('server:exitRemoteDenied', handleExitDenied);
 
     // 监听键盘输入
     const keyHandler = (key: string) => {
       // Ctrl+C
       if (key === '\u0003') {
+        log('runRemoteMode: Force exit (Ctrl+C)');
         console.log(chalk.yellow('\n\nForce exiting...'));
         cleanup();
         process.exit(0);
       }
       // q 或 ESC
       if (key === 'q' || key === '\u001b') {
-        console.log(chalk.blue('\n\n👋 Exiting remote mode...'));
-        console.log(chalk.blue('Switching back to local mode...\n'));
-        cleanup();
-        resolve('switch');
+        log('runRemoteMode: User pressed q/ESC, requesting exit', { sessionId });
+        console.log(chalk.gray('\n\nRequesting to exit remote mode...'));
+        // 向 Server 请求退出
+        controlSocket.emit('cli:requestExitRemote', { sessionId });
+        // 不立即退出，等待 Server 回复
       }
     };
 
@@ -349,9 +494,12 @@ function runRemoteMode(sessionId: string, serverURL: string): Promise<'switch'> 
 
     // 将 resolver 保存到全局变量，以便 controlSocket 的 remote-disconnect 事件可以触发
     currentRemoteModeResolver = () => {
+      log('runRemoteMode: remoteModeResolver called (remote-disconnect)');
       cleanup();
       resolve('switch');
     };
+
+    log('runRemoteMode: Setup complete, waiting for events');
   });
 }
 
@@ -362,9 +510,30 @@ async function main() {
   const args = process.argv.slice(2);
   const projectPath = getCurrentProjectPath();
 
+  // 检查是否开启调试模式（通过环境变量 VLAUDE_DEBUG）
+  isDebugMode = process.env.VLAUDE_DEBUG === '1' || process.env.VLAUDE_DEBUG === 'true';
+
+  // 只在调试模式下初始化日志文件
+  if (isDebugMode) {
+    const vlaudeDir = join(projectPath, '.vlaude');
+    if (!existsSync(vlaudeDir)) {
+      mkdirSync(vlaudeDir, { recursive: true });
+    }
+    logFilePath = join(vlaudeDir, 'cli.log');
+
+    // 清空旧日志（每次启动时重新开始）
+    writeFileSync(logFilePath, '');
+
+    log('=== Vlaude CLI Started (Debug Mode) ===');
+    log('Project path:', projectPath);
+    log('Command args:', args);
+  }
+
   // 读取 package.json
   const pkgPath = join(__dirname, '..', 'package.json');
   const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+
+  log('CLI version:', pkg.version);
 
   // 处理 --version 参数
   if (args.includes('--version') || args.includes('-v')) {
@@ -383,13 +552,19 @@ async function main() {
   // 显示启动日志
   console.log(chalk.gray('━'.repeat(60)));
   console.log(chalk.cyan(`🚀 Vlaude CLI v${pkg.version}`) + chalk.gray(` | Server: ${SERVER_URL}`));
+  if (isDebugMode) {
+    console.log(chalk.yellow('🐛 Debug Mode: Logging to .vlaude/cli.log'));
+  }
   console.log(chalk.gray('━'.repeat(60)));
 
   const sessionInfo = await getSessionId(args);
+  log('Session info parsed:', sessionInfo);
 
   let mode: 'local' | 'remote' = 'local';
   let shouldExit = false;
   let currentSessionId: string | null = sessionInfo?.sessionId || null;
+
+  log('Initial state:', { mode, currentSessionId });
 
   // 创建全局 socket 监听模式切换
   const controlSocket = io(SERVER_URL, {
@@ -403,6 +578,8 @@ async function main() {
   let isFirstConnect = true;
 
   controlSocket.on('connect', () => {
+    log('Socket connected', { isFirstConnect, currentSessionId, mode });
+
     if (isFirstConnect) {
       console.log(chalk.green('✅ Connected to Vlaude Server'));
       console.log(chalk.gray(`   Project: ${projectPath}`));
@@ -413,6 +590,7 @@ async function main() {
     }
 
     if (currentSessionId) {
+      log('Emitting join event', { sessionId: currentSessionId, clientType: 'cli' });
       controlSocket.emit('join', { sessionId: currentSessionId, clientType: 'cli', projectPath });
       updateSocketStatus(currentSessionId, true, mode, projectPath);
     }
@@ -428,7 +606,8 @@ async function main() {
   });
 
   controlSocket.on('disconnect', (reason) => {
-    console.log(chalk.yellow(`⚠️ Disconnected from server: ${reason}`));
+    log('Socket disconnected', { reason, currentSessionId, mode });
+
     if (currentSessionId) {
       updateSocketStatus(currentSessionId, false, mode, projectPath);
     }
@@ -440,55 +619,53 @@ async function main() {
     }
   });
 
-  controlSocket.on('reconnect', (attemptNumber) => {
-    console.log(chalk.green(`🔄 Reconnected to server (after ${attemptNumber} attempts)`));
-  });
-
-  controlSocket.on('reconnect_attempt', (attemptNumber) => {
-    if (attemptNumber === 1 || attemptNumber % 3 === 0) {
-      console.log(chalk.gray(`🔄 Reconnecting... (attempt ${attemptNumber})`));
-    }
-  });
-
-  controlSocket.on('connect_error', (error) => {
-    console.log(chalk.red(`❌ Connection error: ${error.message}`));
-  });
-
-  controlSocket.on('reconnect_failed', () => {
-    console.log(chalk.red('❌ Failed to reconnect after max attempts'));
-  });
-
   // 监听 Server 确认的 sessionId（UUID 匹配成功）
   controlSocket.on('server:sessionConfirmed', (data: { sessionId: string }) => {
-    console.log(chalk.green(`✓ Session confirmed: ${data.sessionId.substring(0, 8)}...`));
+    log('Received server:sessionConfirmed', data);
     handleSessionFound(data.sessionId);
   });
 
-  controlSocket.on('remote-connect', () => {
-    console.log(chalk.yellow('\n📱 [EVENT] remote-connect received!'));
-    console.log(chalk.yellow(`   Current mode: ${mode}`));
-    console.log(chalk.yellow(`   currentSwitchHandler exists: ${!!currentSwitchHandler}`));
+  controlSocket.on('remote-connect', (data?: { sessionId: string }) => {
+    log('Received remote-connect', {
+      data,
+      currentMode: mode,
+      currentSessionId,
+      hasSwitchHandler: !!currentSwitchHandler
+    });
+
+    // 如果 Server 发送了 sessionId，更新 currentSessionId
+    // 这样在新 vlaude 时，即使还没检测到 UUID，也能知道 sessionId
+    if (data?.sessionId && !currentSessionId) {
+      console.log(chalk.gray(`  Received sessionId from server: ${data.sessionId.substring(0, 8)}...`));
+      log('Updating currentSessionId from remote-connect', data.sessionId);
+      handleSessionFound(data.sessionId);
+    }
 
     // 只有在 local 模式且有 switchHandler 时，才触发切换
     // 不在这里修改 mode，让主循环自己管理
     if (mode === 'local' && currentSwitchHandler) {
-      console.log(chalk.yellow('   Calling switchHandler to kill Claude process...'));
+      log('Triggering switch to remote mode');
       currentSwitchHandler();
     } else {
-      console.log(chalk.yellow('   Ignoring remote-connect (not ready to switch)'));
+      log('Not triggering switch', {
+        reason: mode !== 'local' ? 'not in local mode' : 'no switchHandler'
+      });
     }
   });
 
   controlSocket.on('remote-disconnect', () => {
-    console.log(chalk.blue('\n📱 [EVENT] remote-disconnect received!'));
+    log('Received remote-disconnect', {
+      currentMode: mode,
+      hasRemoteModeResolver: !!currentRemoteModeResolver
+    });
 
     // 如果正在 remote 模式，触发切换回 local
     // 不在这里修改 mode，让主循环自己管理
     if (currentRemoteModeResolver) {
-      console.log(chalk.blue('   Calling remoteModeResolver to exit remote mode...'));
+      log('Triggering switch to local mode');
       currentRemoteModeResolver();
     } else {
-      console.log(chalk.blue('   No remoteModeResolver available (not in remote mode)'));
+      log('Not triggering switch - no remoteModeResolver');
     }
   });
 
@@ -496,19 +673,32 @@ async function main() {
   const handleSessionFound = (sessionId: string) => {
     const previousSessionId = currentSessionId;
 
+    log('handleSessionFound called', {
+      newSessionId: sessionId,
+      previousSessionId,
+      mode
+    });
+
     // 如果是同一个 session，不需要处理
     if (previousSessionId === sessionId) {
+      log('Same session, no action needed');
       return;
     }
 
     // 切换 session
     if (previousSessionId) {
+      log('Switching session', {
+        from: previousSessionId,
+        to: sessionId
+      });
       // 离开旧 session
       if (controlSocket.connected) {
         controlSocket.emit('leave', { sessionId: previousSessionId });
         // 清理旧 session 的状态文件
         updateSocketStatus(previousSessionId, false, mode, projectPath);
       }
+    } else {
+      log('Setting initial sessionId', sessionId);
     }
 
     // 更新当前 session
@@ -516,6 +706,7 @@ async function main() {
 
     // 加入新 session
     if (controlSocket.connected) {
+      log('Joining new session', sessionId);
       controlSocket.emit('join', { sessionId, clientType: 'cli', projectPath });
       updateSocketStatus(sessionId, true, mode, projectPath);
     }
@@ -526,29 +717,44 @@ async function main() {
 
   // 主循环
   while (!shouldExit) {
+    log('=== Main loop iteration ===', { mode, currentSessionId });
+
     if (mode === 'local') {
       try {
+        log('Entering local mode', { currentSessionId, args });
         // 运行 Claude Code（新 session 或 --resume）
         const result = await runLocalMode(args, currentSessionId, projectPath, controlSocket, handleSessionFound);
 
+        log('Local mode exited', { result, currentSessionId });
+
         if (result === 'exit') {
+          log('Exit requested, stopping main loop');
           shouldExit = true;
         } else if (result === 'switch') {
+          log('Switching to remote mode');
           mode = 'remote';
           updateSocketStatus(currentSessionId, controlSocket.connected, mode, projectPath);
         }
       } catch (error) {
+        log('Error in local mode', error);
         console.error(chalk.red('Error in local mode:'), error);
         shouldExit = true;
       }
     } else if (mode === 'remote') {
       if (!currentSessionId) {
+        log('Error: No sessionId for remote mode');
         console.log(chalk.red('Error: Cannot enter remote mode without session ID'));
         shouldExit = true;
         break;
       }
-      const result = await runRemoteMode(currentSessionId, SERVER_URL);
+
+      log('Entering remote mode', { currentSessionId });
+      const result = await runRemoteMode(currentSessionId, SERVER_URL, controlSocket);
+
+      log('Remote mode exited', { result });
+
       if (result === 'switch') {
+        log('Switching back to local mode');
         mode = 'local';
         updateSocketStatus(currentSessionId, controlSocket.connected, mode, projectPath);
         // 通知 Server 恢复 FileWatcher 推送（切回 Local 模式）
@@ -558,6 +764,8 @@ async function main() {
     }
   }
 
+  log('=== Main loop ended ===');
+
   // 清理心跳定时器
   if (statusUpdateInterval) {
     clearInterval(statusUpdateInterval);
@@ -566,6 +774,9 @@ async function main() {
 
   // 清理 session switch monitor
   cleanupSessionSwitchMonitor();
+
+  // 清理 session 状态文件
+  cleanupSessionStatus(currentSessionId, projectPath);
 
   controlSocket.close();
   console.log(chalk.gray('\nVlaude CLI exited'));
