@@ -89,6 +89,14 @@ struct ProjectListView: View {
             .task {
                 await viewModel.loadProjects(reset: true)
             }
+            .onAppear {
+                // 进入页面时开始监听项目更新
+                viewModel.startListening()
+            }
+            .onDisappear {
+                // 离开页面时停止监听项目更新
+                viewModel.stopListening()
+            }
         }
     }
 }
