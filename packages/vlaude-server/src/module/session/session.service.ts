@@ -12,6 +12,7 @@
 import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
 import { PrismaService } from '../../shared/database/prisma.service';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 
 interface MessageData {
   role: string;
@@ -38,6 +39,7 @@ export class SessionService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly eventEmitter: EventEmitter2,
     @Inject(forwardRef(() => require('../daemon-gateway/daemon.gateway').DaemonGateway))
     private readonly daemonGateway: any,
   ) {
@@ -318,63 +320,28 @@ export class SessionService {
    */
   async getSessionsByProjectPath(projectPath: string, limit: number = 20, offset: number = 0) {
     try {
-      const startTime = Date.now();
       this.logger.log(`📋 获取会话列表，projectPath=${projectPath}, limit=${limit}, offset=${offset}`);
 
-      // V2: 从 Daemon 获取文件系统的会话元数据
-      const t1 = Date.now();
-      const daemonSessions = await this.fetchSessionsFromDaemon(projectPath, limit, offset);
-      this.logger.log(`⏱️ [性能] fetchSessionsFromDaemon 耗时: ${Date.now() - t1}ms`);
+      // 阶段 1: 快速响应 - 立即从数据库返回缓存（<50ms）
+      const project = await this.prisma.project.findUnique({
+        where: { path: projectPath },
+      });
 
-      if (daemonSessions.length === 0) {
-        this.logger.warn('Daemon 未返回任何会话');
-        const project = await this.prisma.project.findUnique({
-          where: { path: projectPath },
-        });
-        const total = project ? await this.prisma.session.count({
-          where: { projectId: project.id, isDeleted: false },
-        }) : 0;
-        return { sessions: [], total, hasMore: false };
+      if (!project) {
+        this.logger.warn(`项目不存在: ${projectPath}`);
+        return { sessions: [], total: 0, hasMore: false };
       }
 
-      this.logger.log(`📦 Daemon 返回 ${daemonSessions.length} 个会话`);
-
-      // 2. 增量更新策略：对比 mtime 和 lineCount，识别新/旧会话
-      const t2 = Date.now();
-      const { newSessions, unchangedSessions } = await this.categorizeSessions(daemonSessions);
-      this.logger.log(`⏱️ [性能] categorizeSessions 耗时: ${Date.now() - t2}ms`);
-
-      this.logger.log(`🆕 新会话: ${newSessions.length} 个, 📦 未变化: ${unchangedSessions.length} 个`);
-
-      // 3. 对 mtime 变化的会话，获取最后一条消息
-      if (newSessions.length > 0) {
-        const t3 = Date.now();
-        await this.fetchLastMessagesForSessions(newSessions, projectPath);
-        this.logger.log(`⏱️ [性能] fetchLastMessagesForSessions 耗时: ${Date.now() - t3}ms`);
-
-        // 4. ⚡ 异步更新数据库缓存（不阻塞响应）
-        const t4 = Date.now();
-        this.updateSessionCache(newSessions, projectPath)
-          .then(() => {
-            this.logger.log(`⏱️ [性能] updateSessionCache 异步完成，耗时: ${Date.now() - t4}ms`);
-          })
-          .catch((error) => {
-            this.logger.error(`异步更新缓存失败: ${error.message}`);
-          });
-        this.logger.log(`⏱️ [性能] updateSessionCache 已启动异步任务`);
-      }
-
-      // 5. 从数据库查询完整数据（包括缓存的 lastMessage）
-      const t5 = Date.now();
-      const sessionIds = daemonSessions.map(s => s.sessionId);
-      const sessions = await this.prisma.session.findMany({
+      const cachedSessions = await this.prisma.session.findMany({
         where: {
-          sessionId: { in: sessionIds },
+          projectId: project.id,
           isDeleted: false,
         },
         orderBy: {
           lastMtime: 'desc',
         },
+        skip: offset,
+        take: limit,
         include: {
           messages: {
             where: { sequence: 0 }, // sequence = 0 是缓存的 lastMessage
@@ -382,55 +349,39 @@ export class SessionService {
           },
         },
       });
-      this.logger.log(`⏱️ [性能] 查询数据库获取完整数据 耗时: ${Date.now() - t5}ms`);
 
-      // 6. 混合使用缓存和实时数据
-      const newSessionIds = new Set(newSessions.map(s => s.sessionId));
-      const sessionsWithLastMessage = sessions.map(session => {
-        const isNewSession = newSessionIds.has(session.sessionId);
-
-        if (isNewSession) {
-          // 新会话或有变化的会话：使用 Daemon 返回的 lastMessage
-          const daemonSession = daemonSessions.find(ds => ds.sessionId === session.sessionId);
-          return {
-            ...session,
-            messages: undefined, // 移除 messages 字段
-            lastMessage: daemonSession?.lastMessage || null,
-          };
-        } else {
-          // 未变化的会话：使用数据库缓存的 lastMessage
-          const cachedMessage = session.messages?.[0];
-          return {
-            ...session,
-            messages: undefined, // 移除 messages 字段
-            lastMessage: cachedMessage?.metadata || null, // metadata 中存储了完整的 lastMessage
-          };
-        }
-      });
-
-      // 7. 获取总数并判断是否还有更多
-      const project = await this.prisma.project.findUnique({
-        where: { path: projectPath },
-      });
-      const total = project ? await this.prisma.session.count({
+      const total = await this.prisma.session.count({
         where: { projectId: project.id, isDeleted: false },
-      }) : 0;
-      const hasMore = offset + sessionsWithLastMessage.length < total;
+      });
+      const hasMore = offset + cachedSessions.length < total;
 
-      const totalTime = Date.now() - startTime;
-      this.logger.log(`✅ 返回 ${sessionsWithLastMessage.length} 个会话 (offset=${offset}, total=${total}, hasMore=${hasMore}, ${newSessions.length} 个使用实时数据, ${unchangedSessions.length} 个使用缓存)`);
-      this.logger.log(`⏱️ [性能] 总耗时: ${totalTime}ms`);
+      // 格式化缓存数据
+      const sessionsWithLastMessage = cachedSessions.map(session => ({
+        ...session,
+        messages: undefined,
+        lastMessage: session.messages?.[0]?.metadata || null,
+      }));
+
+      this.logger.log(`⚡ 快速返回缓存: ${sessionsWithLastMessage.length} 个会话 (total=${total})`);
+
+      // 阶段 2: 后台刷新（不阻塞响应）
+      setImmediate(() => {
+        this.refreshSessionsInBackground(projectPath, limit, offset).catch(error => {
+          this.logger.error(`后台刷新失败: ${error.message}`);
+        });
+      });
+
       return { sessions: sessionsWithLastMessage, total, hasMore };
 
     } catch (error) {
       this.logger.error(`获取会话列表失败: ${error.message}`);
-      // 降级方案：如果 Daemon 不可用，从数据库读取
+      // 降级方案：从数据库读取
       const project = await this.prisma.project.findUnique({
         where: { path: projectPath },
       });
 
       if (!project) {
-        return [];
+        return { sessions: [], total: 0, hasMore: false };
       }
 
       const sessions = await this.prisma.session.findMany({
@@ -453,6 +404,56 @@ export class SessionService {
       });
       const hasMore = offset + sessions.length < total;
       return { sessions, total, hasMore };
+    }
+  }
+
+  /**
+   * 后台刷新会话列表（异步，不阻塞响应）
+   */
+  private async refreshSessionsInBackground(projectPath: string, limit: number, offset: number) {
+    try {
+      this.logger.debug(`🔄 开始后台刷新会话列表: ${projectPath}`);
+
+      // 1. 从 Daemon 获取文件系统的会话元数据
+      const daemonSessions = await this.fetchSessionsFromDaemon(projectPath, limit, offset);
+
+      if (daemonSessions.length === 0) {
+        this.logger.debug('后台刷新: Daemon 未返回任何会话');
+        return;
+      }
+
+      this.logger.debug(`📦 后台刷新: Daemon 返回 ${daemonSessions.length} 个会话`);
+
+      // 2. 增量更新策略：对比 mtime 和 lineCount，识别新/旧会话
+      const { newSessions, unchangedSessions } = await this.categorizeSessions(daemonSessions);
+
+      this.logger.debug(`🆕 后台刷新: 新会话 ${newSessions.length} 个, 未变化 ${unchangedSessions.length} 个`);
+
+      // 3. 如果有新会话，更新数据库缓存
+      if (newSessions.length > 0) {
+        // 获取最后一条消息
+        await this.fetchLastMessagesForSessions(newSessions, projectPath);
+
+        // 更新数据库缓存
+        await this.updateSessionCache(newSessions, projectPath);
+
+        // 通过 WebSocket 推送更新通知
+        this.eventEmitter.emit('app.notifySessionUpdate', {
+          sessionId: 'list-updated',  // 标记为列表更新
+          metadata: {
+            projectPath,
+            updatedCount: newSessions.length,
+            sessions: newSessions.map(s => s.sessionId),
+          },
+        });
+
+        this.logger.log(`✅ 后台刷新完成: 更新了 ${newSessions.length} 个会话，已推送 WebSocket 通知`);
+      } else {
+        this.logger.debug(`✅ 后台刷新完成: 无变化`);
+      }
+
+    } catch (error) {
+      this.logger.error(`后台刷新会话列表失败: ${error.message}`);
     }
   }
 

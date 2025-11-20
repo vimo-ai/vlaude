@@ -22,6 +22,12 @@ import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../shared/database/prisma.service';
 
+// 资源类型枚举（与 Daemon 端保持一致）
+enum ResourceType {
+  PROJECT = 'project',
+  SESSION = 'session',
+}
+
 // 客户端类型
 type ClientType = 'swift' | 'cli';
 
@@ -491,25 +497,50 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect, OnM
   }
 
   /**
+   * 通用资源更新推送（v3.0 统一架构）
+   */
+  private notifyResourceUpdate<T = any>(
+    type: ResourceType,
+    id: string,
+    metadata?: T,
+  ) {
+    const eventName = `${type}:updated`;
+    const idField = this.getIdFieldName(type);
+
+    this.server.emit(eventName, {
+      [idField]: id,
+      metadata,
+    });
+
+    this.logger.log(`🔄 广播 ${type} 更新: ${id}`);
+  }
+
+  /**
+   * 获取 ID 字段名（向后兼容）
+   */
+  private getIdFieldName(type: ResourceType): string {
+    switch (type) {
+      case ResourceType.PROJECT:
+        return 'projectPath';
+      case ResourceType.SESSION:
+        return 'sessionId';
+      default:
+        return 'id';
+    }
+  }
+
+  /**
    * Daemon 调用：广播项目更新
    */
   notifyProjectUpdate(projectPath: string, metadata?: any) {
-    this.server.emit('project:updated', {
-      projectPath,
-      metadata,
-    });
-    this.logger.log(`🔄 广播项目更新: ${projectPath}`);
+    this.notifyResourceUpdate(ResourceType.PROJECT, projectPath, metadata);
   }
 
   /**
    * Daemon 调用：广播会话元数据更新
    */
   notifySessionUpdate(sessionId: string, metadata: any) {
-    this.server.emit('session:updated', {
-      sessionId,
-      metadata,
-    });
-    this.logger.log(`📝 广播会话更新: ${sessionId}`);
+    this.notifyResourceUpdate(ResourceType.SESSION, sessionId, metadata);
   }
 
   /**
