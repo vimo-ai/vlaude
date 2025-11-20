@@ -18,11 +18,20 @@ class SessionListViewModel: ObservableObject {
     @Published var hasMore = false
 
     private let apiClient = APIClient.shared
+    private let wsManager = WebSocketManager.shared
     private var loadTask: Task<Void, Never>?
     private var currentOffset = 0
     private let pageSize = 20
+    private var currentProjectPath: String?
+
+    init() {
+        setupWebSocketListeners()
+    }
 
     func loadSessions(projectPath: String, reset: Bool = false) async {
+        // 保存当前项目路径（用于 WebSocket 过滤）
+        currentProjectPath = projectPath
+
         // 防止重复加载
         if loadTask != nil {
             return
@@ -126,6 +135,47 @@ class SessionListViewModel: ObservableObject {
             errorMessage = "创建会话失败: \(error.localizedDescription)"
             print("❌ [SessionListViewModel] 创建会话失败: \(errorMessage ?? "")")
             return nil
+        }
+    }
+
+    // MARK: - WebSocket 热更新
+
+    /// 设置 WebSocket 监听器
+    private func setupWebSocketListeners() {
+        wsManager.on(.sessionUpdated) { [weak self] message in
+            guard let self = self else { return }
+
+            print("🔔 [SessionListViewModel] 收到会话更新事件")
+
+            // 异步刷新会话列表（简单策略：重新加载）
+            Task { @MainActor in
+                guard let projectPath = self.currentProjectPath else {
+                    print("⚠️ [SessionListViewModel] 当前项目路径为空，跳过刷新")
+                    return
+                }
+
+                await self.refreshSilently(projectPath: projectPath)
+            }
+        }
+    }
+
+    /// 静默刷新（后台更新，不显示 loading）
+    private func refreshSilently(projectPath: String) async {
+        do {
+            let result = try await apiClient.getSessions(
+                projectPath: projectPath,
+                limit: currentOffset + pageSize,  // 加载当前已显示的所有数据
+                offset: 0
+            )
+
+            // 更新会话列表
+            sessions = result.sessions
+            hasMore = result.hasMore
+
+            print("✅ [SessionListViewModel] 静默刷新完成: \(sessions.count) 个会话")
+        } catch {
+            print("⚠️ [SessionListViewModel] 静默刷新失败: \(error.localizedDescription)")
+            // 静默失败，不显示错误信息
         }
     }
 }
