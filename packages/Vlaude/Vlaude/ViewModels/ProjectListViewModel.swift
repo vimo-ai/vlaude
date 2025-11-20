@@ -17,9 +17,14 @@ class ProjectListViewModel: ObservableObject {
     @Published var hasMore = false
 
     private let apiClient = APIClient.shared
+    private let wsManager = WebSocketManager.shared
     private var loadTask: Task<Void, Never>?
     private var currentOffset = 0
     private let pageSize = 10
+
+    init() {
+        setupWebSocketListeners()
+    }
 
     func loadProjects(reset: Bool = false) async {
         // 防止重复加载
@@ -90,6 +95,42 @@ class ProjectListViewModel: ObservableObject {
             return "服务器错误: \(message)"
         case .unknown:
             return "未知错误"
+        }
+    }
+
+    // MARK: - WebSocket 热更新
+
+    /// 设置 WebSocket 监听器
+    private func setupWebSocketListeners() {
+        wsManager.on(.projectUpdated) { [weak self] message in
+            guard let self = self else { return }
+
+            print("🔔 [ProjectListViewModel] 收到项目更新事件")
+
+            // 异步刷新项目列表（简单策略：重新加载）
+            Task { @MainActor in
+                // 静默刷新（不显示 loading）
+                await self.refreshSilently()
+            }
+        }
+    }
+
+    /// 静默刷新（后台更新，不显示 loading）
+    private func refreshSilently() async {
+        do {
+            let result = try await apiClient.getProjects(
+                limit: currentOffset + pageSize,  // 加载当前已显示的所有数据
+                offset: 0
+            )
+
+            // 更新项目列表
+            projects = result.projects
+            hasMore = result.hasMore
+
+            print("✅ [ProjectListViewModel] 静默刷新完成: \(projects.count) 个项目")
+        } catch {
+            print("⚠️ [ProjectListViewModel] 静默刷新失败: \(error.localizedDescription)")
+            // 静默失败，不显示错误信息
         }
     }
 }
