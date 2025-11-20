@@ -28,8 +28,6 @@ export class ProjectController {
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit: number,
   ) {
     try {
-      this.logger.log(`📋 收到项目列表请求，limit=${limit}`);
-
       // 从文件系统读取项目 (按 mtime 排序，返回最新的 limit 个)
       const projects = await this.dataCollector.collectProjects(limit);
 
@@ -41,8 +39,6 @@ export class ProjectController {
         lastMtime: p.lastAccessed,  // 最新 session 的 mtime
         sessionCount: p.sessions.length,
       }));
-
-      this.logger.log(`✅ 返回 ${lightweightProjects.length} 个项目`);
 
       return {
         success: true,
