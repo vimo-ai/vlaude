@@ -63,16 +63,15 @@ export function renderStatusLine(
 ): string {
   const parts: string[] = [];
 
-  // 1. Vlaude 连接状态
+  // 1. Vlaude 连接状态（只在连上时显示）
   if (vlaudeStatus.connected) {
     if (vlaudeStatus.mode === 'remote') {
       parts.push(chalk.yellow('📱'));
     } else {
       parts.push(chalk.green('✅'));
     }
-  } else {
-    parts.push(chalk.red('❌'));
   }
+  // 没连上就不显示任何符号
 
   // 2. Context 进度条
   if (contextLength !== null) {
