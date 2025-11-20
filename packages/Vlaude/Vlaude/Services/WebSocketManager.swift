@@ -15,6 +15,7 @@ enum WebSocketEvent: String {
     case projectUpdated = "project:updated"
     case sessionUpdated = "session:updated"
     case approvalRequest = "approval-request"  // 权限请求
+    case statuslineMetricsUpdate = "statusline:metricsUpdate"  // Statusline 指标更新
 }
 
 // MARK: - WebSocket 消息结构
@@ -196,6 +197,11 @@ class WebSocketManager: ObservableObject {
         socket.on("sdk-error") { [weak self] data, ack in
             print("❌ [Socket.IO] 收到 SDK 错误通知!")
             self?.handleSDKError(data: data)
+        }
+
+        // 监听 Statusline 指标更新
+        socket.on("statusline:metricsUpdate") { [weak self] data, ack in
+            self?.handleStatuslineMetricsUpdate(data: data)
         }
     }
 
@@ -510,6 +516,60 @@ class WebSocketManager: ObservableObject {
             }
         } catch {
             print("❌ [Socket.IO] SDK 错误解析失败: \(error)")
+        }
+    }
+
+    /// 处理 Statusline 指标更新
+    private func handleStatuslineMetricsUpdate(data: [Any]) {
+        guard let payload = data.first else {
+            return
+        }
+
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: payload)
+            if let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+
+                let sessionId = json["sessionId"] as? String
+                let connected = json["connected"] as? Bool ?? false
+                let mode = json["mode"] as? String
+                let contextLength = json["contextLength"] as? Int
+                let contextPercentage = json["contextPercentage"] as? Double
+                let inputTokens = json["inputTokens"] as? Int
+                let outputTokens = json["outputTokens"] as? Int
+
+                // 通过通知发送给 ViewModel
+                var userInfo: [String: Any] = [
+                    "connected": connected,
+                    "timestamp": Date().timeIntervalSince1970
+                ]
+
+                if let sessionId = sessionId {
+                    userInfo["sessionId"] = sessionId
+                }
+                if let mode = mode {
+                    userInfo["mode"] = mode
+                }
+                if let contextLength = contextLength {
+                    userInfo["contextLength"] = contextLength
+                }
+                if let contextPercentage = contextPercentage {
+                    userInfo["contextPercentage"] = contextPercentage
+                }
+                if let inputTokens = inputTokens {
+                    userInfo["inputTokens"] = inputTokens
+                }
+                if let outputTokens = outputTokens {
+                    userInfo["outputTokens"] = outputTokens
+                }
+
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("StatuslineMetricsUpdate"),
+                    object: nil,
+                    userInfo: userInfo
+                )
+            }
+        } catch {
+            print("❌ [Socket.IO] Statusline 数据解析失败: \(error)")
         }
     }
 }

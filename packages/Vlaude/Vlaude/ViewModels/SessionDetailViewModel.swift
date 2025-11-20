@@ -17,6 +17,16 @@ class SessionDetailViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var hasMore = false
     @Published var isWaitingForResponse = false  // Remote 模式等待响应
+    // 状态栏数据（初始显示占位数据，等待 WebSocket 推送真实数据）
+    @Published var statusData: SessionStatusData = SessionStatusData(
+        connected: true,
+        mode: .local,
+        contextLength: 0,
+        contextPercentage: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        timestamp: Date()
+    )
 
     private let apiClient = APIClient.shared
     private let wsManager = WebSocketManager.shared
@@ -91,6 +101,38 @@ class SessionDetailViewModel: ObservableObject {
                     self.displayMessages = self.messageTransformer.transform(messages: self.rawMessages)
                 }
             }
+        }
+
+        // 监听 statusline 指标更新（通过 NotificationCenter）
+        NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("StatuslineMetricsUpdate"),
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self,
+                  let userInfo = notification.userInfo,
+                  let notificationSessionId = userInfo["sessionId"] as? String,
+                  notificationSessionId == sessionId else {
+                return
+            }
+
+            // 更新状态数据
+            let connected = userInfo["connected"] as? Bool ?? false
+            let mode = (userInfo["mode"] as? String).flatMap { ConnectionMode(rawValue: $0) }
+            let contextLength = userInfo["contextLength"] as? Int
+            let contextPercentage = userInfo["contextPercentage"] as? Double
+            let inputTokens = userInfo["inputTokens"] as? Int
+            let outputTokens = userInfo["outputTokens"] as? Int
+
+            self.statusData = SessionStatusData(
+                connected: connected,
+                mode: mode,
+                contextLength: contextLength,
+                contextPercentage: contextPercentage,
+                inputTokens: inputTokens,
+                outputTokens: outputTokens,
+                timestamp: Date()
+            )
         }
     }
 
