@@ -38,6 +38,11 @@ lerna-debug.log*
 .env
 .env.local
 .env.*.local
+env/.env.dev
+env/.env.nas
+
+# JWT 密钥
+certs/*.pem
 
 # Prisma
 prisma/*.db
