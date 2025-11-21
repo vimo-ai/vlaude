@@ -95,23 +95,27 @@ class WebSocketManager: ObservableObject {
     private var socket: SocketIOClient!
 
     private init() {
-        setupSocket()
+        // 延迟连接，等待显式调用 connect()
     }
 
     // MARK: - Socket 设置
 
-    private func setupSocket() {
+    private func setupSocket(token: String) {
         // TODO: Move to configuration
         let url = URL(string: "http://10.0.0.1:10005")!
 
-        manager = SocketManager(socketURL: url, config: [
+        print("✅ [Socket.IO] 使用 Token 设置连接: \(token.prefix(20))...")
+
+        let config: SocketIOClientConfiguration = [
             .log(false),
             .compress,
             .reconnects(true),
             .reconnectAttempts(5),
-            .reconnectWait(2)
-        ])
+            .reconnectWait(2),
+            .connectParams(["auth": ["token": token]])  // 总是携带 Token
+        ]
 
+        manager = SocketManager(socketURL: url, config: config)
         socket = manager.defaultSocket
 
         // 设置事件监听
@@ -138,6 +142,22 @@ class WebSocketManager: ObservableObject {
         // 连接错误
         socket.on(clientEvent: .error) { [weak self] data, ack in
             print("❌ [Socket.IO] 连接错误: \(data)")
+
+            // 检查是否是认证错误
+            if let errorDict = data.first as? [String: Any],
+               let message = errorDict["message"] as? String {
+                if message.contains("Authentication") || message.contains("Token") {
+                    print("❌ [Socket.IO] 认证错误，清除 Token 并重新获取")
+                    _ = AuthService.shared.deleteToken()
+
+                    // 通知应用重新认证
+                    NotificationCenter.default.post(
+                        name: NSNotification.Name("AuthenticationError"),
+                        object: nil
+                    )
+                }
+            }
+
             if let error = data.first as? Error {
                 DispatchQueue.main.async {
                     self?.lastError = error
@@ -245,13 +265,45 @@ class WebSocketManager: ObservableObject {
     // MARK: - 连接管理
 
     func connect() {
-        print("🔌 [Socket.IO] 正在连接到 \(manager.socketURL)...")
+        // 检查是否有 Token
+        guard let token = AuthService.shared.getToken() else {
+            print("❌ [Socket.IO] 缺少 Token，无法连接")
+            print("⚠️ [Socket.IO] 请先调用 AuthService.ensureAuthenticated() 获取 Token")
+            return
+        }
+
+        // 如果 Socket 未初始化，先设置
+        if manager == nil {
+            setupSocket(token: token)
+        }
+
+        // 连接
+        print("🔌 [Socket.IO] 开始连接...")
         socket.connect()
     }
 
     func disconnect() {
         print("🔌 [Socket.IO] 断开连接...")
         socket.disconnect()
+    }
+
+    /// 重新设置 Socket（用于 Token 更新后）
+    func reconnectWithNewToken() {
+        guard let token = AuthService.shared.getToken() else {
+            print("❌ [Socket.IO] Token 仍然缺失，无法重连")
+            return
+        }
+
+        print("🔄 [Socket.IO] Token 已更新，重新设置连接...")
+
+        // 断开旧连接
+        if socket != nil {
+            disconnect()
+        }
+
+        // 重新设置并连接
+        setupSocket(token: token)
+        socket.connect()
     }
 
     // MARK: - 订阅管理
