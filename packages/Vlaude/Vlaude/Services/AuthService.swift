@@ -122,16 +122,10 @@ class AuthService {
         print("   Device ID: \(deviceId)")
         print("   Device Name: \(deviceName)")
 
-        // 构造请求参数
-        let parameters: [String: Any] = [
-            "clientId": deviceId,
-            "clientType": "ios"
-        ]
-
         Task {
             do {
-                // 调用 APIClient 获取 Token
-                let token = try await APIClient.shared.generateToken(clientId: deviceId, clientType: "ios")
+                // 调用 APIClient 获取 Token（包含 deviceName 用于设备白名单注册）
+                let token = try await APIClient.shared.generateToken(clientId: deviceId, clientType: "ios", deviceName: deviceName)
 
                 // 保存 Token 到 Keychain
                 if self.saveToken(token) {

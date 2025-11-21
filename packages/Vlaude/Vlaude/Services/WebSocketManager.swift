@@ -112,7 +112,7 @@ class WebSocketManager: ObservableObject {
             .reconnects(true),
             .reconnectAttempts(5),
             .reconnectWait(2),
-            .connectParams(["auth": ["token": token]])  // 总是携带 Token
+            .connectParams(["token": token])  // Token 作为 query 参数传递
         ]
 
         manager = SocketManager(socketURL: url, config: config)
