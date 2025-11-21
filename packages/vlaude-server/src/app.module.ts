@@ -18,6 +18,7 @@ import { SessionModule } from './module/session/session.module';
 import { PrismaModule } from './shared/database/prisma.module';
 import { GatewayModule } from './gateway/gateway.module';
 import { AuthModule } from './auth/auth.module';
+import { DeviceModule } from './device/device.module';
 // @feature:minio:start
 // import { MinioModule } from './module/minio/minio.module';
 // @feature:minio:end
@@ -36,6 +37,7 @@ import { AuthModule } from './auth/auth.module';
     ProjectModule,
     SessionModule,
     AuthModule,
+    DeviceModule,
     // @feature:minio:start
     // MinioModule,
     // @feature:minio:end

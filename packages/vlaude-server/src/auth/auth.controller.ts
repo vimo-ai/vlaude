@@ -2,8 +2,9 @@ import { Controller, Post, Body, Logger } from '@nestjs/common';
 import { AuthService } from './auth.service';
 
 class GenerateTokenDto {
-  clientId: string;
+  clientId: string;        // 设备唯一标识（iOS: identifierForVendor, Daemon: Mac UUID）
   clientType: 'daemon' | 'ios';
+  deviceName?: string;     // 设备显示名称（可选，推荐提供）
 }
 
 @Controller('auth')
@@ -13,13 +14,17 @@ export class AuthController {
   constructor(private authService: AuthService) {}
 
   /**
-   * 生成 JWT Token
+   * 生成 JWT Token（支持设备白名单）
    * POST /auth/generate-token
-   * Body: { clientId: string, clientType: 'daemon' | 'ios' }
+   * Body: {
+   *   clientId: string,        // 设备唯一标识
+   *   clientType: 'daemon' | 'ios',
+   *   deviceName?: string      // 设备显示名称（推荐提供）
+   * }
    */
   @Post('generate-token')
-  generateToken(@Body() body: GenerateTokenDto) {
-    const { clientId, clientType } = body;
+  async generateToken(@Body() body: GenerateTokenDto) {
+    const { clientId, clientType, deviceName } = body;
 
     if (!clientId || !clientType) {
       return {
@@ -36,13 +41,27 @@ export class AuthController {
     }
 
     try {
-      const token = this.authService.generateToken(clientId, clientType);
-      this.logger.log(`✅ Token 生成成功: ${clientId} (${clientType})`);
+      const result = await this.authService.generateToken(
+        clientId,
+        clientType,
+        deviceName,
+      );
+
+      if (!result.success) {
+        this.logger.error(
+          `❌ Token 生成失败: ${clientId} (${clientType}), reason=${result.reason}`,
+        );
+        return {
+          success: false,
+          message: `Token 生成失败: ${result.reason}`,
+          reason: result.reason,
+        };
+      }
 
       return {
         success: true,
         data: {
-          token,
+          token: result.token,
         },
       };
     } catch (error) {

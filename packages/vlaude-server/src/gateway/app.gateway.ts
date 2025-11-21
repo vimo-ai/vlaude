@@ -23,6 +23,7 @@ import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../shared/database/prisma.service';
 import { ConfigService } from '@nestjs/config';
+import { DeviceService } from '../device/device.service';
 import * as jwt from 'jsonwebtoken';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -84,6 +85,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     private readonly httpService: HttpService,
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
+    private readonly deviceService: DeviceService,
   ) {
     // 加载 JWT 公钥
     const publicKeyPath = this.configService.get<string>('JWT_PUBLIC_KEY_PATH');
@@ -124,7 +126,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
     this.logger.log('🔒 [JWT] 注册 WebSocket 认证中间件');
 
-    server.use((socket: Socket, next) => {
+    server.use(async (socket: Socket, next) => {
       // 1. 获取客户端 IP
       const clientIp = this.getClientIp(socket);
 
@@ -146,10 +148,33 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       try {
         const payload = jwt.verify(token, this.jwtPublicKey, {
           algorithms: ['RS256'],
-        });
+        }) as any;
+
+        // 检查设备白名单
+        const deviceId = payload.deviceId || payload.clientId; // 向后兼容：如果没有 deviceId，使用 clientId
+
+        if (deviceId) {
+          const isDeviceValid = await this.deviceService.verifyDevice(deviceId);
+
+          if (!isDeviceValid) {
+            this.logger.error(
+              `❌ [设备验证] 设备未注册或已撤销: ${deviceId} (socket: ${socket.id})`,
+            );
+            return next(new Error('Authentication error: device not registered or revoked'));
+          }
+
+          // 更新设备最后登录时间
+          await this.deviceService.updateLastLogin(deviceId);
+          this.logger.log(
+            `✅ [JWT+设备] 认证成功: ${socket.id} (deviceId=${deviceId}, deviceName=${payload.deviceName || 'N/A'})`,
+          );
+        } else {
+          this.logger.warn(
+            `⚠️ [JWT] Token 中缺少 deviceId: ${socket.id} (旧版本 Token，允许连接)`,
+          );
+        }
 
         socket.data.user = payload;
-        this.logger.log(`✅ [JWT] 认证成功: ${socket.id} (${payload['clientId']})`);
         next();
       } catch (error) {
         this.logger.error(`❌ [JWT] 认证失败: ${socket.id} - ${error.message}`);
