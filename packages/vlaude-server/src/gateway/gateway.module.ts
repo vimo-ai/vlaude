@@ -9,11 +9,13 @@ import { EventEmitterModule } from '@nestjs/event-emitter';
 import { HttpModule } from '@nestjs/axios';
 import { AppGateway } from './app.gateway';
 import { DaemonGatewayModule } from '../module/daemon-gateway/daemon-gateway.module';
+import { DeviceModule } from '../device/device.module';
 
 @Module({
   imports: [
     EventEmitterModule.forRoot(),
     HttpModule,
+    DeviceModule,
     forwardRef(() => DaemonGatewayModule),
   ],
   providers: [AppGateway],

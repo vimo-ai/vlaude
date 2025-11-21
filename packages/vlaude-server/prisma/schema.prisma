@@ -71,3 +71,19 @@ model Message {
   @@index([sequence])
   @@map("claude_message")
 }
+
+// 设备白名单表
+model Device {
+  id           Int       @id @default(autoincrement())
+  deviceId     String    @unique @db.VarChar(255)  // 设备唯一标识 (iOS: identifierForVendor, Daemon: Mac UUID)
+  deviceName   String    @db.VarChar(255)          // 设备显示名称 (e.g., "iPhone 15 Pro", "MacBook Pro")
+  deviceType   String    @db.VarChar(50)           // 设备类型 (ios, daemon, web)
+  status       String    @default("active") @db.VarChar(20)  // 状态: active, revoked, pending
+  lastLoginAt  DateTime?                            // 最后登录时间
+  createdAt    DateTime  @default(now())           // 首次注册时间
+  updatedAt    DateTime  @updatedAt                // 更新时间
+
+  @@index([deviceId])
+  @@index([status])
+  @@map("device")
+}
