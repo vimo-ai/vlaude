@@ -161,8 +161,8 @@ class APIClient {
     }
 
     // MARK: - Auth APIs
-    func generateToken(clientId: String, clientType: String) async throws -> String {
-        let body = try JSONEncoder().encode(GenerateTokenRequest(clientId: clientId, clientType: clientType))
+    func generateToken(clientId: String, clientType: String, deviceName: String) async throws -> String {
+        let body = try JSONEncoder().encode(GenerateTokenRequest(clientId: clientId, clientType: clientType, deviceName: deviceName))
 
         let response: GenerateTokenResponse = try await request(
             path: "/auth/generate-token",
@@ -193,6 +193,7 @@ private struct CreateSessionResponse: Codable {
 private struct GenerateTokenRequest: Codable {
     let clientId: String
     let clientType: String
+    let deviceName: String
 }
 
 private struct GenerateTokenResponse: Codable {
