@@ -159,6 +159,23 @@ class APIClient {
 
         return session
     }
+
+    // MARK: - Auth APIs
+    func generateToken(clientId: String, clientType: String) async throws -> String {
+        let body = try JSONEncoder().encode(GenerateTokenRequest(clientId: clientId, clientType: clientType))
+
+        let response: GenerateTokenResponse = try await request(
+            path: "/auth/generate-token",
+            method: "POST",
+            body: body
+        )
+
+        guard response.success, let token = response.data?.token else {
+            throw APIError.serverError(response.message ?? "生成 Token 失败")
+        }
+
+        return token
+    }
 }
 
 // MARK: - Request/Response Types
@@ -171,6 +188,21 @@ private struct CreateSessionResponse: Codable {
     let success: Bool
     let data: Session?
     let message: String?
+}
+
+private struct GenerateTokenRequest: Codable {
+    let clientId: String
+    let clientType: String
+}
+
+private struct GenerateTokenResponse: Codable {
+    let success: Bool
+    let data: TokenData?
+    let message: String?
+}
+
+private struct TokenData: Codable {
+    let token: String
 }
 
 // Helper response types
