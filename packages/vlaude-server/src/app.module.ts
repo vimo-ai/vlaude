@@ -17,15 +17,10 @@ import { ProjectModule } from './module/project/project.module';
 import { SessionModule } from './module/session/session.module';
 import { PrismaModule } from './shared/database/prisma.module';
 import { GatewayModule } from './gateway/gateway.module';
+import { AuthModule } from './auth/auth.module';
 // @feature:minio:start
 // import { MinioModule } from './module/minio/minio.module';
 // @feature:minio:end
-// @feature:auth:start
-// 方案 A：接入第三方/平台 SDK（示例：@vimo/user-sdk）
-// import { UserPlatformSdkModule } from '@vimo/user-sdk';
-// 方案 B：使用内置占位 AuthModule，后续按需替换为具体实现
-// import { AuthModule } from './module/auth/auth.module';
-// @feature:auth:end
 
 @Module({
   imports: [
@@ -40,11 +35,7 @@ import { GatewayModule } from './gateway/gateway.module';
     DaemonGatewayModule,
     ProjectModule,
     SessionModule,
-    // @feature:auth:start
-    // 选择其一：平台 SDK / 内置占位模块
-    // UserPlatformSdkModule.forRootAsync(),
-    // AuthModule,
-    // @feature:auth:end
+    AuthModule,
     // @feature:minio:start
     // MinioModule,
     // @feature:minio:end

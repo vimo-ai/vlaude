@@ -12,6 +12,7 @@ import {
   SubscribeMessage,
   OnGatewayConnection,
   OnGatewayDisconnect,
+  OnGatewayInit,
   MessageBody,
   ConnectedSocket,
 } from '@nestjs/websockets';
@@ -21,6 +22,10 @@ import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../shared/database/prisma.service';
+import { ConfigService } from '@nestjs/config';
+import * as jwt from 'jsonwebtoken';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 
 // 资源类型枚举（与 Daemon 端保持一致）
 enum ResourceType {
@@ -44,11 +49,15 @@ interface ClientInfo {
     origin: '*', // 生产环境需要限制
   },
 })
-export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy {
+export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy {
   @WebSocketServer()
   server: Server;
 
   private readonly logger = new Logger(AppGateway.name);
+
+  // JWT 认证相关
+  private readonly jwtPublicKey: string;
+  private readonly ipWhitelist: string[];
 
   // 会话订阅管理：sessionId -> { subscribers: Set<clientId>, projectPath: string }
   private sessionSubscriptions = new Map<string, { subscribers: Set<string>; projectPath: string }>();
@@ -74,15 +83,149 @@ export class AppGateway implements OnGatewayConnection, OnGatewayDisconnect, OnM
     private readonly eventEmitter: EventEmitter2,
     private readonly httpService: HttpService,
     private readonly prisma: PrismaService,
-  ) {}
+    private readonly configService: ConfigService,
+  ) {
+    // 加载 JWT 公钥
+    const publicKeyPath = this.configService.get<string>('JWT_PUBLIC_KEY_PATH');
+    if (publicKeyPath) {
+      try {
+        this.jwtPublicKey = readFileSync(join(process.cwd(), publicKeyPath), 'utf-8');
+        this.logger.log(`✅ JWT 公钥已加载`);
+      } catch (error) {
+        this.logger.error(`❌ 无法加载 JWT 公钥: ${error.message}`);
+        throw error;
+      }
+    } else {
+      this.logger.warn('⚠️ JWT_PUBLIC_KEY_PATH 未配置，WebSocket 将不使用 JWT 认证');
+      this.jwtPublicKey = null;
+    }
+
+    // 解析 IP 白名单
+    const ipWhitelistConfig = this.configService.get<string>('IP_WHITELIST', '');
+    this.ipWhitelist = ipWhitelistConfig
+      .split(',')
+      .map((ip) => ip.trim())
+      .filter(Boolean);
+
+    if (this.ipWhitelist.length > 0) {
+      this.logger.log(`✅ IP 白名单: ${this.ipWhitelist.join(', ')}`);
+    }
+  }
+
+  /**
+   * 初始化 WebSocket 中间件（JWT 认证）
+   */
+  afterInit(server: Server) {
+    // 如果没有配置 JWT，跳过认证
+    if (!this.jwtPublicKey) {
+      this.logger.warn('⚠️ JWT 认证未启用');
+      return;
+    }
+
+    this.logger.log('🔒 [JWT] 注册 WebSocket 认证中间件');
+
+    server.use((socket: Socket, next) => {
+      // 1. 获取客户端 IP
+      const clientIp = this.getClientIp(socket);
+
+      // 2. 检查 IP 白名单
+      if (this.isWhitelistedIp(clientIp)) {
+        this.logger.log(`🔓 [JWT] 内网 IP ${clientIp} 豁免认证`);
+        socket.data.user = { clientId: 'internal', clientType: 'daemon' };
+        return next();
+      }
+
+      // 3. 外网必须验证 Token
+      const token = socket.handshake.auth?.token || (socket.handshake.query?.token as string);
+
+      if (!token) {
+        this.logger.warn(`❌ [JWT] 连接缺少 Token: ${socket.id} (IP: ${clientIp})`);
+        return next(new Error('Authentication error: missing token'));
+      }
+
+      try {
+        const payload = jwt.verify(token, this.jwtPublicKey, {
+          algorithms: ['RS256'],
+        });
+
+        socket.data.user = payload;
+        this.logger.log(`✅ [JWT] 认证成功: ${socket.id} (${payload['clientId']})`);
+        next();
+      } catch (error) {
+        this.logger.error(`❌ [JWT] 认证失败: ${socket.id} - ${error.message}`);
+        return next(new Error('Authentication error: invalid token'));
+      }
+    });
+  }
 
   handleConnection(client: Socket) {
-    this.logger.log(`✅ 客户端连接: ${client.id}`);
+    const user = client.data.user;
+    this.logger.log(`✅ 客户端连接: ${client.id} (${user?.clientId || 'unknown'})`);
   }
 
   handleDisconnect(client: Socket) {
     this.logger.log(`❌ 客户端断开: ${client.id}`);
     this.cleanupClient(client.id);
+  }
+
+  /**
+   * 从 Socket 提取客户端 IP
+   */
+  private getClientIp(socket: Socket): string {
+    const handshake = socket.handshake;
+
+    // 优先从 X-Forwarded-For 获取（反向代理场景）
+    const forwardedFor = handshake.headers['x-forwarded-for'];
+    if (forwardedFor) {
+      const ip = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor;
+      return ip.split(',')[0].trim();
+    }
+
+    // X-Real-IP
+    const realIp = handshake.headers['x-real-ip'];
+    if (realIp) {
+      return Array.isArray(realIp) ? realIp[0] : realIp;
+    }
+
+    // 直连场景
+    return handshake.address || 'unknown';
+  }
+
+  /**
+   * 检查 IP 是否在白名单中
+   */
+  private isWhitelistedIp(ip: string): boolean {
+    if (!ip || ip === 'unknown') return false;
+
+    // 精确匹配
+    if (this.ipWhitelist.includes(ip)) return true;
+
+    // CIDR 匹配
+    return this.ipWhitelist.some((cidr) => this.ipInCidr(ip, cidr));
+  }
+
+  /**
+   * 检查 IP 是否在 CIDR 范围内
+   */
+  private ipInCidr(ip: string, cidr: string): boolean {
+    // 如果不是 CIDR 格式，直接比较
+    if (!cidr.includes('/')) return ip === cidr;
+
+    const [subnet, bits] = cidr.split('/');
+    const mask = ~(2 ** (32 - parseInt(bits, 10)) - 1);
+    const ipNum = this.ipToNumber(ip);
+    const subnetNum = this.ipToNumber(subnet);
+
+    return (ipNum & mask) === (subnetNum & mask);
+  }
+
+  /**
+   * 将 IP 地址转换为数字
+   */
+  private ipToNumber(ip: string): number {
+    return (
+      ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0
+    );
   }
 
   /**
