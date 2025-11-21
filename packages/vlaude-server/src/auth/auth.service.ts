@@ -46,7 +46,8 @@ export class AuthService {
     clientType: 'daemon' | 'ios',
     deviceName?: string,
   ): Promise<{ success: boolean; token?: string; reason?: string }> {
-    const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN', '7d');
+    // 默认永不过期（100年），安全依赖设备白名单撤销机制
+    const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN', '100y');
 
     // deviceId 使用 clientId（iOS 为 identifierForVendor，Daemon 为 Mac UUID）
     const deviceId = clientId;
