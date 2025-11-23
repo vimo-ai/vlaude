@@ -2,9 +2,10 @@
  * @description Data Collector Service - 采集 Claude Code 项目和会话数据
  * @author Claude
  * @date 2025/11/16
- * @version v1.0.0
+ * @version v2.0.0
  *
  * 江湖的业务千篇一律,复杂的代码好几百行。
+ * v2.0.0: 核心逻辑抽取到 shared-core 包
  */
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { OnEvent } from '@nestjs/event-emitter';
@@ -12,6 +13,20 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import { ServerClientService } from '../server-client/server-client.service';
+import {
+  encodeProjectPath,
+  extractProjectPath,
+  getEncodedPrefix,
+  scanProjects,
+  scanSessions,
+  findEncodedDirName,
+  findLatestSession,
+  readSessionMessages,
+  buildSessionPath,
+  isValidSessionFile,
+  type ClaudeProjectInfo,
+  type ClaudeSessionMeta,
+} from '@vlaude/shared-core';
 
 interface ClaudeProject {
   name: string;
@@ -74,39 +89,13 @@ export class DataCollectorService implements OnModuleInit {
 
   /**
    * V2: 预加载所有项目的路径映射
-   * 扫描 Claude 项目目录，建立 真实路径 → 编码目录名 的映射
+   * 使用 shared-core 的 scanProjects 获取映射
    */
   private async preloadPathCache() {
     try {
-      const dirs = await fsPromises.readdir(this.claudeProjectsPath);
-
-      let count = 0;
-      for (const encodedDirName of dirs) {
-        const projectDir = path.join(this.claudeProjectsPath, encodedDirName);
-
-        // 检查是否是目录
-        const stat = await fsPromises.stat(projectDir);
-        if (!stat.isDirectory()) continue;
-
-        // 遍历所有 .jsonl 文件，找到第一个包含 cwd 的文件
-        const files = await fsPromises.readdir(projectDir);
-        const jsonlFiles = files.filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'));
-
-        let realPath: string | null = null;
-        for (const jsonlFile of jsonlFiles) {
-          realPath = await this.extractProjectPathFromJsonl(
-            path.join(projectDir, jsonlFile)
-          );
-          if (realPath) {
-            // 找到了包含 cwd 的文件，停止查找
-            break;
-          }
-        }
-
-        if (realPath) {
-          this.pathToEncodedDirCache.set(realPath, encodedDirName);
-          count++;
-        }
+      const projects = await scanProjects(this.claudeProjectsPath);
+      for (const project of projects) {
+        this.pathToEncodedDirCache.set(project.path, project.encodedDirName);
       }
     } catch (error) {
       this.logger.error(`预加载路径映射失败: ${error.message}`);
@@ -115,12 +104,13 @@ export class DataCollectorService implements OnModuleInit {
 
   /**
    * V2: 刷新指定项目的映射（用于新项目）
+   * 使用 shared-core 的 findEncodedDirName
    */
   async refreshProjectMapping(projectPath: string) {
     // 如果缓存已有，验证映射是否有效
     if (this.pathToEncodedDirCache.has(projectPath)) {
       const encodedDirName = this.pathToEncodedDirCache.get(projectPath);
-      const projectDir = path.join(this.claudeProjectsPath, encodedDirName);
+      const projectDir = path.join(this.claudeProjectsPath, encodedDirName!);
 
       try {
         await fsPromises.access(projectDir);
@@ -132,74 +122,16 @@ export class DataCollectorService implements OnModuleInit {
     }
 
     try {
-      const dirs = await fsPromises.readdir(this.claudeProjectsPath);
-      const projectName = path.basename(projectPath);
+      const encodedDirName = await findEncodedDirName(
+        this.claudeProjectsPath,
+        projectPath,
+      );
 
-      // 计算前缀（到第一个中文字符之前）用于优化过滤
-      const prefix = this.getEncodedPrefix(projectPath);
-
-      // 前缀过滤：分离候选目录和跳过的目录
-      const candidateDirs: string[] = [];
-      const skippedDirs: string[] = [];
-
-      for (const encodedDirName of dirs) {
-        const projectDir = path.join(this.claudeProjectsPath, encodedDirName);
-        const stat = await fsPromises.stat(projectDir);
-        if (!stat.isDirectory()) continue;
-
-        // 前缀匹配：如果前缀完全不同，跳过（性能优化）
-        if (prefix && !encodedDirName.startsWith(prefix)) {
-          skippedDirs.push(encodedDirName);
-          continue;
-        }
-
-        candidateDirs.push(encodedDirName);
+      if (encodedDirName) {
+        this.pathToEncodedDirCache.set(projectPath, encodedDirName);
+      } else {
+        this.logger.warn(`❌ 未找到项目目录: ${projectPath}`);
       }
-
-      let candidateDir: { encodedDirName: string; mtime: Date } | null = null;
-
-      // 扫描候选目录（删除了原有的"跳过已知编码目录"逻辑，以支持多个真实路径映射到同一编码目录）
-      for (const encodedDirName of candidateDirs) {
-        const projectDir = path.join(this.claudeProjectsPath, encodedDirName);
-        const files = await fsPromises.readdir(projectDir);
-        const jsonlFiles = files.filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'));
-
-        // 遍历所有文件，找到包含 cwd 的文件
-        for (const jsonlFile of jsonlFiles) {
-          const realPath = await this.extractProjectPathFromJsonl(
-            path.join(projectDir, jsonlFile)
-          );
-
-          if (realPath === projectPath) {
-            this.pathToEncodedDirCache.set(realPath, encodedDirName);
-            return;
-          }
-        }
-
-        // 如果无法从文件中提取 cwd（空文件），尝试通过目录名和最近修改时间匹配
-        if (jsonlFiles.length > 0 && encodedDirName.endsWith(`-${projectName}`)) {
-          const latestFile = jsonlFiles[0];
-          const filePath = path.join(projectDir, latestFile);
-          const fileStat = await fsPromises.stat(filePath);
-          const now = new Date();
-          const ageInSeconds = (now.getTime() - fileStat.mtime.getTime()) / 1000;
-
-          // 如果文件是最近 60 秒内创建的，可能是这个项目
-          if (ageInSeconds < 60) {
-            if (!candidateDir || fileStat.mtime > candidateDir.mtime) {
-              candidateDir = { encodedDirName, mtime: fileStat.mtime };
-            }
-          }
-        }
-      }
-
-      // 如果找到候选目录，使用它
-      if (candidateDir) {
-        this.pathToEncodedDirCache.set(projectPath, candidateDir.encodedDirName);
-        return;
-      }
-
-      this.logger.warn(`❌ 未找到项目目录: ${projectPath}`);
     } catch (error) {
       this.logger.error(`刷新项目映射失败: ${error.message}`);
     }
@@ -211,15 +143,6 @@ export class DataCollectorService implements OnModuleInit {
   private getEncodedDirName(projectPath: string): string | null {
     return this.pathToEncodedDirCache.get(projectPath) || null;
   }
-
-  /**
-   * 编码项目路径为 Claude Code 的目录名格式
-   * 例如：/Users/xxx/project → -Users-xxx-project
-   */
-  private encodeProjectPath(realPath: string): string {
-    return '-' + realPath.replace(/^\//, '').replace(/\//g, '-');
-  }
-
 
   /**
    * 采集并发送所有数据
@@ -252,95 +175,17 @@ export class DataCollectorService implements OnModuleInit {
   }
 
   /**
-   * 采集 Claude Code 项目 (V2: 支持 limit 和按 mtime 排序)
+   * 采集 Claude Code 项目 (V2: 使用 shared-core)
    * @param limit 返回项目数量，不传则返回全部
-   * @returns 按最新 session mtime 排序的项目列表（只包含轻量级元数据）
+   * @returns 按最新 session mtime 排序的项目列表
    */
   async collectProjects(limit?: number): Promise<ClaudeProject[]> {
     try {
-      // 检查 projects 目录是否存在
-      try {
-        await fsPromises.access(this.claudeProjectsPath);
-      } catch {
-        this.logger.warn(
-          `Claude Code projects 目录不存在: ${this.claudeProjectsPath}`,
-        );
-        return [];
-      }
+      const projects = await scanProjects(this.claudeProjectsPath, limit);
 
-      const entries = await fsPromises.readdir(this.claudeProjectsPath, {
-        withFileTypes: true,
-      });
-      const projects: ClaudeProject[] = [];
-
-      for (const entry of entries) {
-        if (entry.isDirectory()) {
-          const encodedProjectDir = path.join(this.claudeProjectsPath, entry.name);
-
-          try {
-            // 读取项目统计信息
-            const stats = await fsPromises.stat(encodedProjectDir);
-
-            // 查找会话文件（.jsonl 格式，UUID 命名）
-            const sessionEntries = await fsPromises.readdir(encodedProjectDir);
-            const sessionFiles = sessionEntries.filter(
-              (f) => f.endsWith('.jsonl') && !f.startsWith('agent-'),
-            );
-
-            // 找出所有会话文件中最新的修改时间
-            let latestMtime = stats.mtime; // 初始值为目录 mtime
-            for (const sessionFile of sessionFiles) {
-              try {
-                const sessionPath = path.join(encodedProjectDir, sessionFile);
-                const sessionStats = await fsPromises.stat(sessionPath);
-                if (sessionStats.mtime > latestMtime) {
-                  latestMtime = sessionStats.mtime;
-                }
-              } catch (error) {
-                this.logger.warn(`读取会话文件 mtime 失败 ${sessionFile}: ${error.message}`);
-              }
-            }
-
-            // V2: 从 JSONL 文件提取真实项目路径
-            let realProjectPath: string | null = null;
-
-            // 遍历所有 .jsonl 文件，找到第一个包含 cwd 的文件
-            for (const jsonlFile of sessionFiles) {
-              realProjectPath = await this.extractProjectPathFromJsonl(
-                path.join(encodedProjectDir, jsonlFile)
-              );
-              if (realProjectPath) {
-                // 找到了包含 cwd 的文件，停止查找
-                break;
-              }
-            }
-
-            // 如果无法从 JSONL 提取，跳过该项目（不再使用解码）
-            if (!realProjectPath) {
-              continue;
-            }
-
-            const projectName = path.basename(realProjectPath);
-
-            projects.push({
-              name: projectName,
-              path: realProjectPath,
-              encodedDirName: entry.name,  // 保存编码的目录名
-              lastAccessed: latestMtime,
-              sessions: sessionFiles,
-            });
-          } catch (error) {
-            this.logger.error(`处理项目目录失败 ${entry.name}: ${error.message}`);
-          }
-        }
-      }
-
-      // V2 改进: 按最新 session 的 mtime 排序（降序）
-      projects.sort((a, b) => b.lastAccessed.getTime() - a.lastAccessed.getTime());
-
-      // 如果指定了 limit，只返回前 N 个
-      if (limit && limit > 0) {
-        return projects.slice(0, limit);
+      // 同步更新缓存
+      for (const project of projects) {
+        this.pathToEncodedDirCache.set(project.path, project.encodedDirName);
       }
 
       return projects;
@@ -351,18 +196,16 @@ export class DataCollectorService implements OnModuleInit {
   }
 
   /**
-   * 采集项目的会话元数据 (V2: 支持 limit，返回轻量级元数据)
-   * @param projectPath 真实的项目路径（已解码）
+   * 采集项目的会话元数据 (V2: 使用 shared-core)
+   * @param projectPath 真实的项目路径
    * @param limit 返回会话数量，不传则返回全部
-   * @param encodedDirName 可选的编码目录名(如果提供则直接使用,避免编码错误)
-   * @returns 按 mtime 排序的会话元数据列表（不包含消息内容）
+   * @returns 按 mtime 排序的会话元数据列表
    */
   async collectSessions(
     projectPath: string,
     limit?: number,
   ): Promise<ClaudeSession[]> {
     try {
-      // V2: 从缓存查找编码目录名
       const encodedDirName = this.getEncodedDirName(projectPath);
 
       if (!encodedDirName) {
@@ -370,70 +213,12 @@ export class DataCollectorService implements OnModuleInit {
         return [];
       }
 
-      const encodedProjectDir = path.join(this.claudeProjectsPath, encodedDirName);
-
-      try {
-        await fsPromises.access(encodedProjectDir);
-      } catch {
-        this.logger.warn(`项目目录不存在: ${encodedProjectDir}`);
-        return [];
-      }
-
-      const sessionFiles = await fsPromises.readdir(encodedProjectDir);
-
-      const sessionMetadata: ClaudeSession[] = [];
-
-      for (const file of sessionFiles) {
-        // 只处理会话文件（UUID.jsonl），排除 agent 文件
-        if (file.endsWith('.jsonl') && !file.startsWith('agent-')) {
-          const sessionPath = path.join(encodedProjectDir, file);
-          const sessionId = file.replace(/\.jsonl$/, '');
-
-          try {
-            const stats = await fsPromises.stat(sessionPath);
-
-            // V2: 快速统计行数，不解析 JSON（用于增量更新判断）
-            const lineCount = await this.countFileLines(sessionPath);
-
-            // 检查是否为 summary 文件（只有一行且 type 为 summary）
-            if (lineCount === 1) {
-              const firstLine = await this.readFirstLine(sessionPath);
-              if (firstLine) {
-                try {
-                  const entry = JSON.parse(firstLine);
-                  if (entry.type === 'summary') {
-                    continue; // 跳过 summary 文件
-                  }
-                } catch {
-                  // 解析失败，继续处理
-                }
-              }
-            }
-
-            sessionMetadata.push({
-              id: sessionId,
-              projectPath,
-              createdAt: stats.birthtime,
-              lastUpdated: stats.mtime,
-              messageCount: lineCount,  // 暂时用行数代替消息数
-            });
-          } catch (error) {
-            this.logger.error(
-              `读取会话文件失败 ${file}: ${error.message}`,
-            );
-          }
-        }
-      }
-
-      // V2 改进: 按最后更新时间倒序排序
-      sessionMetadata.sort((a, b) => b.lastUpdated.getTime() - a.lastUpdated.getTime());
-
-      // 如果指定了 limit，只返回前 N 个
-      if (limit && limit > 0) {
-        return sessionMetadata.slice(0, limit);
-      }
-
-      return sessionMetadata;
+      return await scanSessions(
+        this.claudeProjectsPath,
+        encodedDirName,
+        projectPath,
+        limit,
+      );
     } catch (error) {
       this.logger.error(`采集会话失败: ${error.message}`);
       return [];
@@ -441,92 +226,7 @@ export class DataCollectorService implements OnModuleInit {
   }
 
   /**
-   * 读取文件第一行
-   */
-  private async readFirstLine(filePath: string): Promise<string | null> {
-    try {
-      const content = await fsPromises.readFile(filePath, 'utf-8');
-      const firstLine = content.split('\n')[0];
-      return firstLine?.trim() || null;
-    } catch (error) {
-      this.logger.error(`读取文件第一行失败 ${filePath}: ${error.message}`);
-      return null;
-    }
-  }
-
-  /**
-   * 快速统计文件行数（不读取内容）
-   */
-  private async countFileLines(filePath: string): Promise<number> {
-    try {
-      const content = await fsPromises.readFile(filePath, 'utf-8');
-      return content.split('\n').filter(line => line.trim()).length;
-    } catch (error) {
-      this.logger.error(`统计文件行数失败 ${filePath}: ${error.message}`);
-      return 0;
-    }
-  }
-
-  /**
-   * 提取路径的编码前缀（到第一个中文字符之前）
-   * 用于优化目录扫描性能
-   *
-   * @example
-   * /Users/xxx/小工具/claude/test → -Users-xxx-
-   * /Users/xxx/project → -Users-xxx-project
-   */
-  private getEncodedPrefix(projectPath: string): string {
-    // 找到第一个非 ASCII 字符（中文等）的位置
-    let prefixEnd = 0;
-    for (let i = 0; i < projectPath.length; i++) {
-      const char = projectPath[i];
-      // 非 ASCII 字符（中文、emoji 等）
-      if (char.charCodeAt(0) > 127) {
-        break;
-      }
-      prefixEnd = i + 1;
-    }
-
-    // 如果整个路径都是 ASCII，取全路径
-    const prefix = projectPath.substring(0, prefixEnd);
-
-    // 转换：/ 替换为 -（Claude Code 的编码规则）
-    const encoded = prefix.replace(/\//g, '-');
-
-    return encoded;
-  }
-
-  /**
-   * 从 JSONL 文件中提取项目路径（使用 grep 命令）
-   */
-  private async extractProjectPathFromJsonl(jsonlFilePath: string): Promise<string | null> {
-    try {
-      const { execSync } = require('child_process');
-
-      // 使用 grep 提取 cwd 字段，读取前 10 行
-      const result = execSync(`head -n 10 "${jsonlFilePath}" | grep -o '"cwd":"[^"]*"' | head -1`, {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'ignore'], // 忽略 stderr
-      }).trim();
-
-      if (result) {
-        // 提取引号中的路径：从 "cwd":"/path" 中提取 /path
-        const match = result.match(/"cwd":"([^"]+)"/);
-        if (match && match[1]) {
-          return match[1];
-        }
-      }
-
-      return null;
-    } catch (error) {
-      // grep 没找到会返回非 0 退出码，这是正常的
-      return null;
-    }
-  }
-
-  /**
    * 开始监听指定会话文件（按需监听）
-   * @param encodedDirName 可选的编码目录名,优先使用避免编码错误
    */
   async startWatchingSession(sessionId: string, projectPath: string) {
     try {
@@ -744,13 +444,12 @@ export class DataCollectorService implements OnModuleInit {
   }
 
   /**
-   * 读取指定会话的消息内容(支持分页)
+   * 读取指定会话的消息内容(支持分页) - V2: 使用 shared-core
    * @param sessionId 会话ID（UUID）
    * @param projectPath 项目路径
    * @param limit 每页条数(默认50)
    * @param offset 偏移量(默认0)
    * @param order 排序方式：'asc' 正序（旧到新），'desc' 倒序（新到旧），默认 'asc'
-   * @param encodedDirName 可选的编码目录名
    */
   async getSessionMessages(
     sessionId: string,
@@ -758,9 +457,8 @@ export class DataCollectorService implements OnModuleInit {
     limit: number = 50,
     offset: number = 0,
     order: 'asc' | 'desc' = 'asc',
-  ): Promise<{ messages: any[]; total: number; hasMore: boolean } | null> {
+  ): Promise<{ messages: unknown[]; total: number; hasMore: boolean } | null> {
     try {
-      // V2: 从缓存查找编码目录名
       const encodedDirName = this.getEncodedDirName(projectPath);
 
       if (!encodedDirName) {
@@ -768,52 +466,13 @@ export class DataCollectorService implements OnModuleInit {
         return null;
       }
 
-      const encodedProjectDir = path.join(this.claudeProjectsPath, encodedDirName);
-      const sessionPath = path.join(encodedProjectDir, `${sessionId}.jsonl`);
+      const sessionPath = buildSessionPath(
+        this.claudeProjectsPath,
+        encodedDirName,
+        sessionId,
+      );
 
-      try {
-        await fsPromises.access(sessionPath);
-      } catch {
-        this.logger.warn(`会话文件不存在: ${sessionPath}`);
-        return null;
-      }
-
-      const content = await fsPromises.readFile(sessionPath, 'utf-8');
-
-      // 解析 JSONL 格式
-      const allMessages = content
-        .split('\n')
-        .filter((line) => line.trim())
-        .map((line) => {
-          try {
-            return JSON.parse(line);
-          } catch {
-            return null;
-          }
-        })
-        .filter((msg) => msg !== null)
-        .filter((msg) => {
-          // 过滤 SDK 内部消息类型
-          if (!msg.type) return true;
-
-          // 过滤队列操作、快照、摘要等 SDK 内部消息
-          const internalTypes = ['queue-operation', 'checkpoint', 'file-history-snapshot', 'summary'];
-          return !internalTypes.includes(msg.type);
-        });
-
-      const total = allMessages.length;
-
-      // 根据排序方式处理消息顺序
-      const sortedMessages = order === 'desc' ? allMessages.reverse() : allMessages;
-
-      // 应用分页
-      const messages = sortedMessages.slice(offset, offset + limit);
-
-      return {
-        messages,
-        total,
-        hasMore: offset + messages.length < total,
-      };
+      return await readSessionMessages(sessionPath, limit, offset, order);
     } catch (error) {
       this.logger.error(`读取会话消息失败 ${sessionId}: ${error.message}`);
       return null;
@@ -821,7 +480,7 @@ export class DataCollectorService implements OnModuleInit {
   }
 
   /**
-   * 查找新创建的 session 文件（带轮询重试）
+   * 查找新创建的 session 文件（带轮询重试）- V2: 使用 shared-core
    */
   @OnEvent('daemon.findNewSession')
   async handleFindNewSession(data: { clientId: string; projectPath: string }) {
@@ -844,50 +503,30 @@ export class DataCollectorService implements OnModuleInit {
     }
 
     // 4. 有映射了，在该目录下轮询查找最新的 session 文件
-    const projectDir = path.join(this.claudeProjectsPath, encodedDirName);
     const maxRetries = 10;
     const retryInterval = 1000;
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
-        const files = await fsPromises.readdir(projectDir);
-        const sessionFiles = files.filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-'));
-        const now = Date.now();
-
-        let latestSession: { sessionId: string; mtime: number } | null = null;
-
-        for (const file of sessionFiles) {
-          const filePath = path.join(projectDir, file);
-          const fileStat = await fsPromises.stat(filePath);
-          const ageInSeconds = (now - fileStat.mtimeMs) / 1000;
-
-          // 只考虑最近 60 秒内创建的文件
-          if (ageInSeconds < 60) {
-            const sessionId = path.basename(file, '.jsonl');
-            if (!latestSession || fileStat.mtimeMs > latestSession.mtime) {
-              latestSession = {
-                sessionId,
-                mtime: fileStat.mtimeMs,
-              };
-            }
-          }
-        }
+        const latestSession = await findLatestSession(
+          this.claudeProjectsPath,
+          encodedDirName,
+          60,
+        );
 
         if (latestSession) {
-
-          // 通知 Server
           await this.serverClient.notifyNewSessionFound(
             clientId,
             latestSession.sessionId,
             projectPath,
-            encodedDirName
+            encodedDirName,
           );
           return;
         }
 
         // 未找到，等待后重试
         if (attempt < maxRetries) {
-          await new Promise(resolve => setTimeout(resolve, retryInterval));
+          await new Promise((resolve) => setTimeout(resolve, retryInterval));
         }
       } catch (error) {
         this.logger.error(`❌ [查找新Session] 第 ${attempt} 次尝试失败: ${error.message}`);
@@ -920,7 +559,7 @@ export class DataCollectorService implements OnModuleInit {
   }
 
   /**
-   * 开始监听项目的新 session 创建
+   * 开始监听项目的新 session 创建 - V2: 使用 shared-core
    */
   @OnEvent('daemon.watchNewSession')
   async handleWatchNewSession(data: { clientId: string; projectPath: string }) {
@@ -935,7 +574,7 @@ export class DataCollectorService implements OnModuleInit {
 
       // 如果仍然找不到（说明是全新项目），主动创建映射
       if (!encodedDirName) {
-        encodedDirName = this.encodeProjectPath(projectPath);
+        encodedDirName = encodeProjectPath(projectPath);
         this.pathToEncodedDirCache.set(projectPath, encodedDirName);
       }
 
@@ -951,11 +590,11 @@ export class DataCollectorService implements OnModuleInit {
 
       // 记录当前已有的 session 文件
       const files = await fsPromises.readdir(projectDir);
-      const existingFiles = new Set(files.filter(f => f.endsWith('.jsonl') && !f.startsWith('agent-')));
+      const existingFiles = new Set(files.filter(isValidSessionFile));
 
       // 创建文件监听器
       const watcher = fs.watch(projectDir, async (eventType, filename) => {
-        if (filename && filename.endsWith('.jsonl') && !filename.startsWith('agent-') && !existingFiles.has(filename)) {
+        if (filename && isValidSessionFile(filename) && !existingFiles.has(filename)) {
           const sessionId = path.basename(filename, '.jsonl');
 
           // 停止监听
