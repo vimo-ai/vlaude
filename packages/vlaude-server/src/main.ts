@@ -13,10 +13,47 @@ import { AllExceptionsFilter } from './plugins/filter/allExceptionsFilter';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import fastifyMultipart from '@fastify/multipart';
 import { IoAdapter } from '@nestjs/platform-socket.io';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
+
+/**
+ * 加载 mTLS 证书配置
+ */
+function loadMTLSConfig() {
+  const certsDir = join(process.cwd(), 'certs');
+  const caPath = join(certsDir, 'ca.crt');
+  const keyPath = join(certsDir, 'server.key');
+  const certPath = join(certsDir, 'server.crt');
+
+  // 检查证书文件是否存在
+  if (!existsSync(caPath) || !existsSync(keyPath) || !existsSync(certPath)) {
+    return null;
+  }
+
+  return {
+    key: readFileSync(keyPath),
+    cert: readFileSync(certPath),
+    ca: readFileSync(caPath),
+    requestCert: true,           // 请求客户端证书
+    rejectUnauthorized: false,   // 不强制拒绝（在应用层根据 IP 判断）
+    minVersion: 'TLSv1.2' as const,  // 最低 TLS 版本
+  };
+}
 
 async function bootstrap() {
+  // 检查是否启用 mTLS
+  const enableMTLS = process.env.ENABLE_MTLS === 'true';
+  const mtlsConfig = enableMTLS ? loadMTLSConfig() : null;
 
-  const fastifyAdapter = new FastifyAdapter();
+  if (enableMTLS && !mtlsConfig) {
+    console.error('❌ mTLS 已启用但证书文件缺失！请先运行 scripts/generate-certs.sh');
+    console.error('   需要的文件: certs/ca.crt, certs/server.key, certs/server.crt');
+    process.exit(1);
+  }
+
+  const fastifyAdapter = new FastifyAdapter({
+    https: mtlsConfig || undefined,
+  });
   fastifyAdapter.register(fastifyMultipart , {})
 
   const app = await NestFactory.create(AppModule, fastifyAdapter);
@@ -33,7 +70,12 @@ async function bootstrap() {
 
   const port = process.env.PORT || 10005;
   await app.listen(port, '0.0.0.0');
-  console.log(`Vlaude Server is running on: http://localhost:${port}`);
+
+  const protocol = mtlsConfig ? 'https' : 'http';
+  console.log(`Vlaude Server is running on: ${protocol}://localhost:${port}`);
+  if (mtlsConfig) {
+    console.log('🔐 mTLS 已启用，需要客户端证书才能访问');
+  }
 
   // 优雅关闭处理 - 解决热重启时端口占用问题
   const gracefulShutdown = async (signal: string) => {
