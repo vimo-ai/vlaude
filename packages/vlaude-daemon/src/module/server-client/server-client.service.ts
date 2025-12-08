@@ -26,8 +26,8 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
   ) {
-    // 从环境变量获取 server URL,默认为本地
-    this.serverUrl = this.configService.get<string>('SERVER_URL') || 'http://localhost:10005';
+    // 从环境变量获取 server URL,默认为本地（mTLS 模式使用 https）
+    this.serverUrl = this.configService.get<string>('SERVER_URL') || 'https://localhost:10005';
   }
 
   /**
@@ -59,6 +59,8 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
       reconnectionDelay: 1000,
       reconnectionDelayMax: 5000,
       reconnectionAttempts: this.maxReconnectAttempts,
+      // 内网跳过证书验证（mTLS 场景）
+      rejectUnauthorized: false,
     });
 
     this.setupEventHandlers();
