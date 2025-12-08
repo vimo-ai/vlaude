@@ -150,6 +150,20 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
     this.socket.on('server:approvalResponse', (data: { requestId: string; approved: boolean; reason?: string }) => {
       this.handleApprovalResponse(data);
     });
+
+    // =================== ETerm 相关事件监听 ===================
+
+    // 监听来自 server 的消息注入请求（转发给 ETerm）
+    this.socket.on('server:injectToEterm', (data: { sessionId: string; text: string }) => {
+      this.logger.log(`💉 [ETerm] 收到消息注入请求: session=${data.sessionId}`);
+      this.eventEmitter.emit('eterm.inject', data);
+    });
+
+    // 监听来自 server 的 Mobile 查看状态通知（转发给 ETerm）
+    this.socket.on('server:mobileViewing', (data: { sessionId: string; isViewing: boolean }) => {
+      this.logger.log(`📱 [ETerm] Mobile ${data.isViewing ? '正在查看' : '离开了'} session ${data.sessionId}`);
+      this.eventEmitter.emit('eterm.mobileViewing', data);
+    });
   }
 
   /**
@@ -709,6 +723,78 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.logger.log(`📤 [Swift 活动] 已通知 Server: ${sessionId}`);
+    return true;
+  }
+
+  // =================== ETerm 相关通知方法 ===================
+
+  /**
+   * 通知 Server：ETerm 已上线
+   */
+  async notifyEtermOnline() {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot notify ETerm online');
+      return false;
+    }
+
+    this.socket.emit('daemon:etermOnline', {
+      timestamp: new Date().toISOString(),
+    });
+
+    this.logger.log('🖥️ [ETerm] 已通知 Server: ETerm 在线');
+    return true;
+  }
+
+  /**
+   * 通知 Server：ETerm 已离线
+   */
+  async notifyEtermOffline() {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot notify ETerm offline');
+      return false;
+    }
+
+    this.socket.emit('daemon:etermOffline', {
+      timestamp: new Date().toISOString(),
+    });
+
+    this.logger.log('🖥️ [ETerm] 已通知 Server: ETerm 离线');
+    return true;
+  }
+
+  /**
+   * 通知 Server：某个 session 在 ETerm 中可用
+   */
+  async notifyEtermSessionAvailable(sessionId: string) {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot notify ETerm session available');
+      return false;
+    }
+
+    this.socket.emit('daemon:etermSessionAvailable', {
+      sessionId,
+      timestamp: new Date().toISOString(),
+    });
+
+    this.logger.log(`🖥️ [ETerm] 已通知 Server: Session ${sessionId} 在 ETerm 中可用`);
+    return true;
+  }
+
+  /**
+   * 通知 Server：某个 session 不再在 ETerm 中可用
+   */
+  async notifyEtermSessionUnavailable(sessionId: string) {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot notify ETerm session unavailable');
+      return false;
+    }
+
+    this.socket.emit('daemon:etermSessionUnavailable', {
+      sessionId,
+      timestamp: new Date().toISOString(),
+    });
+
+    this.logger.log(`🖥️ [ETerm] 已通知 Server: Session ${sessionId} 不再在 ETerm 中可用`);
     return true;
   }
 }

@@ -16,7 +16,7 @@ import {
   MessageBody,
   ConnectedSocket,
 } from '@nestjs/websockets';
-import { Logger, OnModuleDestroy } from '@nestjs/common';
+import { Logger, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { HttpService } from '@nestjs/axios';
@@ -24,6 +24,7 @@ import { firstValueFrom } from 'rxjs';
 import { PrismaService } from '../shared/database/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import { DeviceService } from '../device/device.service';
+import { DaemonGateway } from '../module/daemon-gateway/daemon.gateway';
 import * as jwt from 'jsonwebtoken';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -86,6 +87,8 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly deviceService: DeviceService,
+    @Inject(forwardRef(() => DaemonGateway))
+    private readonly daemonGateway: DaemonGateway,
   ) {
     // 加载 JWT 公钥
     const publicKeyPath = this.configService.get<string>('JWT_PUBLIC_KEY_PATH');
@@ -516,6 +519,12 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         sessionId,
         projectPath,
       });
+
+      // 如果 session 在 ETerm 中，通知 ETerm 有 Mobile 正在查看
+      if (this.daemonGateway.isSessionInEterm(sessionId)) {
+        this.logger.log(`📱 [ETerm] 通知 Mobile 正在查看 session ${sessionId}`);
+        this.daemonGateway.notifyEtermMobileViewing(sessionId, true);
+      }
     }
 
     return { success: true, message: `已订阅会话 ${sessionId}` };
@@ -548,6 +557,12 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         this.logger.log(`🔕 [通知Daemon] 停止监听会话文件: ${sessionId}`);
         this.eventEmitter.emit('daemon.stopWatching', { sessionId, projectPath: subscription.projectPath });
         this.sessionSubscriptions.delete(sessionId);
+
+        // 如果 session 在 ETerm 中，通知 ETerm 没有 Mobile 在查看了
+        if (this.daemonGateway.isSessionInEterm(sessionId)) {
+          this.logger.log(`📱 [ETerm] 通知 Mobile 离开了 session ${sessionId}`);
+          this.daemonGateway.notifyEtermMobileViewing(sessionId, false);
+        }
       }
     }
 
@@ -573,6 +588,21 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     if (!clientInfo) {
       this.logger.warn(`⚠️ [消息发送] 客户端 ${client.id} 未加入任何会话`);
       return { success: false, message: '请先加入会话' };
+    }
+
+    // 检查 session 是否在 ETerm 中
+    if (this.daemonGateway.isSessionInEterm(sessionId)) {
+      this.logger.log(`🖥️ [ETerm 注入] Session ${sessionId} 在 ETerm 中，使用注入方式`);
+
+      const injected = this.daemonGateway.injectMessageToEterm(sessionId, text);
+
+      if (injected) {
+        this.logger.log(`✅ [ETerm 注入] 消息已发送到 ETerm`);
+        return { success: true, via: 'eterm' };
+      } else {
+        this.logger.warn(`⚠️ [ETerm 注入] 注入失败，回退到 SDK`);
+        // 回退到 SDK 方式（继续执行下面的代码）
+      }
     }
 
     try {
