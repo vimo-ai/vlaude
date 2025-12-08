@@ -102,11 +102,17 @@ class WebSocketManager: ObservableObject {
 
     private func setupSocket(token: String) {
         // TODO: Move to configuration
-        let url = URL(string: "http://192.168.50.229:10005")!
+        // mTLS 模式使用 https，否则使用 http
+        let useMTLS = CertificateManager.shared.isReady
+        let protocol_ = useMTLS ? "https" : "http"
+        let url = URL(string: "\(protocol_)://192.168.50.229:10005")!
 
         print("✅ [Socket.IO] 使用 Token 设置连接: \(token.prefix(20))...")
+        if useMTLS {
+            print("🔐 [Socket.IO] mTLS 模式已启用")
+        }
 
-        let config: SocketIOClientConfiguration = [
+        var config: SocketIOClientConfiguration = [
             .log(false),
             .compress,
             .reconnects(true),
@@ -114,6 +120,16 @@ class WebSocketManager: ObservableObject {
             .reconnectWait(2),
             .connectParams(["token": token])  // Token 作为 query 参数传递
         ]
+
+        // mTLS 模式：配置自定义 URLSessionDelegate
+        if useMTLS {
+            let sessionDelegate = SocketURLSessionDelegate()
+            config.insert(.sessionDelegate(sessionDelegate))
+
+            // 允许自签名证书
+            config.insert(.secure(true))
+            config.insert(.selfSigned(true))
+        }
 
         manager = SocketManager(socketURL: url, config: config)
         socket = manager.defaultSocket
@@ -622,6 +638,64 @@ class WebSocketManager: ObservableObject {
             }
         } catch {
             print("❌ [Socket.IO] Statusline 数据解析失败: \(error)")
+        }
+    }
+}
+
+// MARK: - Socket.IO URLSession Delegate (mTLS 支持)
+class SocketURLSessionDelegate: NSObject, URLSessionDelegate {
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        let authMethod = challenge.protectionSpace.authenticationMethod
+
+        switch authMethod {
+        case NSURLAuthenticationMethodServerTrust:
+            // 服务端证书验证
+            handleServerTrust(challenge, completionHandler: completionHandler)
+
+        case NSURLAuthenticationMethodClientCertificate:
+            // 客户端证书
+            handleClientCertificate(challenge, completionHandler: completionHandler)
+
+        default:
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+
+    private func handleServerTrust(
+        _ challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard let serverTrust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        let host = challenge.protectionSpace.host
+
+        if CertificateManager.shared.validateServerTrust(serverTrust, for: host) {
+            let credential = URLCredential(trust: serverTrust)
+            completionHandler(.useCredential, credential)
+            print("✅ [Socket.IO] 服务端证书验证通过: \(host)")
+        } else {
+            print("❌ [Socket.IO] 服务端证书验证失败: \(host)")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        }
+    }
+
+    private func handleClientCertificate(
+        _ challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if let credential = CertificateManager.shared.getClientCredential() {
+            print("✅ [Socket.IO] 提供客户端证书")
+            completionHandler(.useCredential, credential)
+        } else {
+            print("❌ [Socket.IO] 无法提供客户端证书")
+            completionHandler(.cancelAuthenticationChallenge, nil)
         }
     }
 }
