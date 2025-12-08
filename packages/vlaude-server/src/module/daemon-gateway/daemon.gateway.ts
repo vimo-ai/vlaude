@@ -35,6 +35,10 @@ export class DaemonGateway
   private readonly logger = new Logger(DaemonGateway.name);
   private connectedDaemons = new Map<string, { socket: Socket; info: any }>();
 
+  // ETerm 状态追踪
+  private etermOnline = false;
+  private etermSessions = new Set<string>(); // ETerm 中可用的 session
+
   constructor(
     private readonly projectService: ProjectService,
     private readonly sessionService: SessionService,
@@ -597,6 +601,164 @@ export class DaemonGateway
 
     // 通过事件转发给 AppGateway，让它检查是否需要重新进入 remote mode
     this.eventEmitter.emit('app.checkRemoteMode', data);
+  }
+
+  // =================== ETerm 相关事件处理 ===================
+
+  /**
+   * 接收 Daemon 通知：ETerm 已上线
+   */
+  @SubscribeMessage('daemon:etermOnline')
+  handleEtermOnline(
+    @MessageBody() data: { timestamp: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🖥️ [ETerm] 上线通知 at ${data.timestamp}`);
+    this.etermOnline = true;
+
+    // 通过事件通知 AppGateway，让它广播给 Mobile 客户端
+    this.eventEmitter.emit('app.etermStatusChanged', {
+      online: true,
+      timestamp: data.timestamp,
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * 接收 Daemon 通知：ETerm 已离线
+   */
+  @SubscribeMessage('daemon:etermOffline')
+  handleEtermOffline(
+    @MessageBody() data: { timestamp: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🖥️ [ETerm] 离线通知 at ${data.timestamp}`);
+    this.etermOnline = false;
+    this.etermSessions.clear();
+
+    // 通过事件通知 AppGateway
+    this.eventEmitter.emit('app.etermStatusChanged', {
+      online: false,
+      timestamp: data.timestamp,
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * 接收 Daemon 通知：某个 session 在 ETerm 中可用
+   */
+  @SubscribeMessage('daemon:etermSessionAvailable')
+  handleEtermSessionAvailable(
+    @MessageBody() data: { sessionId: string; timestamp: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🖥️ [ETerm] Session 可用: ${data.sessionId}`);
+    this.etermSessions.add(data.sessionId);
+
+    // 通过事件通知 AppGateway
+    this.eventEmitter.emit('app.etermSessionAvailable', {
+      sessionId: data.sessionId,
+      timestamp: data.timestamp,
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * 接收 Daemon 通知：某个 session 不再在 ETerm 中可用
+   */
+  @SubscribeMessage('daemon:etermSessionUnavailable')
+  handleEtermSessionUnavailable(
+    @MessageBody() data: { sessionId: string; timestamp: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🖥️ [ETerm] Session 不可用: ${data.sessionId}`);
+    this.etermSessions.delete(data.sessionId);
+
+    // 通过事件通知 AppGateway
+    this.eventEmitter.emit('app.etermSessionUnavailable', {
+      sessionId: data.sessionId,
+      timestamp: data.timestamp,
+    });
+
+    return { success: true };
+  }
+
+  // =================== ETerm 状态查询方法 ===================
+
+  /**
+   * 检查 ETerm 是否在线
+   */
+  isEtermOnline(): boolean {
+    return this.etermOnline;
+  }
+
+  /**
+   * 检查指定 session 是否在 ETerm 中可用
+   */
+  isSessionInEterm(sessionId: string): boolean {
+    return this.etermSessions.has(sessionId);
+  }
+
+  /**
+   * 获取所有在 ETerm 中的 session
+   */
+  getEtermSessions(): string[] {
+    return Array.from(this.etermSessions);
+  }
+
+  /**
+   * 向 ETerm 注入消息（通过 Daemon 转发）
+   */
+  injectMessageToEterm(sessionId: string, text: string): boolean {
+    if (!this.etermOnline) {
+      this.logger.warn('❌ ETerm 未在线，无法注入消息');
+      return false;
+    }
+
+    if (!this.etermSessions.has(sessionId)) {
+      this.logger.warn(`❌ Session ${sessionId} 不在 ETerm 中`);
+      return false;
+    }
+
+    const daemons = Array.from(this.connectedDaemons.values());
+    if (daemons.length === 0) {
+      this.logger.warn('❌ 没有 Daemon 连接，无法注入消息');
+      return false;
+    }
+
+    const daemon = daemons[0];
+    daemon.socket.emit('server:injectToEterm', {
+      sessionId,
+      text,
+    });
+
+    this.logger.log(`💉 [ETerm] 发送注入请求: session=${sessionId}`);
+    return true;
+  }
+
+  /**
+   * 通知 ETerm：Mobile 正在查看某个 session
+   */
+  notifyEtermMobileViewing(sessionId: string, isViewing: boolean) {
+    if (!this.etermOnline) {
+      return;
+    }
+
+    const daemons = Array.from(this.connectedDaemons.values());
+    if (daemons.length === 0) {
+      return;
+    }
+
+    const daemon = daemons[0];
+    daemon.socket.emit('server:mobileViewing', {
+      sessionId,
+      isViewing,
+    });
+
+    this.logger.log(`📱 [ETerm] Mobile ${isViewing ? '正在查看' : '离开了'} session ${sessionId}`);
   }
 
   /**

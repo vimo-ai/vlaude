@@ -22,6 +22,7 @@ import { FileWatcherModule } from './module/file-watcher/file-watcher.module';
 import { WatchModeController } from './common/controllers/watch-mode.controller';
 import { ProjectController } from './common/controllers/project.controller';
 import { ConfigLoaderModule } from './module/config-loader/config-loader.module';
+import { EtermModule } from './module/eterm-gateway/eterm.module';
 // @feature:minio:start
 // import { MinioModule } from './module/minio/minio.module';
 // @feature:minio:end
@@ -47,6 +48,7 @@ import { ConfigLoaderModule } from './module/config-loader/config-loader.module'
     DataCollectorModule,
     FileWatcherModule,
     ConfigLoaderModule,
+    EtermModule,
     // @feature:auth:start
     // 选择其一：平台 SDK / 内置占位模块
     // UserPlatformSdkModule.forRootAsync(),
