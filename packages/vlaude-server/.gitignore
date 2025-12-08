@@ -44,6 +44,12 @@ env/.env.nas
 # JWT 密钥
 certs/*.pem
 
+# mTLS 证书（敏感文件）
+certs/*.key
+certs/*.crt
+certs/*.p12
+certs/ca.*
+
 # Prisma
 prisma/*.db
 prisma/*.db-journal
