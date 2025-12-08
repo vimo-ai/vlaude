@@ -15,20 +15,33 @@ enum APIError: Error {
     case unknown
 }
 
-class APIClient {
+class APIClient: NSObject {
     static let shared = APIClient()
 
     private let baseURL: String
-    private let session: URLSession
+    private var session: URLSession!
 
-    private init() {
+    private override init() {
         // TODO: Move to configuration
-        self.baseURL = "http://10.0.0.1:10005"
+        // mTLS 模式使用 https，否则使用 http
+        let useMTLS = CertificateManager.shared.isReady
+        let protocol_ = useMTLS ? "https" : "http"
+        self.baseURL = "\(protocol_)://10.0.0.1:10005"
+
+        super.init()
 
         let config = URLSessionConfiguration.default
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 300
-        self.session = URLSession(configuration: config)
+
+        // 使用自定义 delegate 处理证书挑战
+        self.session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+
+        if useMTLS {
+            print("🔐 [APIClient] mTLS 模式已启用")
+        } else {
+            print("⚠️ [APIClient] 未找到客户端证书，使用普通 HTTP")
+        }
     }
 
     // MARK: - Generic Request
@@ -211,4 +224,63 @@ private struct ProjectDetailResponse: Codable {
     let success: Bool
     let data: Project?
     let message: String?
+}
+
+// MARK: - URLSessionDelegate (mTLS 证书处理)
+extension APIClient: URLSessionDelegate {
+    func urlSession(
+        _ session: URLSession,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        let authMethod = challenge.protectionSpace.authenticationMethod
+
+        switch authMethod {
+        case NSURLAuthenticationMethodServerTrust:
+            // 服务端证书验证（自签名证书）
+            handleServerTrust(challenge, completionHandler: completionHandler)
+
+        case NSURLAuthenticationMethodClientCertificate:
+            // 服务端要求客户端证书
+            handleClientCertificate(challenge, completionHandler: completionHandler)
+
+        default:
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+
+    private func handleServerTrust(
+        _ challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        guard let serverTrust = challenge.protectionSpace.serverTrust else {
+            completionHandler(.cancelAuthenticationChallenge, nil)
+            return
+        }
+
+        let host = challenge.protectionSpace.host
+
+        // 使用 CertificateManager 验证服务端证书
+        if CertificateManager.shared.validateServerTrust(serverTrust, for: host) {
+            let credential = URLCredential(trust: serverTrust)
+            completionHandler(.useCredential, credential)
+            print("✅ [APIClient] 服务端证书验证通过: \(host)")
+        } else {
+            print("❌ [APIClient] 服务端证书验证失败: \(host)")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        }
+    }
+
+    private func handleClientCertificate(
+        _ challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        if let credential = CertificateManager.shared.getClientCredential() {
+            print("✅ [APIClient] 提供客户端证书")
+            completionHandler(.useCredential, credential)
+        } else {
+            print("❌ [APIClient] 无法提供客户端证书")
+            completionHandler(.cancelAuthenticationChallenge, nil)
+        }
+    }
 }
