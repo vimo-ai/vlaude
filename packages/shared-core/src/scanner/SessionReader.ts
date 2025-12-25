@@ -8,10 +8,38 @@ import { parseJsonlContent, parseJsonLine } from '../parser/JsonlParser';
 import { isSummaryEntry } from '../parser/MessageFilter';
 
 /**
+ * Token 使用统计
+ */
+export interface TokenUsage {
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+}
+
+/**
+ * Claude JSONL 原始消息结构
+ */
+export interface RawClaudeMessage {
+  uuid: string;
+  type: string;
+  role?: 'user' | 'assistant';
+  timestamp?: string;
+  ts?: string;  // 完成时间戳
+  message?: {
+    usage?: TokenUsage;
+    [key: string]: unknown;
+  };
+  isSidechain?: boolean;
+  isApiErrorMessage?: boolean;
+  [key: string]: unknown;
+}
+
+/**
  * 会话消息读取结果
  */
 export interface SessionMessagesResult {
-  messages: unknown[];
+  messages: RawClaudeMessage[];
   total: number;
   hasMore: boolean;
 }
@@ -78,7 +106,7 @@ export async function readSessionMessages(
 
   try {
     const content = await fsPromises.readFile(sessionPath, 'utf-8');
-    const allMessages = parseJsonlContent(content, true);
+    const allMessages = parseJsonlContent<RawClaudeMessage>(content, true);
     const total = allMessages.length;
 
     // 根据排序方式处理消息顺序

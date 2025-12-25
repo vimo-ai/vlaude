@@ -26,7 +26,8 @@ import {
   isValidSessionFile,
   type ClaudeProjectInfo,
   type ClaudeSessionMeta,
-} from '@vlaude/shared-core';
+  type SessionMessagesResult,
+} from '@vimo-ai/vlaude-shared-core';
 
 interface ClaudeProject {
   name: string;
@@ -457,7 +458,7 @@ export class DataCollectorService implements OnModuleInit {
     limit: number = 50,
     offset: number = 0,
     order: 'asc' | 'desc' = 'asc',
-  ): Promise<{ messages: unknown[]; total: number; hasMore: boolean } | null> {
+  ): Promise<SessionMessagesResult | null> {
     try {
       const encodedDirName = this.getEncodedDirName(projectPath);
 

@@ -98,8 +98,10 @@ subjectAltName = @alt_names
 DNS.1 = localhost
 DNS.2 = vlaude-server
 DNS.3 = *.local
+DNS.4 = ***REMOVED-domain***
 IP.1 = 127.0.0.1
 IP.2 = 10.0.0.1
+IP.3 = 10.0.0.1
 EOF
 
     # 签发用的扩展配置
@@ -107,7 +109,7 @@ EOF
 basicConstraints = CA:FALSE
 keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
-subjectAltName = DNS:localhost, DNS:vlaude-server, DNS:*.local, IP:127.0.0.1, IP:10.0.0.1
+subjectAltName = DNS:localhost, DNS:vlaude-server, DNS:*.local, DNS:***REMOVED-domain***, IP:127.0.0.1, IP:10.0.0.1, IP:10.0.0.1
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid,issuer
 EOF

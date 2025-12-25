@@ -44,8 +44,9 @@ export class SessionService {
     private readonly daemonGateway: any,
   ) {
     // 从环境变量读取 Daemon 地址
+    const daemonHost = this.config.get<string>('DAEMON_HOST', 'localhost');
     const daemonPort = this.config.get<number>('DAEMON_PORT', 10006);
-    this.daemonBaseUrl = `http://localhost:${daemonPort}`;
+    this.daemonBaseUrl = `http://${daemonHost}:${daemonPort}`;
   }
 
   /**
@@ -230,12 +231,35 @@ export class SessionService {
    * 创建新对话
    * @param projectPath 项目路径
    * @param prompt 可选的初始提示词
-   * @returns 创建的 session 数据
+   * @param requestId 可选的请求ID，用于跟踪 ETerm 会话创建
+   * @returns 创建的 session 数据，或 ETerm 模式标识
    */
-  async createSession(projectPath: string, prompt?: string) {
-    this.logger.log(`📝 创建新对话，projectPath=${projectPath}`);
+  async createSession(projectPath: string, prompt?: string, requestId?: string) {
+    this.logger.log(`📝 创建新对话，projectPath=${projectPath}, requestId=${requestId || 'N/A'}`);
 
     try {
+      // 检查 ETerm 是否在线，优先使用 ETerm 创建
+      if (this.daemonGateway.isEtermOnline()) {
+        this.logger.log(`🖥️ ETerm 在线，使用 ETerm 创建会话`);
+
+        const sent = this.daemonGateway.requestEtermCreateSession(projectPath, prompt, requestId);
+        if (sent) {
+          // 返回特殊标识，告诉调用方这是 ETerm 模式
+          // session 会在 ETerm 创建终端后通过 session:available 事件上报
+          return {
+            mode: 'eterm',
+            projectPath,
+            requestId,  // 返回 requestId
+            message: '已通知 ETerm 创建会话，请等待终端启动',
+          };
+        }
+        // 如果发送失败，降级到 SDK 模式
+        this.logger.warn(`⚠️ ETerm 请求发送失败，降级到 SDK 模式`);
+      }
+
+      // ETerm 不在线或发送失败，使用 SDK 创建
+      this.logger.log(`📦 使用 SDK 创建会话`);
+
       // 1. 调用 Daemon API 创建 session
       const daemonResult = await this.createSessionInDaemon(projectPath, prompt);
 

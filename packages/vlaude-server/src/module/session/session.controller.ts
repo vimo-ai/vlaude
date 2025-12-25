@@ -16,21 +16,29 @@ import {
   Query,
   ParseIntPipe,
   DefaultValuePipe,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { SessionService } from './session.service';
+import { DaemonGateway } from '../daemon-gateway/daemon.gateway';
 
 @Controller('sessions')
 export class SessionController {
-  constructor(private readonly sessionService: SessionService) {}
+  constructor(
+    private readonly sessionService: SessionService,
+    @Inject(forwardRef(() => DaemonGateway))
+    private readonly daemonGateway: DaemonGateway,
+  ) {}
 
   /**
-   * 序列化会话数据，转换 BigInt 为字符串
+   * 序列化会话数据，转换 BigInt 为字符串，添加 ETerm 状态
    */
   private serializeSession(session: any) {
     if (!session) return session;
     return {
       ...session,
       lastFileSize: session.lastFileSize?.toString(),
+      inEterm: this.daemonGateway.isSessionInEterm(session.sessionId),
     };
   }
 
@@ -45,15 +53,15 @@ export class SessionController {
    * 创建新对话
    * POST /sessions
    *
-   * Body: { projectPath: string, prompt?: string }
+   * Body: { projectPath: string, prompt?: string, requestId?: string }
    *
    * 注意：此路由必须在其他路由之前，避免被其他路由匹配
    */
   @Post()
   async createSession(
-    @Body() body: { projectPath: string; prompt?: string }
+    @Body() body: { projectPath: string; prompt?: string; requestId?: string }
   ) {
-    const { projectPath, prompt } = body;
+    const { projectPath, prompt, requestId } = body;
 
     if (!projectPath) {
       return {
@@ -63,11 +71,24 @@ export class SessionController {
     }
 
     try {
-      const session = await this.sessionService.createSession(projectPath, prompt);
+      const result = await this.sessionService.createSession(projectPath, prompt, requestId);
 
+      // 检查是否是 ETerm 模式
+      if (result.mode === 'eterm') {
+        return {
+          success: true,
+          mode: 'eterm',
+          data: null,
+          message: result.message,
+          requestId: result.requestId,  // 返回 requestId 给 iOS
+        };
+      }
+
+      // SDK 模式，返回完整的 session 数据
       return {
         success: true,
-        data: this.serializeSession(session),
+        mode: 'sdk',
+        data: this.serializeSession(result),
         message: '对话创建成功',
       };
     } catch (error) {
@@ -107,6 +128,7 @@ export class SessionController {
       data: this.serializeSessions(result.sessions),
       total: result.total,
       hasMore: result.hasMore,
+      etermOnline: this.daemonGateway.isEtermOnline(),
     };
   }
 

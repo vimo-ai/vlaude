@@ -33,7 +33,7 @@
     "@nestjs/platform-socket.io": "^10.4.8",
     "@nestjs/websockets": "^10.4.8",
     "@prisma/client": "^5.22.0",
-    "@vlaude/shared-core": "workspace:*",
+    "@vimo-ai/vlaude-shared-core": "workspace:*",
     "cache-manager": "5.7.6",
     "chokidar": "^4.0.3",
     "class-validator": "^0.14.1",
