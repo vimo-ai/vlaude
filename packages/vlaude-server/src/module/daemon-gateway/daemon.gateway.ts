@@ -686,6 +686,33 @@ export class DaemonGateway
     return { success: true };
   }
 
+  /**
+   * 接收 Daemon 通知：ETerm 会话创建完成（带 requestId）
+   */
+  @SubscribeMessage('daemon:etermSessionCreated')
+  handleEtermSessionCreated(
+    @MessageBody() data: { requestId: string; sessionId: string; projectPath: string; timestamp: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🖥️ [ETerm] 会话创建完成:`);
+    this.logger.log(`   RequestId: ${data.requestId}`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
+    this.logger.log(`   ProjectPath: ${data.projectPath}`);
+
+    // 将 session 加入 ETerm sessions 集合
+    this.etermSessions.add(data.sessionId);
+
+    // 通过事件通知 AppGateway，让它推送给 iOS 客户端
+    this.eventEmitter.emit('app.etermSessionCreated', {
+      requestId: data.requestId,
+      sessionId: data.sessionId,
+      projectPath: data.projectPath,
+      timestamp: data.timestamp,
+    });
+
+    return { success: true };
+  }
+
   // =================== ETerm 状态查询方法 ===================
 
   /**
@@ -736,6 +763,36 @@ export class DaemonGateway
     });
 
     this.logger.log(`💉 [ETerm] 发送注入请求: session=${sessionId}`);
+    return true;
+  }
+
+  /**
+   * 请求 ETerm 创建新的 Claude 会话
+   * @param projectPath 项目路径
+   * @param prompt 可选的初始提示词
+   * @param requestId 可选的请求ID，用于跟踪会话创建
+   * @returns 是否成功发送请求
+   */
+  requestEtermCreateSession(projectPath: string, prompt?: string, requestId?: string): boolean {
+    if (!this.etermOnline) {
+      this.logger.warn('❌ ETerm 未在线，无法创建会话');
+      return false;
+    }
+
+    const daemons = Array.from(this.connectedDaemons.values());
+    if (daemons.length === 0) {
+      this.logger.warn('❌ 没有 Daemon 连接，无法创建会话');
+      return false;
+    }
+
+    const daemon = daemons[0];
+    daemon.socket.emit('server:createSessionInEterm', {
+      projectPath,
+      prompt,
+      requestId,  // 透传 requestId
+    });
+
+    this.logger.log(`🖥️ [ETerm] 请求创建会话: projectPath=${projectPath}, requestId=${requestId || 'N/A'}`);
     return true;
   }
 
