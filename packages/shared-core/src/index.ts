@@ -44,4 +44,15 @@ export {
   isValidSessionFile,
   extractSessionId,
   type SessionMessagesResult,
+  type RawClaudeMessage,
+  type TokenUsage,
 } from './scanner/SessionReader';
+
+// Registry - 服务注册中心
+export {
+  ServiceRegistry,
+  type ServiceRegistryConfig,
+  type ServiceEvent,
+  type ServiceEventType,
+  type ServiceInfo,
+} from './registry/ServiceRegistry';

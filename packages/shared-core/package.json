@@ -1,22 +1,32 @@
 {
-  "name": "@vlaude/shared-core",
-  "version": "0.0.1",
+  "name": "@vimo-ai/vlaude-shared-core",
+  "version": "0.0.1-beta.1",
   "description": "Vlaude shared domain models",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "test": "vitest",
     "test:watch": "vitest watch",
     "test:coverage": "vitest run --coverage"
   },
-  "keywords": ["vlaude", "domain", "ddd"],
+  "keywords": [
+    "vlaude",
+    "domain",
+    "ddd"
+  ],
   "author": "higuaifan",
   "license": "ISC",
+  "dependencies": {
+    "ioredis": "^5.8.2"
+  },
   "devDependencies": {
-    "@types/node": "^20.17.10",
+    "@types/node": "^20.19.25",
+    "@vitest/coverage-v8": "^3.2.4",
     "typescript": "^5.8.3",
-    "vitest": "^3.2.4",
-    "@vitest/coverage-v8": "^3.2.4"
+    "vitest": "^3.2.4"
   }
 }
