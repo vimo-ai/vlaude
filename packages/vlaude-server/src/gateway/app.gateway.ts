@@ -78,8 +78,8 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     clientId: string;             // CLI 的 clientId
   }>();
 
-  // Daemon 服务地址
-  private readonly DAEMON_URL = 'http://localhost:10006';
+  // Daemon 服务地址 (从环境变量读取)
+  private readonly DAEMON_URL: string;
 
   constructor(
     private readonly eventEmitter: EventEmitter2,
@@ -90,6 +90,11 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     @Inject(forwardRef(() => DaemonGateway))
     private readonly daemonGateway: DaemonGateway,
   ) {
+    // 初始化 Daemon URL
+    const daemonHost = this.configService.get<string>('DAEMON_HOST', 'localhost');
+    const daemonPort = this.configService.get<number>('DAEMON_PORT', 10006);
+    this.DAEMON_URL = `http://${daemonHost}:${daemonPort}`;
+
     // 加载 JWT 公钥
     const publicKeyPath = this.configService.get<string>('JWT_PUBLIC_KEY_PATH');
     if (publicKeyPath) {
@@ -899,6 +904,69 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   handleNotifySessionUpdateEvent(data: { sessionId: string; metadata: any }) {
     this.logger.log(`📥 [事件监听] 收到会话更新事件: ${data.sessionId}`);
     this.notifySessionUpdate(data.sessionId, data.metadata);
+  }
+
+  // =================== ETerm 状态变化 ===================
+
+  /**
+   * 监听来自 DaemonGateway 的 ETerm 状态变化事件
+   */
+  @OnEvent('app.etermStatusChanged')
+  handleEtermStatusChangedEvent(data: { online: boolean; timestamp: string }) {
+    this.logger.log(`🖥️ [ETerm 状态] ${data.online ? '上线' : '离线'} at ${data.timestamp}`);
+
+    // 广播给所有连接的客户端
+    this.server.emit('eterm:statusChanged', {
+      online: data.online,
+      timestamp: data.timestamp,
+    });
+  }
+
+  /**
+   * 监听来自 DaemonGateway 的 ETerm Session 可用事件
+   */
+  @OnEvent('app.etermSessionAvailable')
+  handleEtermSessionAvailableEvent(data: { sessionId: string; timestamp: string }) {
+    this.logger.log(`🖥️ [ETerm Session] 可用: ${data.sessionId}`);
+
+    // 广播给所有连接的客户端
+    this.server.emit('eterm:sessionAvailable', {
+      sessionId: data.sessionId,
+      timestamp: data.timestamp,
+    });
+  }
+
+  /**
+   * 监听来自 DaemonGateway 的 ETerm Session 不可用事件
+   */
+  @OnEvent('app.etermSessionUnavailable')
+  handleEtermSessionUnavailableEvent(data: { sessionId: string; timestamp: string }) {
+    this.logger.log(`🖥️ [ETerm Session] 不可用: ${data.sessionId}`);
+
+    // 广播给所有连接的客户端
+    this.server.emit('eterm:sessionUnavailable', {
+      sessionId: data.sessionId,
+      timestamp: data.timestamp,
+    });
+  }
+
+  /**
+   * 监听来自 DaemonGateway 的 ETerm 会话创建完成事件
+   */
+  @OnEvent('app.etermSessionCreated')
+  handleEtermSessionCreatedEvent(data: { requestId: string; sessionId: string; projectPath: string; timestamp: string }) {
+    this.logger.log(`🖥️ [ETerm Session] 创建完成:`);
+    this.logger.log(`   RequestId: ${data.requestId}`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
+    this.logger.log(`   ProjectPath: ${data.projectPath}`);
+
+    // 广播给所有连接的客户端（iOS 会根据 requestId 匹配）
+    this.server.emit('eterm:sessionCreated', {
+      requestId: data.requestId,
+      sessionId: data.sessionId,
+      projectPath: data.projectPath,
+      timestamp: data.timestamp,
+    });
   }
 
   /**

@@ -43,6 +43,8 @@ export class EtermGateway implements OnModuleInit, OnModuleDestroy {
 
   // ETerm 上报的 session -> terminalId 映射
   private etermSessions = new Map<string, number>();
+  // terminalId -> sessionId 反向映射（用于处理同一 terminal 切换 session）
+  private terminalToSession = new Map<number, string>();
 
   constructor(
     @Inject(forwardRef(() => ServerClientService))
@@ -88,6 +90,11 @@ export class EtermGateway implements OnModuleInit, OnModuleDestroy {
 
         socket.on('session:unavailable', (data: { sessionId: string }) => {
           this.handleSessionUnavailable(socket, data);
+        });
+
+        // 监听会话创建完成事件（带 requestId）
+        socket.on('session:created', (data: { requestId: string; sessionId: string; projectPath: string }) => {
+          this.handleSessionCreated(socket, data);
         });
       });
 
@@ -190,6 +197,7 @@ export class EtermGateway implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`🖥️ ETerm 已断开: ${client.id}`);
       this.etermClient = null;
       this.etermSessions.clear();
+      this.terminalToSession.clear();
 
       // 通知 server: ETerm 离线
       this.serverClient.notifyEtermOffline().catch(err => {
@@ -200,16 +208,34 @@ export class EtermGateway implements OnModuleInit, OnModuleDestroy {
 
   /**
    * ETerm 上报: session 可用（Terminal 中运行了 Claude，已建立映射）
+   *
+   * 处理场景：同一个 terminal 切换 session（比如 claude -r 交互式恢复会 fork 新 session）
    */
   handleSessionAvailable(
     client: Socket,
     data: { sessionId: string; terminalId: number },
   ) {
     const { sessionId, terminalId } = data;
-    this.logger.log(`📍 Session 可用: ${sessionId} -> Terminal ${terminalId}`);
 
-    // 记录映射
+    // 检查该 terminal 之前是否有其他 session
+    const oldSessionId = this.terminalToSession.get(terminalId);
+    if (oldSessionId && oldSessionId !== sessionId) {
+      this.logger.log(`🔄 Terminal ${terminalId} 切换 session: ${oldSessionId.slice(0, 8)}... -> ${sessionId.slice(0, 8)}...`);
+
+      // 移除旧 session 的映射
+      this.etermSessions.delete(oldSessionId);
+
+      // 通知 server: 旧 session 不再可用
+      this.serverClient.notifyEtermSessionUnavailable(oldSessionId).catch(err => {
+        this.logger.error(`通知 server 旧 session 不可用失败: ${err.message}`);
+      });
+    }
+
+    this.logger.log(`📍 Session 可用: ${sessionId.slice(0, 8)}... -> Terminal ${terminalId}`);
+
+    // 记录双向映射
     this.etermSessions.set(sessionId, terminalId);
+    this.terminalToSession.set(terminalId, sessionId);
 
     // 通知 server: 这个 session 在 ETerm 中可用
     this.serverClient.notifyEtermSessionAvailable(sessionId).catch(err => {
@@ -229,7 +255,12 @@ export class EtermGateway implements OnModuleInit, OnModuleDestroy {
     const { sessionId } = data;
     this.logger.log(`📍 Session 不再可用: ${sessionId}`);
 
+    // 清理双向映射
+    const terminalId = this.etermSessions.get(sessionId);
     this.etermSessions.delete(sessionId);
+    if (terminalId !== undefined) {
+      this.terminalToSession.delete(terminalId);
+    }
 
     // 通知 server
     this.serverClient.notifyEtermSessionUnavailable(sessionId).catch(err => {
@@ -331,6 +362,59 @@ export class EtermGateway implements OnModuleInit, OnModuleDestroy {
   handleMobileViewingEvent(data: { sessionId: string; isViewing: boolean }) {
     this.logger.log(`📥 [事件] Mobile ${data.isViewing ? '正在查看' : '离开了'} session ${data.sessionId}`);
     this.notifyMobileViewing(data.sessionId, data.isViewing);
+  }
+
+  /**
+   * 监听来自 Server 的创建会话请求
+   */
+  @OnEvent('eterm.createSession')
+  handleCreateSessionEvent(data: { projectPath: string; prompt?: string; requestId?: string }) {
+    this.logger.log(`📥 [事件] 创建会话请求: projectPath=${data.projectPath}, requestId=${data.requestId || 'N/A'}`);
+    this.createClaudeSession(data.projectPath, data.prompt, data.requestId);
+  }
+
+  /**
+   * 请求 ETerm 创建新的 Claude 会话
+   * @param projectPath 项目路径
+   * @param prompt 可选的初始提示词
+   * @param requestId 可选的请求ID，用于跟踪会话创建
+   * @returns 是否成功发送请求
+   */
+  createClaudeSession(projectPath: string, prompt?: string, requestId?: string): boolean {
+    if (!this.etermClient) {
+      this.logger.warn('❌ ETerm 未连接，无法创建会话');
+      return false;
+    }
+
+    this.logger.log(`🖥️ 向 ETerm 发送创建会话请求: projectPath=${projectPath}, requestId=${requestId || 'N/A'}`);
+
+    this.etermClient.emit('session:create', {
+      projectPath,
+      prompt,
+      requestId,  // 透传 requestId
+    });
+
+    return true;
+  }
+
+  /**
+   * 监听来自 ETerm 的会话创建完成事件
+   * （在 onModuleInit 的事件绑定中添加）
+   */
+  handleSessionCreated(client: Socket, data: { requestId: string; sessionId: string; projectPath: string }) {
+    const { requestId, sessionId, projectPath } = data;
+
+    this.logger.log(`✅ Session 创建完成:`);
+    this.logger.log(`   RequestId: ${requestId}`);
+    this.logger.log(`   SessionId: ${sessionId}`);
+    this.logger.log(`   ProjectPath: ${projectPath}`);
+
+    // 通知 Server: ETerm 会话创建完成（带 requestId）
+    this.serverClient.notifyEtermSessionCreated(requestId, sessionId, projectPath).catch(err => {
+      this.logger.error(`通知 server session 创建完成失败: ${err.message}`);
+    });
+
+    return { status: 'ok' };
   }
 
   /**
