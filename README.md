@@ -25,6 +25,7 @@ vlaude/
 - **后端框架**: NestJS (Fastify)
 - **数据库**: MySQL + Prisma
 - **实时通信**: Socket.IO + WebSocket
+- **服务发现**: Redis (服务注册中心)
 
 ## 快速开始
 
@@ -33,6 +34,46 @@ vlaude/
 ```bash
 pnpm install
 ```
+
+### 环境配置
+
+配置 Redis 服务发现（在 `.env` 文件中）：
+
+```bash
+# Redis 配置
+REDIS_HOST=192.168.50.9
+REDIS_PORT=6379
+REDIS_PASSWORD=
+
+# Server 地址（vlaude-server 需要配置）
+SERVER_ADDRESS=localhost:10005
+```
+
+### 环境切换（仅 iOS）
+
+Daemon 现在通过 Redis 自动发现 Server，无需手动切换。iOS 仍需使用脚本切换：
+
+```bash
+# 查看当前环境
+./scripts/switch-env.sh status
+
+# 切换到本地环境
+./scripts/switch-env.sh local
+
+# 切换到 NAS 环境
+./scripts/switch-env.sh nas
+```
+
+详细文档请参考：[服务注册中心文档](./docs/service-registry.md)
+
+| 环境 | Server URL |
+|------|------------|
+| NAS | `https://homenas.higuaifan.com:10005` |
+| Local | `https://localhost:10005` |
+
+切换后：
+- **iOS**: Xcode 重新 build
+- **Daemon**: 自动热重启
 
 ### 开发
 

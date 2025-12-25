@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Inject, forwardRef }
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { io, Socket } from 'socket.io-client';
+import { ServiceRegistry, ServiceEvent } from '@vimo-ai/vlaude-shared-core';
 
 /**
  * Socket.IO Client Service
@@ -11,7 +12,7 @@ import { io, Socket } from 'socket.io-client';
 export class ServerClientService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ServerClientService.name);
   private socket: Socket;
-  private readonly serverUrl: string;
+  private serverUrl: string;
   private reconnectAttempts = 0;
   private readonly maxReconnectAttempts = 10;
   private dataCollectorService: any; // 延迟注入避免循环依赖
@@ -22,11 +23,16 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
     reject: (error: Error) => void;
   }>();
 
+  // 服务发现相关
+  private registry: ServiceRegistry | null = null;
+  private availableServers: string[] = [];
+  private currentServerIndex = -1;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly eventEmitter: EventEmitter2,
   ) {
-    // 从环境变量获取 server URL,默认为本地（mTLS 模式使用 https）
+    // 从环境变量获取 server URL（mTLS 模式使用 https）
     this.serverUrl = this.configService.get<string>('SERVER_URL') || 'https://localhost:10005';
   }
 
@@ -38,11 +44,170 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
+    await this.initRegistry();
     await this.connect();
   }
 
   async onModuleDestroy() {
-    await this.disconnect();
+    await this.cleanup();
+  }
+
+  /**
+   * 初始化服务注册中心
+   */
+  private async initRegistry() {
+    try {
+      // 从环境变量获取 Redis 配置
+      const redisHost = this.configService.get<string>('REDIS_HOST') || '192.168.50.9';
+      const redisPort = this.configService.get<number>('REDIS_PORT') || 6379;
+      const redisPassword = this.configService.get<string>('REDIS_PASSWORD');
+
+      this.logger.log(`初始化服务发现 (Redis: ${redisHost}:${redisPort})`);
+
+      // 创建 ServiceRegistry 实例
+      this.registry = new ServiceRegistry({
+        host: redisHost,
+        port: redisPort,
+        password: redisPassword,
+        keyPrefix: 'vlaude:',
+      });
+
+      // 订阅服务事件
+      await this.registry.subscribe(this.handleServiceEvent.bind(this));
+
+      // 获取可用的 Server 列表
+      this.availableServers = await this.registry.getServers();
+      this.logger.log(`📋 发现 ${this.availableServers.length} 个可用 Server: ${this.availableServers.join(', ')}`);
+
+      // 选择最高优先级的 Server
+      if (this.availableServers.length > 0) {
+        this.currentServerIndex = 0;
+        this.serverUrl = `https://${this.availableServers[0]}`;
+        this.logger.log(`🎯 选择 Server: ${this.serverUrl}`);
+      } else {
+        this.logger.warn('⚠️ Redis 中未发现可用 Server，使用环境变量配置');
+      }
+    } catch (error) {
+      this.logger.error(`❌ 服务发现初始化失败: ${error.message}`);
+      this.logger.warn('将使用环境变量配置的 Server URL');
+      this.registry = null;
+    }
+  }
+
+  /**
+   * 处理服务注册事件
+   */
+  private async handleServiceEvent(event: ServiceEvent) {
+    const { type, service, address } = event;
+
+    // 只处理 server 服务的事件
+    if (service !== 'server') {
+      return;
+    }
+
+    this.logger.log(`📡 收到服务事件: ${type} - server@${address}`);
+
+    if (type === 'online') {
+      // 新 Server 上线
+      await this.handleServerOnline(address);
+    } else if (type === 'offline') {
+      // Server 下线
+      await this.handleServerOffline(address);
+    }
+  }
+
+  /**
+   * 处理 Server 上线事件
+   */
+  private async handleServerOnline(address: string) {
+    if (!this.registry) {
+      return;
+    }
+
+    // 刷新可用 Server 列表
+    this.availableServers = await this.registry.getServers();
+    this.logger.log(`📋 更新 Server 列表: ${this.availableServers.join(', ')}`);
+
+    // 检查新 Server 的优先级
+    const newServerIndex = this.availableServers.indexOf(address);
+    if (newServerIndex === -1) {
+      return;
+    }
+
+    // 如果新 Server 优先级更高（索引更小），切换连接
+    if (this.currentServerIndex === -1 || newServerIndex < this.currentServerIndex) {
+      this.logger.log(`🔄 发现更高优先级的 Server: ${address}，准备切换连接`);
+      await this.switchServer(newServerIndex);
+    }
+  }
+
+  /**
+   * 处理 Server 下线事件
+   */
+  private async handleServerOffline(address: string) {
+    if (!this.registry) {
+      return;
+    }
+
+    // 刷新可用 Server 列表
+    this.availableServers = await this.registry.getServers();
+    this.logger.log(`📋 更新 Server 列表: ${this.availableServers.join(', ')}`);
+
+    // 如果下线的是当前连接的 Server
+    const currentAddress = this.getCurrentServerAddress();
+    if (currentAddress === address) {
+      this.logger.warn(`⚠️ 当前连接的 Server 下线: ${address}，准备切换到下一个可用 Server`);
+
+      // 切换到下一个可用的 Server
+      if (this.availableServers.length > 0) {
+        await this.switchServer(0);
+      } else {
+        this.logger.error('❌ 没有可用的 Server，等待 Server 上线');
+        this.currentServerIndex = -1;
+      }
+    } else {
+      // 更新当前 Server 索引
+      if (this.availableServers.length > 0) {
+        this.currentServerIndex = this.availableServers.indexOf(currentAddress);
+      }
+    }
+  }
+
+  /**
+   * 切换到指定的 Server
+   */
+  private async switchServer(serverIndex: number) {
+    if (serverIndex < 0 || serverIndex >= this.availableServers.length) {
+      this.logger.error(`❌ 无效的 Server 索引: ${serverIndex}`);
+      return;
+    }
+
+    const newAddress = this.availableServers[serverIndex];
+    const newServerUrl = `https://${newAddress}`;
+
+    this.logger.log(`🔄 切换到 Server: ${newServerUrl}`);
+
+    // 断开当前连接
+    if (this.socket) {
+      this.socket.disconnect();
+    }
+
+    // 更新 Server URL 和索引
+    this.serverUrl = newServerUrl;
+    this.currentServerIndex = serverIndex;
+
+    // 重新连接
+    await this.connect();
+  }
+
+  /**
+   * 获取当前连接的 Server 地址
+   */
+  private getCurrentServerAddress(): string | null {
+    if (this.currentServerIndex === -1 || !this.availableServers[this.currentServerIndex]) {
+      return null;
+    }
+    return this.availableServers[this.currentServerIndex];
   }
 
   /**
@@ -166,6 +331,12 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`📱 [ETerm] Mobile ${data.isViewing ? '正在查看' : '离开了'} session ${data.sessionId}`);
       this.eventEmitter.emit('eterm.mobileViewing', data);
     });
+
+    // 监听来自 server 的创建会话请求（转发给 ETerm）
+    this.socket.on('server:createSessionInEterm', (data: { projectPath: string; prompt?: string; requestId?: string }) => {
+      this.logger.log(`🖥️ [ETerm] 收到创建会话请求: projectPath=${data.projectPath}, requestId=${data.requestId || 'N/A'}`);
+      this.eventEmitter.emit('eterm.createSession', data);
+    });
   }
 
   /**
@@ -234,12 +405,19 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 断开连接
+   * 清理资源
    */
-  private async disconnect() {
+  private async cleanup() {
+    // 断开 Socket 连接
     if (this.socket) {
       this.socket.disconnect();
       this.logger.log('Disconnected from server');
+    }
+
+    // 断开 Redis 连接
+    if (this.registry) {
+      await this.registry.disconnect();
+      this.logger.log('Disconnected from Redis registry');
     }
   }
 
@@ -797,6 +975,29 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
     });
 
     this.logger.log(`🖥️ [ETerm] 已通知 Server: Session ${sessionId} 不再在 ETerm 中可用`);
+    return true;
+  }
+
+  /**
+   * 通知 Server：ETerm 会话创建完成（带 requestId）
+   */
+  async notifyEtermSessionCreated(requestId: string, sessionId: string, projectPath: string) {
+    if (!this.isConnected()) {
+      this.logger.warn('Not connected to server, cannot notify ETerm session created');
+      return false;
+    }
+
+    this.socket.emit('daemon:etermSessionCreated', {
+      requestId,
+      sessionId,
+      projectPath,
+      timestamp: new Date().toISOString(),
+    });
+
+    this.logger.log(`🖥️ [ETerm] 已通知 Server: Session 创建完成`);
+    this.logger.log(`   RequestId: ${requestId}`);
+    this.logger.log(`   SessionId: ${sessionId}`);
+    this.logger.log(`   ProjectPath: ${projectPath}`);
     return true;
   }
 }
