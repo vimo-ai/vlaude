@@ -1,0 +1,41 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# Node
+**/node_modules
+**/.pnpm-store
+
+# Build artifacts (will be rebuilt in Docker)
+**/dist
+**/*.tsbuildinfo
+
+# Test
+**/coverage
+**/*.spec.ts
+**/*.test.ts
+**/test
+**/tests
+
+# Logs
+**/*.log
+**/logs
+
+# Environment files (should be mounted or passed as env vars)
+**/.env
+**/.env.local
+**/.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Other packages not needed for claude-server
+packages/vlaude-daemon
+packages/vlaude-server
