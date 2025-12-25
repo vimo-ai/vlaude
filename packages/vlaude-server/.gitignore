@@ -69,3 +69,4 @@ cache/
 *.tmp
 *.temp
 .temp/
+src/generated/
