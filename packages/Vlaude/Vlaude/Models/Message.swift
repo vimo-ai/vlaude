@@ -67,7 +67,7 @@ struct Message: Identifiable, Codable {
 
     // 错误和重试相关
     let error: JSONValue?
-    let retryInMs: Int?
+    let retryInMs: Double?  // 注意：API 返回的是浮点数（如 17293.864131744864）
     let retryAttempt: Int?
     let maxRetries: Int?
     let cause: JSONValue?
@@ -487,10 +487,15 @@ enum JSONValue: Codable {
             self = .null
         } else if let string = try? container.decode(String.self) {
             self = .string(string)
+        } else if let bool = try? container.decode(Bool.self) {
+            // Bool 必须在 number 之前检查，因为 JSON 中 true/false 可能被解码为数字
+            self = .bool(bool)
         } else if let number = try? container.decode(Double.self) {
             self = .number(number)
-        } else if let bool = try? container.decode(Bool.self) {
-            self = .bool(bool)
+        } else if let intNumber = try? container.decode(Int64.self) {
+            // 兼容处理：某些高精度数字可能无法直接解码为 Double
+            // 先尝试 Int64，然后转换为 Double
+            self = .number(Double(intNumber))
         } else if let array = try? container.decode([JSONValue].self) {
             self = .array(array)
         } else if let object = try? container.decode([String: JSONValue].self) {

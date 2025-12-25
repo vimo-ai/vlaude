@@ -83,6 +83,7 @@ class WebSocketManager: ObservableObject {
 
     @Published var isConnected = false
     @Published var lastError: Error?
+    @Published var isEtermOnline = false  // ETerm 是否在线
 
     // 事件回调
     private var eventHandlers: [WebSocketEvent: [(WebSocketMessage) -> Void]] = [:]
@@ -105,7 +106,7 @@ class WebSocketManager: ObservableObject {
         // mTLS 模式使用 https，否则使用 http
         let useMTLS = CertificateManager.shared.isReady
         let protocol_ = useMTLS ? "https" : "http"
-        let url = URL(string: "\(protocol_)://10.0.0.1:10005")!
+        let url = URL(string: "\(protocol_)://localhost:10005")!
 
         print("✅ [Socket.IO] 使用 Token 设置连接: \(token.prefix(20))...")
         if useMTLS {
@@ -239,6 +240,60 @@ class WebSocketManager: ObservableObject {
         socket.on("statusline:metricsUpdate") { [weak self] data, ack in
             self?.handleStatuslineMetricsUpdate(data: data)
         }
+
+        // 监听 ETerm 状态变化
+        socket.on("eterm:statusChanged") { [weak self] data, ack in
+            self?.handleEtermStatusChanged(data: data)
+        }
+
+        // 监听 ETerm 会话创建完成
+        socket.on("eterm:sessionCreated") { [weak self] data, ack in
+            self?.handleEtermSessionCreated(data: data)
+        }
+    }
+
+    // MARK: - ETerm 状态处理
+
+    private func handleEtermStatusChanged(data: [Any]) {
+        guard let payload = data.first as? [String: Any],
+              let online = payload["online"] as? Bool else {
+            print("⚠️ [Socket.IO] eterm:statusChanged 数据格式错误")
+            return
+        }
+
+        print("🖥️ [Socket.IO] ETerm 状态变化: \(online ? "在线" : "离线")")
+
+        DispatchQueue.main.async { [weak self] in
+            self?.isEtermOnline = online
+        }
+    }
+
+    /// 处理 ETerm 会话创建完成事件
+    private func handleEtermSessionCreated(data: [Any]) {
+        guard let payload = data.first as? [String: Any],
+              let requestId = payload["requestId"] as? String,
+              let sessionId = payload["sessionId"] as? String else {
+            print("⚠️ [Socket.IO] eterm:sessionCreated 数据格式错误")
+            return
+        }
+
+        let projectPath = payload["projectPath"] as? String
+
+        print("🖥️ [Socket.IO] ETerm 会话创建完成:")
+        print("   RequestId: \(requestId)")
+        print("   SessionId: \(sessionId)")
+        print("   ProjectPath: \(projectPath ?? "N/A")")
+
+        // 通过通知发送，让 SessionListView 监听并跳转
+        NotificationCenter.default.post(
+            name: NSNotification.Name("EtermSessionCreated"),
+            object: nil,
+            userInfo: [
+                "requestId": requestId,
+                "sessionId": sessionId,
+                "projectPath": projectPath as Any
+            ]
+        )
     }
 
     private func handleBusinessEvent(_ event: WebSocketEvent, data: [Any]) {

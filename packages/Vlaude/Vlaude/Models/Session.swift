@@ -20,6 +20,9 @@ struct Session: Identifiable, Codable {
 
     // 会话列表 API 返回最后一条消息作为预览(从 Daemon 实时获取)
     var lastMessage: Message?
+
+    // ETerm 状态：该 session 是否在 ETerm 中可用
+    var inEterm: Bool?
 }
 
 // 会话列表中的简化消息结构(数据库格式)
@@ -37,6 +40,7 @@ struct SessionListResponse: Codable {
     let data: [Session]
     let total: Int
     let hasMore: Bool
+    let etermOnline: Bool?
 }
 
 struct SessionDetailResponse: Codable {
