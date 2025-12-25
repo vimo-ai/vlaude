@@ -1,4 +1,5 @@
-import { Controller, Post, Body, Logger } from '@nestjs/common';
+import { Controller, Post, Body, Logger, Req, ForbiddenException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { AuthService } from './auth.service';
 
 class GenerateTokenDto {
@@ -10,8 +11,45 @@ class GenerateTokenDto {
 @Controller('auth')
 export class AuthController {
   private readonly logger = new Logger(AuthController.name);
+  private readonly ipWhitelist: string[];
 
-  constructor(private authService: AuthService) {}
+  constructor(
+    private authService: AuthService,
+    private configService: ConfigService,
+  ) {
+    // 解析 IP 白名单
+    const ipWhitelistConfig = this.configService.get<string>('IP_WHITELIST', '');
+    this.ipWhitelist = ipWhitelistConfig
+      .split(',')
+      .map((ip) => ip.trim())
+      .filter(Boolean);
+  }
+
+  /**
+   * 检查 IP 是否在白名单中
+   */
+  private isWhitelistedIp(ip: string): boolean {
+    if (!ip || ip === 'unknown') return false;
+    if (this.ipWhitelist.includes(ip)) return true;
+    return this.ipWhitelist.some((cidr) => this.ipInCidr(ip, cidr));
+  }
+
+  private ipInCidr(ip: string, cidr: string): boolean {
+    if (!cidr.includes('/')) return ip === cidr;
+    const [subnet, bits] = cidr.split('/');
+    const mask = ~(2 ** (32 - parseInt(bits, 10)) - 1);
+    const ipNum = ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
+    const subnetNum = subnet.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet, 10), 0) >>> 0;
+    return (ipNum & mask) === (subnetNum & mask);
+  }
+
+  private getClientIp(request: any): string {
+    const forwardedFor = request.headers['x-forwarded-for'];
+    if (forwardedFor) return forwardedFor.split(',')[0].trim();
+    const realIp = request.headers['x-real-ip'];
+    if (realIp) return realIp;
+    return request.ip || request.connection?.remoteAddress || 'unknown';
+  }
 
   /**
    * 生成 JWT Token（支持设备白名单）
@@ -23,7 +61,14 @@ export class AuthController {
    * }
    */
   @Post('generate-token')
-  async generateToken(@Body() body: GenerateTokenDto) {
+  async generateToken(@Body() body: GenerateTokenDto, @Req() request: any) {
+    // IP 白名单检查
+    const clientIp = this.getClientIp(request);
+    if (!this.isWhitelistedIp(clientIp)) {
+      this.logger.warn(`❌ [Auth] 非白名单 IP 尝试生成 Token: ${clientIp}`);
+      throw new ForbiddenException('Access denied: IP not in whitelist');
+    }
+
     const { clientId, clientType, deviceName } = body;
 
     if (!clientId || !clientType) {

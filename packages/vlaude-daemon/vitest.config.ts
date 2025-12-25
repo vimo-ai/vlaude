@@ -26,5 +26,6 @@ export default defineConfig({
     // 排除不需要测试的文件
     exclude: ['**/node_modules/**', '**/dist/**', '**/build/**'],
   },
-  plugins: [swc.vite({ module: { type: 'es6' } })],
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  plugins: [swc.vite({ module: { type: 'es6' } }) as any],
 });

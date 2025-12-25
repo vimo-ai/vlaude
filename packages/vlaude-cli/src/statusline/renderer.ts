@@ -94,10 +94,9 @@ export function renderStatusLine(
     parts.push(chalk.yellow(`(+${gitChanges.insertions},-${gitChanges.deletions})`));
   }
 
-  // 5. Session ID (短格式)
+  // 5. Session ID
   if (data.session_id) {
-    const shortId = data.session_id.slice(0, 8);
-    parts.push(chalk.gray(shortId));
+    parts.push(chalk.gray(data.session_id));
   }
 
   // 用 | 分隔各部分

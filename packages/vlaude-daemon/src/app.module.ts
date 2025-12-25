@@ -11,6 +11,7 @@ import { Module } from '@nestjs/common';
 import { HealthController } from './common/controllers/health.controller';
 import { VersionController } from './common/controllers/version.controller';
 import { SessionController } from './common/controllers/session.controller';
+import { EtermController } from './common/controllers/eterm.controller';
 import { CacheModule } from '@nestjs/cache-manager';
 import { ConfigModule } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
@@ -58,6 +59,6 @@ import { EtermModule } from './module/eterm-gateway/eterm.module';
     // MinioModule,
     // @feature:minio:end
   ],
-  controllers: [HealthController, VersionController, SessionController, WatchModeController, ProjectController],
+  controllers: [HealthController, VersionController, SessionController, WatchModeController, ProjectController, EtermController],
 })
 export class AppModule {}

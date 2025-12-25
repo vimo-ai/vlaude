@@ -19,6 +19,7 @@ import { PrismaModule } from './shared/database/prisma.module';
 import { GatewayModule } from './gateway/gateway.module';
 import { AuthModule } from './auth/auth.module';
 import { DeviceModule } from './device/device.module';
+import { RegistryModule } from './module/registry/registry.module';
 // @feature:minio:start
 // import { MinioModule } from './module/minio/minio.module';
 // @feature:minio:end
@@ -29,7 +30,7 @@ import { DeviceModule } from './device/device.module';
     CacheModule.register({ isGlobal: true }),
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: ['env/.env.dev', 'env/.env.local', 'env/.env.nas', 'env/.env.prod', 'env/.env'],
+      envFilePath: ['.env', 'env/.env.dev', 'env/.env.local', 'env/.env.nas', 'env/.env.prod', 'env/.env'],
     }),
     // Vlaude 核心模块
     GatewayModule,
@@ -38,6 +39,7 @@ import { DeviceModule } from './device/device.module';
     SessionModule,
     AuthModule,
     DeviceModule,
+    RegistryModule,
     // @feature:minio:start
     // MinioModule,
     // @feature:minio:end

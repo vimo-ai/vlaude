@@ -41,8 +41,9 @@ export class ProjectService {
     private readonly eventEmitter: EventEmitter2,
   ) {
     // 从环境变量读取 Daemon 地址
+    const daemonHost = this.config.get<string>('DAEMON_HOST', 'localhost');
     const daemonPort = this.config.get<number>('DAEMON_PORT', 10006);
-    this.daemonBaseUrl = `http://localhost:${daemonPort}`;
+    this.daemonBaseUrl = `http://${daemonHost}:${daemonPort}`;
   }
 
   /**

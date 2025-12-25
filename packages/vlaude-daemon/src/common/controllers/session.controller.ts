@@ -7,7 +7,7 @@
  * V2 新增: 获取会话列表 API（从文件系统读取）
  * V3 新增: 使用 claude-agent-sdk 处理消息（Remote 模式）
  */
-import { Controller, Post, Body, Logger, Get, Query, DefaultValuePipe, ParseIntPipe } from '@nestjs/common';
+import { Controller, Post, Body, Logger, Get, Query, DefaultValuePipe, ParseIntPipe, Inject, forwardRef } from '@nestjs/common';
 import { homedir } from 'os';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
@@ -18,6 +18,7 @@ import { ServerClientService } from '../../module/server-client/server-client.se
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { ConfigLoaderService } from '../../module/config-loader/config-loader.service';
+import { EtermGateway } from '../../module/eterm-gateway/eterm.gateway';
 
 @Controller('sessions')
 export class SessionController {
@@ -28,6 +29,8 @@ export class SessionController {
     private readonly serverClient: ServerClientService,
     private readonly eventEmitter: EventEmitter2,
     private readonly configLoader: ConfigLoaderService,
+    @Inject(forwardRef(() => EtermGateway))
+    private readonly etermGateway: EtermGateway,
   ) {}
 
   /**
@@ -63,22 +66,29 @@ export class SessionController {
       // V2: 从文件系统读取会话（只返回元数据，不读取消息内容）
       const sessions = await this.dataCollector.collectSessions(projectPath, limit);
 
+      // 获取 ETerm 中的 session 列表
+      const etermSessions = new Set(this.etermGateway.getEtermSessions());
+      const isEtermOnline = this.etermGateway.isEtermOnline();
+
       // 只返回元数据，不读取消息（交给 Server 端根据 mtime 变化按需读取）
+      // V4: 添加 inEterm 字段，标识该 session 是否在 ETerm 中可用
       const sessionsMetadata = sessions.map((s) => ({
         sessionId: s.id,
         projectPath: s.projectPath,
         lastMtime: s.lastUpdated,
         createdAt: s.createdAt,
         lineCount: s.messageCount,
+        inEterm: etermSessions.has(s.id),
       }));
 
-      this.logger.log(`✅ 返回 ${sessionsMetadata.length} 个会话`);
+      this.logger.log(`✅ 返回 ${sessionsMetadata.length} 个会话，ETerm ${isEtermOnline ? '在线' : '离线'}`);
 
       return {
         success: true,
         data: sessionsMetadata,
         total: sessionsMetadata.length,
         source: 'filesystem',
+        etermOnline: isEtermOnline,
       };
     } catch (error) {
       this.logger.error(`❌ 获取会话列表失败: ${error.message}`);
