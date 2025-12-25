@@ -8,6 +8,12 @@
 import Foundation
 import Combine
 
+/// 创建会话的结果
+enum CreateSessionResult {
+    case session(Session)                    // SDK 模式，返回 Session，可以直接跳转
+    case etermPending(String, String)        // ETerm 模式，等待终端启动 (message, requestId)
+}
+
 @MainActor
 class SessionListViewModel: ObservableObject {
     @Published var sessions: [Session] = []
@@ -16,6 +22,7 @@ class SessionListViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isCreatingSession = false
     @Published var hasMore = false
+    @Published var etermMessage: String?  // ETerm 模式的提示消息
 
     private let apiClient = APIClient.shared
     private let wsManager = WebSocketManager.shared
@@ -110,23 +117,34 @@ class SessionListViewModel: ObservableObject {
     /// - Parameters:
     ///   - projectPath: 项目路径
     ///   - prompt: 可选的初始提示词(默认 "Hi")
-    /// - Returns: 创建的 Session,失败返回 nil
-    func createSession(projectPath: String, prompt: String? = nil) async -> Session? {
+    ///   - requestId: 可选的请求ID，用于跟踪 ETerm 会话创建
+    /// - Returns: 创建结果（SDK 模式返回 Session，ETerm 模式返回提示和 requestId）
+    func createSession(projectPath: String, prompt: String? = nil, requestId: String? = nil) async -> CreateSessionResult? {
         isCreatingSession = true
         errorMessage = nil
+        etermMessage = nil
 
         defer {
             isCreatingSession = false
         }
 
         do {
-            let session = try await apiClient.createSession(projectPath: projectPath, prompt: prompt)
-            print("✅ [SessionListViewModel] 会话创建成功: \(session.sessionId)")
+            let result = try await apiClient.createSession(projectPath: projectPath, prompt: prompt, requestId: requestId)
 
-            // 创建成功后刷新列表
-            await loadSessions(projectPath: projectPath)
+            switch result {
+            case .session(let session):
+                print("✅ [SessionListViewModel] 会话创建成功 (SDK): \(session.sessionId)")
+                // 创建成功后刷新列表
+                await loadSessions(projectPath: projectPath, reset: true)
+                return .session(session)
 
-            return session
+            case .eterm(let message, let returnedRequestId):
+                print("🖥️ [SessionListViewModel] ETerm 模式: \(message), requestId: \(returnedRequestId)")
+                etermMessage = message
+                // ETerm 模式下，会话会通过 WebSocket 通知创建，这里先刷新列表
+                await loadSessions(projectPath: projectPath, reset: true)
+                return .etermPending(message, returnedRequestId)
+            }
         } catch let error as APIError {
             errorMessage = handleAPIError(error)
             print("❌ [SessionListViewModel] 创建会话失败: \(errorMessage ?? "")")
@@ -136,6 +154,11 @@ class SessionListViewModel: ObservableObject {
             print("❌ [SessionListViewModel] 创建会话失败: \(errorMessage ?? "")")
             return nil
         }
+    }
+
+    /// 清除 ETerm 提示消息
+    func clearEtermMessage() {
+        etermMessage = nil
     }
 
     // MARK: - WebSocket 热更新

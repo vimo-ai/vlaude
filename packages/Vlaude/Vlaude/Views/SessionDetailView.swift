@@ -147,6 +147,20 @@ struct SessionDetailView: View {
         }
         .navigationTitle(String(sessionId.prefix(8)))
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            // ETerm 状态指示器
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 6) {
+                    Text(String(sessionId.prefix(8)))
+                        .font(.headline)
+                    if viewModel.session?.inEterm == true {
+                        Image(systemName: "terminal.fill")
+                            .font(.system(size: 12))
+                            .foregroundColor(.green)
+                    }
+                }
+            }
+        }
         .task {
             await viewModel.loadSessionDetail(sessionId: sessionId)
         }

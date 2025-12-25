@@ -26,7 +26,7 @@ class APIClient: NSObject {
         // mTLS 模式使用 https，否则使用 http
         let useMTLS = CertificateManager.shared.isReady
         let protocol_ = useMTLS ? "https" : "http"
-        self.baseURL = "\(protocol_)://192.168.50.229:10005"
+        self.baseURL = "\(protocol_)://localhost:10005"
 
         super.init()
 
@@ -157,8 +157,15 @@ class APIClient: NSObject {
     }
 
     // MARK: - Create Session
-    func createSession(projectPath: String, prompt: String? = nil) async throws -> Session {
-        let body = try JSONEncoder().encode(CreateSessionRequest(projectPath: projectPath, prompt: prompt))
+
+    /// 创建会话的结果
+    enum CreateSessionResult {
+        case session(Session)           // SDK 模式，直接返回 Session
+        case eterm(String, String)      // ETerm 模式，返回 (提示消息, requestId)
+    }
+
+    func createSession(projectPath: String, prompt: String? = nil, requestId: String? = nil) async throws -> CreateSessionResult {
+        let body = try JSONEncoder().encode(CreateSessionRequest(projectPath: projectPath, prompt: prompt, requestId: requestId))
 
         let response: CreateSessionResponse = try await request(
             path: "/sessions",
@@ -166,11 +173,21 @@ class APIClient: NSObject {
             body: body
         )
 
-        guard response.success, let session = response.data else {
+        guard response.success else {
             throw APIError.serverError(response.message ?? "创建会话失败")
         }
 
-        return session
+        // 检查是否是 ETerm 模式
+        if response.mode == "eterm" {
+            return .eterm(response.message ?? "已通知 ETerm 创建会话", response.requestId ?? "")
+        }
+
+        // SDK 模式，返回 Session
+        guard let session = response.data else {
+            throw APIError.serverError("创建会话失败：未返回会话数据")
+        }
+
+        return .session(session)
     }
 
     // MARK: - Auth APIs
@@ -195,12 +212,15 @@ class APIClient: NSObject {
 private struct CreateSessionRequest: Codable {
     let projectPath: String
     let prompt: String?
+    let requestId: String?
 }
 
 private struct CreateSessionResponse: Codable {
     let success: Bool
+    let mode: String?      // "eterm" 或 "sdk"
     let data: Session?
     let message: String?
+    let requestId: String? // ETerm 模式时返回的 requestId
 }
 
 private struct GenerateTokenRequest: Codable {

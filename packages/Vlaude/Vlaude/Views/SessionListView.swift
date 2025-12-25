@@ -12,9 +12,12 @@ struct SessionListView: View {
     let projectName: String
 
     @StateObject private var viewModel = SessionListViewModel()
+    @ObservedObject private var wsManager = WebSocketManager.shared
     @State private var showingCreateAlert = false
     @State private var newSessionPrompt = ""
     @State private var navigateToSession: String?
+    @State private var showingEtermAlert = false
+    @State private var pendingRequestId: String?  // 等待中的 ETerm 会话创建请求ID
 
     var body: some View {
         ZStack {
@@ -34,14 +37,24 @@ struct SessionListView: View {
                     .buttonStyle(.bordered)
                 }
             }
-            // 空状态
+            // 空状态 - 使用 ScrollView 支持下拉刷新
             else if viewModel.sessions.isEmpty && !viewModel.isLoading {
-                VStack(spacing: 16) {
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 48))
-                        .foregroundColor(.gray)
-                    Text("暂无会话")
-                        .foregroundColor(.secondary)
+                ScrollView {
+                    VStack(spacing: 16) {
+                        Spacer().frame(height: 100)
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.system(size: 48))
+                            .foregroundColor(.gray)
+                        Text("暂无会话")
+                            .foregroundColor(.secondary)
+                        Text("下拉刷新")
+                            .font(.caption)
+                            .foregroundColor(.secondary.opacity(0.6))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .refreshable {
+                    await viewModel.loadSessions(projectPath: projectPath, reset: true)
                 }
             }
             // 列表 - 始终保持稳定
@@ -93,11 +106,38 @@ struct SessionListView: View {
         .navigationTitle(projectName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            // ETerm 状态指示器
+            ToolbarItem(placement: .navigationBarLeading) {
+                HStack(spacing: 4) {
+                    Circle()
+                        .fill(wsManager.isEtermOnline ? Color.green : Color.gray)
+                        .frame(width: 8, height: 8)
+                    Text(wsManager.isEtermOnline ? "ETerm" : "SDK")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            // 新建对话按钮
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
-                    showingCreateAlert = true
+                    if wsManager.isEtermOnline {
+                        // ETerm 在线：直接创建，不需要输入 prompt
+                        Task {
+                            await createEtermSession()
+                        }
+                    } else {
+                        // ETerm 离线：弹出输入框走 SDK 模式
+                        showingCreateAlert = true
+                    }
                 } label: {
-                    Label("新建对话", systemImage: "plus")
+                    HStack(spacing: 4) {
+                        Image(systemName: wsManager.isEtermOnline ? "terminal" : "plus")
+                        if wsManager.isEtermOnline {
+                            Text("新建")
+                                .font(.caption)
+                        }
+                    }
                 }
                 .disabled(viewModel.isCreatingSession)
             }
@@ -121,6 +161,27 @@ struct SessionListView: View {
         .navigationDestination(item: $navigateToSession) { sessionId in
             SessionDetailView(sessionId: sessionId)
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("EtermSessionCreated"))) { notification in
+            // 处理 ETerm 会话创建完成事件
+            guard let userInfo = notification.userInfo,
+                  let requestId = userInfo["requestId"] as? String,
+                  let sessionId = userInfo["sessionId"] as? String else {
+                return
+            }
+
+            // 检查是否是我们等待的请求
+            if let pending = pendingRequestId, pending == requestId {
+                print("✅ [SessionListView] 匹配到创建的会话: \(sessionId)")
+                pendingRequestId = nil
+                showingEtermAlert = false
+                // 自动跳转到新创建的会话
+                navigateToSession = sessionId
+                // 刷新列表
+                Task {
+                    await viewModel.loadSessions(projectPath: projectPath, reset: true)
+                }
+            }
+        }
         .overlay {
             if viewModel.isCreatingSession {
                 ZStack {
@@ -137,8 +198,16 @@ struct SessionListView: View {
                 }
             }
         }
+        .alert("ETerm 创建中", isPresented: $showingEtermAlert) {
+            Button("好的") {
+                viewModel.clearEtermMessage()
+            }
+        } message: {
+            Text(viewModel.etermMessage ?? "已通知 ETerm 创建会话，请在 Mac 上查看终端")
+        }
     }
 
+    /// SDK 模式创建会话（带 prompt 输入框）
     private func createNewSession() async {
         let prompt = newSessionPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalPrompt = prompt.isEmpty ? nil : prompt
@@ -147,9 +216,37 @@ struct SessionListView: View {
         newSessionPrompt = ""
 
         // 创建会话
-        if let session = await viewModel.createSession(projectPath: projectPath, prompt: finalPrompt) {
-            // 创建成功,导航到会话详情
-            navigateToSession = session.sessionId
+        if let result = await viewModel.createSession(projectPath: projectPath, prompt: finalPrompt) {
+            switch result {
+            case .session(let session):
+                // SDK 模式，直接跳转到会话详情
+                navigateToSession = session.sessionId
+
+            case .etermPending(_, let requestId):
+                // ETerm 模式，保存 requestId 等待 WebSocket 通知
+                pendingRequestId = requestId
+                showingEtermAlert = true
+            }
+        }
+    }
+
+    /// ETerm 模式创建会话（直接创建，不需要输入）
+    private func createEtermSession() async {
+        // 生成 requestId
+        let requestId = UUID().uuidString
+
+        // ETerm 模式不需要 prompt，直接创建
+        if let result = await viewModel.createSession(projectPath: projectPath, prompt: nil, requestId: requestId) {
+            switch result {
+            case .session:
+                // 理论上 ETerm 在线时不会返回 session
+                break
+
+            case .etermPending(_, let returnedRequestId):
+                // ETerm 模式，保存 requestId 等待 WebSocket 通知
+                pendingRequestId = returnedRequestId
+                showingEtermAlert = true
+            }
         }
     }
 }
@@ -165,6 +262,15 @@ struct SessionRow: View {
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.primary)
                     .lineLimit(1)
+
+                // ETerm 状态指示器
+                if session.inEterm == true {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(.green)
+                        .help("已连接到 ETerm")
+                }
+
                 Spacer(minLength: 8)
                 // 创建时间
                 Text(formatDate(session.createdAt))
