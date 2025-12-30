@@ -1,0 +1,18 @@
+[package]
+name = "session-reader-ffi"
+description = "C FFI layer for session-reader - lightweight session reading for VlaudeKit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+session-reader.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[build-dependencies]
+cbindgen.workspace = true

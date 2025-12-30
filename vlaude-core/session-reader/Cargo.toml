@@ -1,0 +1,17 @@
+[package]
+name = "session-reader"
+description = "Session data reading layer for Claude Code JSONL files"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+notify.workspace = true
+notify-debouncer-mini.workspace = true
+ai-cli-session-collector.workspace = true
