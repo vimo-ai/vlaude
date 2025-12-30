@@ -1,0 +1,20 @@
+[package]
+name = "vlaude-ffi"
+description = "FFI exports for VlaudeKit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["staticlib", "cdylib"]
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+daemon-logic.workspace = true
+
+[build-dependencies]
+cbindgen.workspace = true
