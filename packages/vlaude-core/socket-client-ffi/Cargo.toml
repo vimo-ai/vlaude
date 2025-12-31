@@ -1,0 +1,19 @@
+[package]
+name = "socket-client-ffi"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "C FFI bindings for socket-client - Swift/VlaudeKit integration"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+socket-client = { path = "../socket-client" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+serde_json = "1"
+chrono = "0.4"
+tracing = "0.1"
+
+[build-dependencies]
+cbindgen = "0.27"

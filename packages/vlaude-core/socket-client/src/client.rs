@@ -376,6 +376,43 @@ impl SocketClient {
                     .boxed()
                 }
             })
+            // V3: 写操作事件（从 HTTP API 改为 WebSocket）
+            .on("server:createSession", {
+                let tx = event_tx.clone();
+                move |payload, _| {
+                    let tx = tx.clone();
+                    async move {
+                        if let Some(data) = extract_payload(payload) {
+                            let _ = tx.send(("server:createSession".into(), data)).await;
+                        }
+                    }
+                    .boxed()
+                }
+            })
+            .on("server:checkLoading", {
+                let tx = event_tx.clone();
+                move |payload, _| {
+                    let tx = tx.clone();
+                    async move {
+                        if let Some(data) = extract_payload(payload) {
+                            let _ = tx.send(("server:checkLoading".into(), data)).await;
+                        }
+                    }
+                    .boxed()
+                }
+            })
+            .on("server:sendMessage", {
+                let tx = event_tx.clone();
+                move |payload, _| {
+                    let tx = tx.clone();
+                    async move {
+                        if let Some(data) = extract_payload(payload) {
+                            let _ = tx.send(("server:sendMessage".into(), data)).await;
+                        }
+                    }
+                    .boxed()
+                }
+            })
             .on("server-shutdown", {
                 let tx = event_tx.clone();
                 move |_, _| {
@@ -839,6 +876,59 @@ impl SocketClient {
         };
         self.emit("daemon:swiftActivity", serde_json::to_value(data).unwrap())
             .await
+    }
+
+    // ==================== V3: 写操作响应方法 ====================
+
+    /// 发送会话创建结果
+    pub async fn send_session_created_result(
+        &self,
+        request_id: &str,
+        success: bool,
+        session_id: Option<&str>,
+        encoded_dir_name: Option<&str>,
+        transcript_path: Option<&str>,
+        error: Option<&str>,
+    ) -> Result<(), SocketError> {
+        let data = json!({
+            "requestId": request_id,
+            "success": success,
+            "sessionId": session_id,
+            "encodedDirName": encoded_dir_name,
+            "transcriptPath": transcript_path,
+            "error": error,
+        });
+        self.emit("daemon:sessionCreatedResult", data).await
+    }
+
+    /// 发送加载状态检查结果
+    pub async fn send_check_loading_result(
+        &self,
+        request_id: &str,
+        loading: bool,
+    ) -> Result<(), SocketError> {
+        let data = json!({
+            "requestId": request_id,
+            "loading": loading,
+        });
+        self.emit("daemon:checkLoadingResult", data).await
+    }
+
+    /// 发送消息发送结果
+    pub async fn send_message_result(
+        &self,
+        request_id: &str,
+        success: bool,
+        message: Option<&str>,
+        via: Option<&str>,
+    ) -> Result<(), SocketError> {
+        let data = json!({
+            "requestId": request_id,
+            "success": success,
+            "message": message,
+            "via": via,
+        });
+        self.emit("daemon:sendMessageResult", data).await
     }
 }
 

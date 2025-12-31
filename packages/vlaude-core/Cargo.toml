@@ -2,10 +2,9 @@
 resolver = "2"
 members = [
     "session-reader",
-    "session-reader-ffi",
     "socket-client",
+    "socket-client-ffi",
     "daemon-logic",
-    "vlaude-cli",
     "vlaude-ffi",
 ]
 
@@ -65,5 +64,5 @@ session-reader = { path = "session-reader" }
 socket-client = { path = "socket-client" }
 daemon-logic = { path = "daemon-logic" }
 
-# External crates
-ai-cli-session-collector = { git = "https://github.com/vimo-ai/ai-cli-session-collector" }
+# External crates - 通过 claude-session-db 统一依赖 ai-cli-session-collector
+claude-session-db = { path = "../../../claude-session-db" }
