@@ -57,3 +57,5 @@ temp/
 certs/
 secrets/
 config.yaml
+target/
+packages/claude-server/prisma/test-db/

@@ -1,6 +1,15 @@
-# {{name}}
+# vlaude-daemon (NestJS)
 
-{{description}}
+> **DEPRECATED**: This package is deprecated. Please use `../vlaude-daemon-rs` (Rust version) instead.
+>
+> The Rust version provides:
+> - Redis service discovery
+> - Shared core logic with VlaudeKit (via FFI)
+> - Better performance
+
+---
+
+**Original description**: Vlaude daemon service - local MAC service
 
 > 开发请先阅读 `rules/AI_RULES.md`（通用规则）与 `rules/includes/*`（Git/后端/前端/测试/工作流）。所有 AI/CLI/人工改动均需遵循这些规范。
 

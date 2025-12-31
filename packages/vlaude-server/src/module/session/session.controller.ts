@@ -31,13 +31,14 @@ export class SessionController {
   ) {}
 
   /**
-   * 序列化会话数据，转换 BigInt 为字符串，添加 ETerm 状态
+   * 序列化会话数据
    */
   private serializeSession(session: any) {
     if (!session) return session;
     return {
       ...session,
       lastFileSize: session.lastFileSize?.toString(),
+      // 标记该 session 是否在 ETerm 中打开
       inEterm: this.daemonGateway.isSessionInEterm(session.sessionId),
     };
   }
@@ -50,53 +51,17 @@ export class SessionController {
   }
 
   /**
-   * 创建新对话
+   * 创建新对话（暂不支持，SharedDb 只读）
    * POST /sessions
-   *
-   * Body: { projectPath: string, prompt?: string, requestId?: string }
-   *
-   * 注意：此路由必须在其他路由之前，避免被其他路由匹配
    */
   @Post()
   async createSession(
     @Body() body: { projectPath: string; prompt?: string; requestId?: string }
   ) {
-    const { projectPath, prompt, requestId } = body;
-
-    if (!projectPath) {
-      return {
-        success: false,
-        message: '缺少 projectPath 参数',
-      };
-    }
-
-    try {
-      const result = await this.sessionService.createSession(projectPath, prompt, requestId);
-
-      // 检查是否是 ETerm 模式
-      if (result.mode === 'eterm') {
-        return {
-          success: true,
-          mode: 'eterm',
-          data: null,
-          message: result.message,
-          requestId: result.requestId,  // 返回 requestId 给 iOS
-        };
-      }
-
-      // SDK 模式，返回完整的 session 数据
-      return {
-        success: true,
-        mode: 'sdk',
-        data: this.serializeSession(result),
-        message: '对话创建成功',
-      };
-    } catch (error) {
-      return {
-        success: false,
-        message: `创建对话失败: ${error.message}`,
-      };
-    }
+    return {
+      success: false,
+      message: 'SharedDb 是只读数据源，暂不支持创建会话',
+    };
   }
 
   /**
@@ -128,6 +93,7 @@ export class SessionController {
       data: this.serializeSessions(result.sessions),
       total: result.total,
       hasMore: result.hasMore,
+      // ETerm 在线状态（解决时序问题）
       etermOnline: this.daemonGateway.isEtermOnline(),
     };
   }

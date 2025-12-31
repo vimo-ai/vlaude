@@ -102,6 +102,7 @@ DNS.4 = homenas.higuaifan.com
 IP.1 = 127.0.0.1
 IP.2 = 192.168.50.229
 IP.3 = 192.168.50.9
+IP.4 = 192.168.0.35
 EOF
 
     # 签发用的扩展配置
@@ -109,7 +110,7 @@ EOF
 basicConstraints = CA:FALSE
 keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth
-subjectAltName = DNS:localhost, DNS:vlaude-server, DNS:*.local, DNS:homenas.higuaifan.com, IP:127.0.0.1, IP:192.168.50.229, IP:192.168.50.9
+subjectAltName = DNS:localhost, DNS:vlaude-server, DNS:*.local, DNS:homenas.higuaifan.com, IP:127.0.0.1, IP:192.168.50.229, IP:192.168.50.9, IP:192.168.0.35
 subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid,issuer
 EOF
