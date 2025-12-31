@@ -8,7 +8,7 @@
  */
 import { Module } from '@nestjs/common';
 import { ModuleMetadata } from '@nestjs/common/interfaces/modules/module-metadata.interface';
-import { PrismaModule } from '../../shared/database/prisma.module';
+
 // import { MLogModule } from '../../module/log/mLog.module';
 
 type P = ModuleMetadata['providers'];
@@ -60,7 +60,7 @@ export function MContext(meta: {
 
   return Module({
     imports: [
-      PrismaModule,
+      
       // MLogModule,
       ...meta.imports??[],
       ...meta.mapping??[],

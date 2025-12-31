@@ -58,7 +58,7 @@ export class ServerClientService implements OnModuleInit, OnModuleDestroy {
   private async initRegistry() {
     try {
       // 从环境变量获取 Redis 配置
-      const redisHost = this.configService.get<string>('REDIS_HOST') || '10.0.0.1';
+      const redisHost = this.configService.get<string>('REDIS_HOST') || 'localhost';
       const redisPort = this.configService.get<number>('REDIS_PORT') || 6379;
       const redisPassword = this.configService.get<string>('REDIS_PASSWORD');
 

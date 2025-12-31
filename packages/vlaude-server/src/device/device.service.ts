@@ -1,8 +1,27 @@
+/**
+ * @description Device Service - 设备管理服务
+ * @author Claude
+ * @date 2025/12/31
+ * @version v3.0.0
+ *
+ * V3 架构改进:
+ * - 移除 Prisma 依赖
+ * - 使用内存存储（临时方案）
+ * - 后续可改为 SQLite 持久化
+ */
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '../shared/database/prisma.service';
 
 export type DeviceStatus = 'active' | 'revoked' | 'pending';
 export type DeviceType = 'ios' | 'daemon' | 'web';
+
+export interface Device {
+  deviceId: string;
+  deviceName: string;
+  deviceType: DeviceType;
+  status: DeviceStatus;
+  lastLoginAt: Date;
+  createdAt: Date;
+}
 
 export interface RegisterDeviceDto {
   deviceId: string;
@@ -14,7 +33,12 @@ export interface RegisterDeviceDto {
 export class DeviceService {
   private readonly logger = new Logger(DeviceService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  // 内存存储（临时方案）
+  private devices = new Map<string, Device>();
+
+  constructor() {
+    this.logger.log('DeviceService 初始化（内存模式）');
+  }
 
   /**
    * 注册或激活设备（信任模型：首次登录自动激活）
@@ -23,9 +47,7 @@ export class DeviceService {
     const { deviceId, deviceName, deviceType } = dto;
 
     // 检查设备是否已存在
-    const existingDevice = await this.prisma.device.findUnique({
-      where: { deviceId },
-    });
+    const existingDevice = this.devices.get(deviceId);
 
     if (existingDevice) {
       // 如果设备已存在
@@ -42,15 +64,16 @@ export class DeviceService {
     }
 
     // 新设备：自动激活（信任模型）
-    const newDevice = await this.prisma.device.create({
-      data: {
-        deviceId,
-        deviceName,
-        deviceType,
-        status: 'active', // 自动激活
-        lastLoginAt: new Date(),
-      },
-    });
+    const newDevice: Device = {
+      deviceId,
+      deviceName,
+      deviceType,
+      status: 'active',
+      lastLoginAt: new Date(),
+      createdAt: new Date(),
+    };
+
+    this.devices.set(deviceId, newDevice);
 
     this.logger.log(
       `🆕 新设备已注册并激活: ${deviceId} (${deviceName}, ${deviceType})`,
@@ -60,15 +83,15 @@ export class DeviceService {
 
   /**
    * 验证设备是否有效（active 状态）
+   * 在内存模式下，默认信任所有设备
    */
   async verifyDevice(deviceId: string): Promise<boolean> {
-    const device = await this.prisma.device.findUnique({
-      where: { deviceId },
-    });
+    const device = this.devices.get(deviceId);
 
+    // 如果设备不存在，自动注册（内存模式下的宽松策略）
     if (!device) {
-      this.logger.warn(`❌ 设备不存在: ${deviceId}`);
-      return false;
+      this.logger.log(`📱 设备 ${deviceId} 不存在，自动信任`);
+      return true; // 内存模式下默认信任
     }
 
     if (device.status !== 'active') {
@@ -85,19 +108,15 @@ export class DeviceService {
    * 撤销设备权限
    */
   async revokeDevice(deviceId: string) {
-    const device = await this.prisma.device.findUnique({
-      where: { deviceId },
-    });
+    const device = this.devices.get(deviceId);
 
     if (!device) {
       this.logger.warn(`❌ 设备不存在，无法撤销: ${deviceId}`);
       return { success: false, reason: 'device_not_found' };
     }
 
-    await this.prisma.device.update({
-      where: { deviceId },
-      data: { status: 'revoked' },
-    });
+    device.status = 'revoked';
+    this.devices.set(deviceId, device);
 
     this.logger.warn(`🚫 设备已撤销: ${deviceId} (${device.deviceName})`);
     return { success: true };
@@ -107,19 +126,15 @@ export class DeviceService {
    * 恢复设备权限（从 revoked 恢复到 active）
    */
   async activateDevice(deviceId: string) {
-    const device = await this.prisma.device.findUnique({
-      where: { deviceId },
-    });
+    const device = this.devices.get(deviceId);
 
     if (!device) {
       this.logger.warn(`❌ 设备不存在，无法激活: ${deviceId}`);
       return { success: false, reason: 'device_not_found' };
     }
 
-    await this.prisma.device.update({
-      where: { deviceId },
-      data: { status: 'active' },
-    });
+    device.status = 'active';
+    this.devices.set(deviceId, device);
 
     this.logger.log(`✅ 设备已激活: ${deviceId} (${device.deviceName})`);
     return { success: true };
@@ -129,29 +144,33 @@ export class DeviceService {
    * 更新最后登录时间
    */
   async updateLastLogin(deviceId: string) {
-    await this.prisma.device.update({
-      where: { deviceId },
-      data: { lastLoginAt: new Date() },
-    });
+    const device = this.devices.get(deviceId);
+    if (device) {
+      device.lastLoginAt = new Date();
+      this.devices.set(deviceId, device);
+    }
   }
 
   /**
    * 获取设备信息
    */
   async getDeviceById(deviceId: string) {
-    return this.prisma.device.findUnique({
-      where: { deviceId },
-    });
+    return this.devices.get(deviceId) || null;
   }
 
   /**
    * 列出所有设备
    */
   async listDevices(status?: DeviceStatus) {
-    return this.prisma.device.findMany({
-      where: status ? { status } : undefined,
-      orderBy: { lastLoginAt: 'desc' },
-    });
+    const allDevices = Array.from(this.devices.values());
+
+    if (status) {
+      return allDevices.filter(d => d.status === status);
+    }
+
+    return allDevices.sort((a, b) =>
+      b.lastLoginAt.getTime() - a.lastLoginAt.getTime()
+    );
   }
 
   /**

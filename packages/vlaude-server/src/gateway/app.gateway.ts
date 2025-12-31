@@ -21,7 +21,7 @@ import { Server, Socket } from 'socket.io';
 import { EventEmitter2, OnEvent } from '@nestjs/event-emitter';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
-import { PrismaService } from '../shared/database/prisma.service';
+
 import { ConfigService } from '@nestjs/config';
 import { DeviceService } from '../device/device.service';
 import { DaemonGateway } from '../module/daemon-gateway/daemon.gateway';
@@ -84,7 +84,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   constructor(
     private readonly eventEmitter: EventEmitter2,
     private readonly httpService: HttpService,
-    private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
     private readonly deviceService: DeviceService,
     @Inject(forwardRef(() => DaemonGateway))
@@ -967,6 +966,26 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       projectPath: data.projectPath,
       timestamp: data.timestamp,
     });
+  }
+
+  /**
+   * iOS 主动查询 ETerm 状态（解决时序问题）
+   * 当 iOS 连接后，可以调用此事件获取当前 ETerm 状态
+   */
+  @SubscribeMessage('app:queryEtermStatus')
+  handleQueryEtermStatus(@ConnectedSocket() client: Socket) {
+    const online = this.daemonGateway.isEtermOnline();
+    const sessions = this.daemonGateway.getEtermSessions();
+
+    this.logger.log(`📱 [ETerm 状态查询] 客户端 ${client.id} 查询 ETerm 状态`);
+    this.logger.log(`   Online: ${online}`);
+    this.logger.log(`   Sessions: ${sessions.length} 个`);
+
+    return {
+      online,
+      sessions,
+      timestamp: new Date().toISOString(),
+    };
   }
 
   /**

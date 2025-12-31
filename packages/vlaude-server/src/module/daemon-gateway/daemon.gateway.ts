@@ -13,7 +13,7 @@ import { Logger, OnModuleDestroy } from '@nestjs/common';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { ProjectService } from '../project/project.service';
 import { SessionService } from '../session/session.service';
-import { PrismaService } from '../../shared/database/prisma.service';
+
 
 /**
  * Daemon Gateway
@@ -43,7 +43,6 @@ export class DaemonGateway
     private readonly projectService: ProjectService,
     private readonly sessionService: SessionService,
     private readonly eventEmitter: EventEmitter2,
-    private readonly prisma: PrismaService,
   ) {}
 
   afterInit(server: Server) {
@@ -78,46 +77,27 @@ export class DaemonGateway
   }
 
   /**
-   * 接收 daemon 发送的项目数据
+   * 接收 daemon 发送的项目数据（已废弃，数据源改为 SharedDb）
    */
   @SubscribeMessage('daemon:projectData')
   async handleProjectData(
     @MessageBody() data: { projects: any[] },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`Received ${data.projects.length} projects from daemon ${client.id}`);
-
-    try {
-      await this.projectService.saveProjects(data.projects, client.id);
-      return { success: true };
-    } catch (error) {
-      this.logger.error(`Failed to save projects: ${error.message}`);
-      return { success: false, error: error.message };
-    }
+    this.logger.log(`[废弃] Received ${data.projects.length} projects from daemon ${client.id}, 数据源已改为 SharedDb`);
+    return { success: true, deprecated: true };
   }
 
   /**
-   * 接收 daemon 发送的会话元数据（批量）
+   * 接收 daemon 发送的会话元数据（已废弃，数据源改为 SharedDb）
    */
   @SubscribeMessage('daemon:sessionMetadata')
   async handleSessionMetadata(
     @MessageBody() data: { projectPath: string; sessions: any[] },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(
-      `Received ${data.sessions.length} session metadata for project ${data.projectPath} from daemon ${client.id}`,
-    );
-
-    try {
-      await this.sessionService.saveSessionMetadata(
-        data.projectPath,
-        data.sessions,
-      );
-      return { success: true };
-    } catch (error) {
-      this.logger.error(`Failed to save session metadata: ${error.message}`);
-      return { success: false, error: error.message };
-    }
+    this.logger.log(`[废弃] Received session metadata from daemon ${client.id}, 数据源已改为 SharedDb`);
+    return { success: true, deprecated: true };
   }
 
   /**

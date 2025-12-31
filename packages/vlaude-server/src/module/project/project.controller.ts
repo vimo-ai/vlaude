@@ -15,12 +15,19 @@ import {
   Query,
   Body,
   ParseIntPipe,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { ProjectService } from './project.service';
+import { DaemonGateway } from '../daemon-gateway/daemon.gateway';
 
 @Controller('projects')
 export class ProjectController {
-  constructor(private readonly projectService: ProjectService) {}
+  constructor(
+    private readonly projectService: ProjectService,
+    @Inject(forwardRef(() => DaemonGateway))
+    private readonly daemonGateway: DaemonGateway,
+  ) {}
 
   /**
    * 序列化项目数据（处理嵌套的 sessions 中的 BigInt）
@@ -60,6 +67,9 @@ export class ProjectController {
       data: this.serializeProjects(result.projects),
       total: result.total,
       hasMore: result.hasMore,
+      // ETerm 在线状态（解决时序问题）
+      etermOnline: this.daemonGateway.isEtermOnline(),
+      etermSessions: this.daemonGateway.getEtermSessions(),
     };
   }
 

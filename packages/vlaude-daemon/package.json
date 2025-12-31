@@ -2,7 +2,8 @@
   "name": "@vlaude/daemon",
   "author": "higuaifan",
   "version": "0.0.1",
-  "description": "Vlaude daemon service - local MAC service",
+  "description": "[DEPRECATED] Vlaude daemon service - use vlaude-daemon-rs instead",
+  "deprecated": "This package is deprecated. Use ../vlaude-daemon-rs (Rust version) instead.",
   "keywords": [],
   "scripts": {
     "start:dev": "nest start --watch -b swc --type-check",
