@@ -53,6 +53,9 @@ export class ProjectController {
   /**
    * 获取项目列表 (V2: 从文件系统获取 + 增量更新 + 分页支持)
    * GET /projects?limit=10&offset=0
+   *
+   * @see docs/DATA_STRUCTURE_SYNC.md - 数据结构同步文档
+   * @see Vlaude/Models/Project.swift - iOS 端 ProjectListResponse 定义
    */
   @Get()
   async getAllProjects(
@@ -68,6 +71,7 @@ export class ProjectController {
       total: result.total,
       hasMore: result.hasMore,
       // ETerm 在线状态（解决时序问题）
+      // @see docs/DATA_STRUCTURE_SYNC.md#1-projectlistresponse
       etermOnline: this.daemonGateway.isEtermOnline(),
       etermSessions: this.daemonGateway.getEtermSessions(),
     };
