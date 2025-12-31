@@ -48,3 +48,12 @@ temp/
 .vlaude/
 *.tgz
 .pnpm/
+
+# Certificates & Secrets (NEVER commit!)
+*.p12
+*.pem
+*.key
+!*.pub
+certs/
+secrets/
+config.yaml
