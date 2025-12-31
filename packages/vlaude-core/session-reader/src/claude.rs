@@ -145,7 +145,11 @@ impl ClaudeReader {
 
     /// 列出项目下的所有会话
     /// 委托给 ClaudeAdapter，可选按项目路径过滤
-    pub fn list_sessions(&mut self, project_path: Option<&str>) -> Result<Vec<SessionMeta>> {
+    ///
+    /// # Arguments
+    /// * `project_path` - 可选的项目路径过滤
+    /// * `include_agents` - 是否包含 agent session (agent-xxx)，默认应传 false
+    pub fn list_sessions(&mut self, project_path: Option<&str>, include_agents: bool) -> Result<Vec<SessionMeta>> {
         // 使用 ClaudeAdapter 获取所有会话
         let mut sessions = self.adapter.list_sessions()?;
 
@@ -155,6 +159,11 @@ impl ClaudeReader {
                 self.path_cache
                     .insert(session.project_path.clone(), encoded.clone());
             }
+        }
+
+        // 过滤 agent session
+        if !include_agents {
+            sessions.retain(|s| !s.id.starts_with("agent-"));
         }
 
         // 按项目路径过滤
@@ -174,7 +183,7 @@ impl ClaudeReader {
         project_path: &str,
         within_seconds: Option<u64>,
     ) -> Result<Option<SessionMeta>> {
-        let sessions = self.list_sessions(Some(project_path))?;
+        let sessions = self.list_sessions(Some(project_path), false)?;
 
         if sessions.is_empty() {
             return Ok(None);
