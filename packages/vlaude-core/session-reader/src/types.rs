@@ -1,11 +1,11 @@
 //! 领域类型定义
 //!
-//! 大部分类型直接从 ai-cli-session-collector 重导出
+//! 大部分类型从 claude-session-db 重导出（它统一了 ai-cli-session-collector 的类型）
 
 use serde::Serialize;
 
-// Re-export core types from ai-cli-session-collector
-pub use ai_cli_session_collector::{
+// Re-export core types from claude-session-db (which re-exports from ai-cli-session-collector)
+pub use claude_session_db::{
     IndexableMessage, IndexableSession, MessageType, ParseResult, ParsedMessage, SessionMeta,
     Source,
 };

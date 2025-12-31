@@ -1,6 +1,6 @@
 //! Claude Code 数据读取器
 //!
-//! 基于 ai-cli-session-collector 的 ClaudeAdapter 实现
+//! 基于 claude-session-db 的 ClaudeAdapter 实现（re-export from ai-cli-session-collector）
 //! 解析 ~/.claude/projects/{encoded-path}/{session-uuid}.jsonl
 
 use anyhow::{Context, Result};
@@ -9,7 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use ai_cli_session_collector::{ClaudeAdapter, ConversationAdapter, MessageType};
+use claude_session_db::{ClaudeAdapter, ConversationAdapter, MessageType};
 
 use crate::types::*;
 

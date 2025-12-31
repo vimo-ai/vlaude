@@ -501,6 +501,16 @@ impl DaemonService {
             "server:command" => {
                 self.handle_server_command(data).await?;
             }
+            // V3: 写操作事件（从 HTTP API 改为 WebSocket）
+            "server:createSession" => {
+                self.handle_create_session(data).await?;
+            }
+            "server:checkLoading" => {
+                self.handle_check_loading(data).await?;
+            }
+            "server:sendMessage" => {
+                self.handle_send_message(data).await?;
+            }
             "server-shutdown" => {
                 warn!("Server is shutting down");
             }
@@ -808,6 +818,107 @@ impl DaemonService {
         Ok(())
     }
 
+    // ==================== V3: 写操作处理方法 ====================
+
+    /// 处理创建会话请求
+    /// 注意：Daemon 本身不创建会话，需要通过 ETerm 或 CLI 创建
+    async fn handle_create_session(&self, data: serde_json::Value) -> Result<()> {
+        let request_id = data
+            .get("requestId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let project_path = data
+            .get("projectPath")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let prompt = data.get("prompt").and_then(|v| v.as_str());
+
+        info!(
+            "Create session request: request_id={}, project={}",
+            request_id, project_path
+        );
+
+        // TODO: 实际的会话创建需要通过 ETerm 或启动 Claude CLI
+        // 目前先返回失败，等待 ETerm 集成完成
+        self.socket
+            .read()
+            .await
+            .send_session_created_result(
+                request_id,
+                false,
+                None,
+                None,
+                None,
+                Some("Daemon does not support session creation directly. Please use ETerm."),
+            )
+            .await?;
+
+        Ok(())
+    }
+
+    /// 处理检查加载状态请求
+    async fn handle_check_loading(&self, data: serde_json::Value) -> Result<()> {
+        let request_id = data
+            .get("requestId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let session_id = data
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+
+        info!(
+            "Check loading request: request_id={}, session={}",
+            request_id, session_id
+        );
+
+        // 目前返回 false（未加载），因为 Daemon 不跟踪加载状态
+        // 实际的加载状态需要通过 SDK 或 ETerm 来获取
+        self.socket
+            .read()
+            .await
+            .send_check_loading_result(request_id, false)
+            .await?;
+
+        Ok(())
+    }
+
+    /// 处理发送消息请求
+    /// 注意：Daemon 本身不发送消息，需要通过 ETerm 或 SDK 发送
+    async fn handle_send_message(&self, data: serde_json::Value) -> Result<()> {
+        let request_id = data
+            .get("requestId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let session_id = data
+            .get("sessionId")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let text = data.get("text").and_then(|v| v.as_str()).unwrap_or_default();
+
+        info!(
+            "Send message request: request_id={}, session={}, text_len={}",
+            request_id,
+            session_id,
+            text.len()
+        );
+
+        // TODO: 实际的消息发送需要通过 ETerm 或 SDK
+        // 目前先返回失败，等待集成完成
+        self.socket
+            .read()
+            .await
+            .send_message_result(
+                request_id,
+                false,
+                Some("Daemon does not support message sending directly. Please use ETerm."),
+                None,
+            )
+            .await?;
+
+        Ok(())
+    }
+
     // ==================== 通知方法 ====================
 
     /// 通知找到新会话
@@ -1057,7 +1168,7 @@ impl DaemonService {
         message: &serde_json::Value,
     ) -> Result<()> {
         use claude_session_db::db::MessageInput;
-        use claude_session_db::MessageRole;
+        use claude_session_db::MessageType;
 
         // 提取项目名（路径最后一段）
         let project_name = project_path
@@ -1083,12 +1194,12 @@ impl DaemonService {
             return Ok(());
         }
 
-        let role_str = message.get("type")
+        let type_str = message.get("type")
             .and_then(|v| v.as_str())
-            .unwrap_or("human");
-        let role = match role_str {
-            "assistant" => MessageRole::Assistant,
-            _ => MessageRole::Human,
+            .unwrap_or("user");
+        let msg_type = match type_str {
+            "assistant" => MessageType::Assistant,
+            _ => MessageType::User,
         };
 
         // 提取内容
@@ -1121,12 +1232,22 @@ impl DaemonService {
                     .unwrap_or(0)
             });
 
+        // 保存原始 JSON
+        let raw = serde_json::to_string(message).ok();
+
         let msg_input = MessageInput {
             uuid,
-            role,
+            r#type: msg_type,
             content,
             timestamp,
-            sequence: 0, // 单条消息不需要序列号
+            sequence: 0,
+            source: Some("claude".to_string()),
+            channel: Some("code".to_string()),
+            model: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_args: None,
+            raw,
         };
 
         let inserted = db.insert_messages(session_id, &[msg_input]).await?;

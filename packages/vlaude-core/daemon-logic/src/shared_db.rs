@@ -30,8 +30,12 @@ impl SharedDbAdapter {
     /// 创建适配器
     pub fn new(shared_db_path: Option<PathBuf>) -> anyhow::Result<Self> {
         let db_path = shared_db_path.unwrap_or_else(|| {
-            let home = std::env::var("HOME").unwrap_or_default();
-            PathBuf::from(format!("{}/.eterm/session.db", home))
+            // 支持 VIMO_HOME 环境变量覆盖
+            let vimo_root = std::env::var("VIMO_HOME").unwrap_or_else(|_| {
+                let home = std::env::var("HOME").unwrap_or_default();
+                format!("{}/.vimo", home)
+            });
+            PathBuf::from(format!("{}/db/claude-session.db", vimo_root))
         });
 
         if let Some(parent) = db_path.parent() {

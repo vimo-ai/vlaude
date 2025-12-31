@@ -18,7 +18,7 @@ session-reader.workspace = true
 socket-client.workspace = true
 
 # 共享数据库（ETerm/Vlaude 数据统一层）
-claude-session-db = { path = "/Users/higuaifan/Desktop/vimo/ETerm/claude-session-db", features = ["writer", "reader", "coordination"] }
+claude-session-db = { path = "../../../../claude-session-db", features = ["writer", "reader", "coordination"] }
 
 [dev-dependencies]
 tempfile.workspace = true
