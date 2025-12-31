@@ -24,7 +24,7 @@ import { SessionService } from '../session/session.service';
   cors: {
     origin: '*',
   },
-  transports: ['websocket'],
+  transports: ['polling', 'websocket'],
 })
 export class DaemonGateway
   implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect, OnModuleDestroy
