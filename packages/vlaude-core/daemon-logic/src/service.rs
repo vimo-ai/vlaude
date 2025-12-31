@@ -292,7 +292,7 @@ impl DaemonService {
         self.socket.read().await.report_project_data(projects_json, None).await?;
 
         // 2. 推送每个项目的会话列表（限制每个项目最多 50 个会话，避免消息过大）
-        let all_sessions = self.reader.write().await.list_sessions(None)?;
+        let all_sessions = self.reader.write().await.list_sessions(None, false)?;
         if !all_sessions.is_empty() {
             // 按 projectPath 分组
             let mut sessions_by_project: std::collections::HashMap<String, Vec<serde_json::Value>> =
@@ -556,7 +556,7 @@ impl DaemonService {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let sessions = self.reader.write().await.list_sessions(project_path)?;
+        let sessions = self.reader.write().await.list_sessions(project_path, false)?;
 
         let sessions_json: Vec<serde_json::Value> = sessions
             .into_iter()
