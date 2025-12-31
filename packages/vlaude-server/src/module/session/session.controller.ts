@@ -32,6 +32,9 @@ export class SessionController {
 
   /**
    * 序列化会话数据
+   *
+   * @see docs/DATA_STRUCTURE_SYNC.md#3-session-模型-ineterm-字段
+   * @see Vlaude/Models/Session.swift - iOS 端 Session 定义
    */
   private serializeSession(session: any) {
     if (!session) return session;
@@ -39,6 +42,7 @@ export class SessionController {
       ...session,
       lastFileSize: session.lastFileSize?.toString(),
       // 标记该 session 是否在 ETerm 中打开
+      // @see docs/DATA_STRUCTURE_SYNC.md#3-session-模型-ineterm-字段
       inEterm: this.daemonGateway.isSessionInEterm(session.sessionId),
     };
   }
@@ -69,6 +73,9 @@ export class SessionController {
    * GET /sessions/by-path?path=/xxx&limit=20&offset=0
    *
    * 注意：此路由必须在 :id 等动态路由之前，否则会被 :id 路由匹配
+   *
+   * @see docs/DATA_STRUCTURE_SYNC.md#2-sessionlistresponse
+   * @see Vlaude/Models/Session.swift - iOS 端 SessionListResponse 定义
    */
   @Get('by-path')
   async getSessionsByPath(
@@ -94,6 +101,7 @@ export class SessionController {
       total: result.total,
       hasMore: result.hasMore,
       // ETerm 在线状态（解决时序问题）
+      // @see docs/DATA_STRUCTURE_SYNC.md#2-sessionlistresponse
       etermOnline: this.daemonGateway.isEtermOnline(),
     };
   }

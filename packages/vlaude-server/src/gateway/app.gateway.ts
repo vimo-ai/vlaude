@@ -971,6 +971,12 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   /**
    * iOS 主动查询 ETerm 状态（解决时序问题）
    * 当 iOS 连接后，可以调用此事件获取当前 ETerm 状态
+   *
+   * 返回格式：直接返回对象，NestJS 会作为 ACK 响应发送
+   * 客户端使用 emitWithAck 后，响应数组的第一个元素就是这个对象
+   *
+   * @see docs/DATA_STRUCTURE_SYNC.md#4-websocket-appqueryetermstatus
+   * @see Vlaude/Services/WebSocketManager.swift - iOS 端 WebSocket 处理
    */
   @SubscribeMessage('app:queryEtermStatus')
   handleQueryEtermStatus(@ConnectedSocket() client: Socket) {
@@ -981,6 +987,9 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     this.logger.log(`   Online: ${online}`);
     this.logger.log(`   Sessions: ${sessions.length} 个`);
 
+    // 直接返回对象，NestJS 会作为 ACK 响应发送
+    // 客户端 emitWithAck 收到的是 [{ online, sessions, timestamp }]
+    // @see docs/DATA_STRUCTURE_SYNC.md#4-websocket-appqueryetermstatus
     return {
       online,
       sessions,
