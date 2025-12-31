@@ -9,8 +9,14 @@ import { fileURLToPath } from 'url';
 import { createInterface } from 'readline';
 import chalk from 'chalk';
 
-const SERVER_URL = 'http://localhost:10005';
-const DAEMON_URL = 'http://localhost:10006';
+// 从环境变量读取配置，默认 localhost
+const SERVER_HOST = process.env.VLAUDE_SERVER_HOST || 'localhost';
+const SERVER_PORT = process.env.VLAUDE_SERVER_PORT || '10005';
+const DAEMON_HOST = process.env.VLAUDE_DAEMON_HOST || 'localhost';
+const DAEMON_PORT = process.env.VLAUDE_DAEMON_PORT || '10006';
+
+const SERVER_URL = `http://${SERVER_HOST}:${SERVER_PORT}`;
+const DAEMON_URL = `http://${DAEMON_HOST}:${DAEMON_PORT}`;
 
 interface SessionInfo {
   sessionId: string;

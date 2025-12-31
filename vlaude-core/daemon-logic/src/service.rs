@@ -161,8 +161,11 @@ impl DaemonService {
         let server_url = if let Some(addr) = servers.first() {
             format!("https://{}", addr)
         } else {
-            warn!("[ServiceDiscovery] No servers found in Redis, using fallback");
-            "https://localhost:10005".to_string()
+            // 从环境变量读取 fallback，默认 localhost:10005
+            let host = std::env::var("VLAUDE_SERVER_HOST").unwrap_or_else(|_| "localhost".to_string());
+            let port = std::env::var("VLAUDE_SERVER_PORT").unwrap_or_else(|_| "10005".to_string());
+            warn!("[ServiceDiscovery] No servers found in Redis, using fallback: {}:{}", host, port);
+            format!("https://{}:{}", host, port)
         };
 
         info!("[ServiceDiscovery] Selected server: {}", server_url);
