@@ -102,11 +102,11 @@ class WebSocketManager: ObservableObject {
     // MARK: - Socket 设置
 
     private func setupSocket(token: String) {
-        // TODO: Move to configuration
-        // mTLS 模式使用 https，否则使用 http
+        // 使用统一配置管理器
+        let vlaudeConfig = VlaudeConfig.shared
         let useMTLS = CertificateManager.shared.isReady
         let protocol_ = useMTLS ? "https" : "http"
-        let url = URL(string: "\(protocol_)://localhost:10005")!
+        let url = URL(string: "\(protocol_)://\(vlaudeConfig.serverURL)")!
 
         print("✅ [Socket.IO] 使用 Token 设置连接: \(token.prefix(20))...")
         if useMTLS {

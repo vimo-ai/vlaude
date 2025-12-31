@@ -22,20 +22,20 @@ class APIClient: NSObject {
     private var session: URLSession!
 
     private override init() {
-        // TODO: Move to configuration
-        // mTLS 模式使用 https，否则使用 http
+        // 使用统一配置管理器
+        let vlaudeConfig = VlaudeConfig.shared
         let useMTLS = CertificateManager.shared.isReady
         let protocol_ = useMTLS ? "https" : "http"
-        self.baseURL = "\(protocol_)://localhost:10005"
+        self.baseURL = "\(protocol_)://\(vlaudeConfig.serverURL)"
 
         super.init()
 
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 30
-        config.timeoutIntervalForResource = 300
+        let sessionConfig = URLSessionConfiguration.default
+        sessionConfig.timeoutIntervalForRequest = 30
+        sessionConfig.timeoutIntervalForResource = 300
 
         // 使用自定义 delegate 处理证书挑战
-        self.session = URLSession(configuration: config, delegate: self, delegateQueue: nil)
+        self.session = URLSession(configuration: sessionConfig, delegate: self, delegateQueue: nil)
 
         if useMTLS {
             print("🔐 [APIClient] mTLS 模式已启用")

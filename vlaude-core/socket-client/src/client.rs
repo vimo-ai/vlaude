@@ -44,8 +44,20 @@ pub struct SocketConfig {
 
 impl Default for SocketConfig {
     fn default() -> Self {
+        // 从环境变量读取配置，默认 localhost:10005
+        let host = std::env::var("VLAUDE_SERVER_HOST").unwrap_or_else(|_| "localhost".to_string());
+        let port = std::env::var("VLAUDE_SERVER_PORT")
+            .ok()
+            .and_then(|p| p.parse::<u16>().ok())
+            .unwrap_or(10005);
+        let protocol = if std::env::var("VLAUDE_USE_TLS").map(|v| v == "true").unwrap_or(true) {
+            "https"
+        } else {
+            "http"
+        };
+
         Self {
-            url: "https://localhost:10005".to_string(),
+            url: format!("{}://{}:{}", protocol, host, port),
             namespace: "/daemon".to_string(),
             tls: TlsConfig::default(),
         }

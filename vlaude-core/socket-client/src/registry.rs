@@ -49,9 +49,13 @@ pub struct ServiceRegistryConfig {
 impl Default for ServiceRegistryConfig {
     fn default() -> Self {
         Self {
-            host: "192.168.50.9".to_string(),
-            port: 6379,
-            password: None,
+            // 从环境变量读取，默认 localhost
+            host: std::env::var("REDIS_HOST").unwrap_or_else(|_| "localhost".to_string()),
+            port: std::env::var("REDIS_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(6379),
+            password: std::env::var("REDIS_PASSWORD").ok(),
             key_prefix: "vlaude:".to_string(),
         }
     }

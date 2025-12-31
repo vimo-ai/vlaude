@@ -32,7 +32,10 @@ pub unsafe extern "C" fn vlaude_create(
     hostname: *const c_char,
 ) -> *mut VlaudeDaemon {
     let url = if server_url.is_null() {
-        "https://localhost:10005".to_string()
+        // 从环境变量读取默认 URL
+        let host = std::env::var("VLAUDE_SERVER_HOST").unwrap_or_else(|_| "localhost".to_string());
+        let port = std::env::var("VLAUDE_SERVER_PORT").unwrap_or_else(|_| "10005".to_string());
+        format!("https://{}:{}", host, port)
     } else {
         match CStr::from_ptr(server_url).to_str() {
             Ok(s) => s.to_string(),
