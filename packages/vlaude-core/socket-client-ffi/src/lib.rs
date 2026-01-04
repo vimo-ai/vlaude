@@ -6,7 +6,9 @@
 //! - VlaudeKit 使用此 FFI 处理 Socket 连接和数据同步
 //! - ETerm 特有逻辑（createSession, sendMessage 等）保留在 Swift 层
 
-use socket_client::{SocketClient, SocketConfig, TlsConfig};
+use socket_client::{
+    DaemonRegistration, ServiceRegistryConfig, SessionInfo, SocketClient, SocketConfig, TlsConfig,
+};
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Arc;
@@ -26,6 +28,7 @@ pub enum SocketClientError {
     NotConnected = 4,
     EmitFailed = 5,
     RuntimeError = 6,
+    RegistryError = 7,
     Unknown = 99,
 }
 
@@ -93,6 +96,8 @@ pub unsafe extern "C" fn socket_client_create(
             url: url_str.to_string(),
             namespace: namespace_str,
             tls,
+            redis: None,
+            daemon_info: None,
         };
 
         let runtime = Runtime::new().map_err(|_| SocketClientError::RuntimeError)?;
@@ -792,5 +797,245 @@ pub extern "C" fn socket_client_version() -> *const c_char {
 pub unsafe extern "C" fn socket_client_free_string(s: *mut c_char) {
     if !s.is_null() {
         drop(CString::from_raw(s));
+    }
+}
+
+// ==================== Redis 服务发现 ====================
+
+/// 创建带 Redis 配置的 Socket 客户端
+///
+/// # Safety
+/// - `url` 必须是有效的 UTF-8 C 字符串
+/// - `namespace` 可为 null
+/// - `redis_host` 可为 null（不启用 Redis）
+/// - `device_id`, `device_name`, `platform`, `version` 启用 Redis 时必填
+/// - 返回的句柄需要通过 `socket_client_destroy` 释放
+#[no_mangle]
+pub unsafe extern "C" fn socket_client_create_with_redis(
+    url: *const c_char,
+    namespace: *const c_char,
+    redis_host: *const c_char,
+    redis_port: u16,
+    redis_password: *const c_char,
+    device_id: *const c_char,
+    device_name: *const c_char,
+    platform: *const c_char,
+    version: *const c_char,
+    ttl: u64,
+    out_handle: *mut *mut SocketClientHandle,
+) -> SocketClientError {
+    if url.is_null() || out_handle.is_null() {
+        return SocketClientError::NullPointer;
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let url_str = CStr::from_ptr(url)
+            .to_str()
+            .map_err(|_| SocketClientError::InvalidUtf8)?;
+
+        let namespace_str = if namespace.is_null() {
+            "/daemon".to_string()
+        } else {
+            CStr::from_ptr(namespace)
+                .to_str()
+                .map_err(|_| SocketClientError::InvalidUtf8)?
+                .to_string()
+        };
+
+        // TLS 配置
+        let tls = TlsConfig {
+            danger_accept_invalid_certs: true,
+            ..Default::default()
+        };
+
+        // Redis 配置（可选）
+        let redis_config = if !redis_host.is_null() {
+            let host = CStr::from_ptr(redis_host)
+                .to_str()
+                .map_err(|_| SocketClientError::InvalidUtf8)?
+                .to_string();
+
+            let password = if redis_password.is_null() {
+                None
+            } else {
+                Some(
+                    CStr::from_ptr(redis_password)
+                        .to_str()
+                        .map_err(|_| SocketClientError::InvalidUtf8)?
+                        .to_string(),
+                )
+            };
+
+            Some(ServiceRegistryConfig {
+                host,
+                port: redis_port,
+                password,
+                key_prefix: "vlaude:".to_string(),
+            })
+        } else {
+            None
+        };
+
+        // Daemon 信息（Redis 启用时必填）
+        let daemon_info = if redis_config.is_some() {
+            if device_id.is_null()
+                || device_name.is_null()
+                || platform.is_null()
+                || version.is_null()
+            {
+                return Err(SocketClientError::NullPointer);
+            }
+
+            Some(DaemonRegistration {
+                device_id: CStr::from_ptr(device_id)
+                    .to_str()
+                    .map_err(|_| SocketClientError::InvalidUtf8)?
+                    .to_string(),
+                device_name: CStr::from_ptr(device_name)
+                    .to_str()
+                    .map_err(|_| SocketClientError::InvalidUtf8)?
+                    .to_string(),
+                platform: CStr::from_ptr(platform)
+                    .to_str()
+                    .map_err(|_| SocketClientError::InvalidUtf8)?
+                    .to_string(),
+                version: CStr::from_ptr(version)
+                    .to_str()
+                    .map_err(|_| SocketClientError::InvalidUtf8)?
+                    .to_string(),
+                ttl,
+            })
+        } else {
+            None
+        };
+
+        let config = SocketConfig {
+            url: url_str.to_string(),
+            namespace: namespace_str,
+            tls,
+            redis: redis_config,
+            daemon_info,
+        };
+
+        let runtime = Runtime::new().map_err(|_| SocketClientError::RuntimeError)?;
+        let client = SocketClient::new(config);
+
+        Ok(SocketClientHandle {
+            client: Arc::new(client),
+            runtime: Arc::new(runtime),
+            event_callback: Arc::new(RwLock::new(None)),
+        })
+    }));
+
+    match result {
+        Ok(Ok(handle)) => {
+            *out_handle = Box::into_raw(Box::new(handle));
+            SocketClientError::Success
+        }
+        Ok(Err(e)) => e,
+        Err(_) => SocketClientError::Unknown,
+    }
+}
+
+/// 使用 Redis 服务发现连接
+///
+/// 1. 初始化 Redis 连接
+/// 2. 从 Redis 发现 Server 地址
+/// 3. 连接 Socket
+/// 4. 注册到 Redis
+/// 5. 启动心跳
+///
+/// # Safety
+/// - `handle` 必须是有效句柄
+#[no_mangle]
+pub unsafe extern "C" fn socket_client_connect_with_discovery(
+    handle: *mut SocketClientHandle,
+) -> SocketClientError {
+    if handle.is_null() {
+        return SocketClientError::NullPointer;
+    }
+
+    let handle = &*handle;
+    let result = handle
+        .runtime
+        .block_on(async { handle.client.connect_with_discovery().await });
+
+    match result {
+        Ok(_) => {
+            // 启动事件接收循环
+            start_event_loop(handle);
+            SocketClientError::Success
+        }
+        Err(e) => {
+            if e.to_string().contains("Registry") {
+                SocketClientError::RegistryError
+            } else {
+                SocketClientError::ConnectionFailed
+            }
+        }
+    }
+}
+
+/// 发现 Server 地址
+///
+/// 返回发现的第一个 Server 地址，如果没有则返回 null
+/// 调用者需要使用 `socket_client_free_string` 释放返回的字符串
+///
+/// # Safety
+/// - `handle` 必须是有效句柄
+#[no_mangle]
+pub unsafe extern "C" fn socket_client_discover_server(
+    handle: *mut SocketClientHandle,
+) -> *mut c_char {
+    if handle.is_null() {
+        return std::ptr::null_mut();
+    }
+
+    let handle = &*handle;
+    let result = handle
+        .runtime
+        .block_on(async { handle.client.discover_server().await });
+
+    match result {
+        Ok(Some(addr)) => CString::new(addr).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut()),
+        _ => std::ptr::null_mut(),
+    }
+}
+
+/// 更新 Redis 中的 Session 列表
+///
+/// # Safety
+/// - `handle` 必须是有效句柄
+/// - `sessions_json` 必须是有效的 JSON 数组字符串，格式：
+///   `[{"sessionId": "xxx", "projectPath": "/path"}]`
+#[no_mangle]
+pub unsafe extern "C" fn socket_client_update_sessions(
+    handle: *mut SocketClientHandle,
+    sessions_json: *const c_char,
+) -> SocketClientError {
+    if handle.is_null() || sessions_json.is_null() {
+        return SocketClientError::NullPointer;
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let handle = &*handle;
+        let sessions_str = CStr::from_ptr(sessions_json)
+            .to_str()
+            .map_err(|_| SocketClientError::InvalidUtf8)?;
+
+        // 解析 JSON
+        let sessions: Vec<SessionInfo> =
+            serde_json::from_str(sessions_str).map_err(|_| SocketClientError::InvalidUtf8)?;
+
+        handle
+            .runtime
+            .block_on(async { handle.client.update_sessions_in_redis(sessions).await })
+            .map_err(|_| SocketClientError::RegistryError)
+    }));
+
+    match result {
+        Ok(Ok(_)) => SocketClientError::Success,
+        Ok(Err(e)) => e,
+        Err(_) => SocketClientError::Unknown,
     }
 }

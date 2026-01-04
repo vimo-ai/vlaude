@@ -55,4 +55,6 @@ export {
   type ServiceEvent,
   type ServiceEventType,
   type ServiceInfo,
+  type SessionInfo,
+  type DaemonInfo,
 } from './registry/ServiceRegistry';

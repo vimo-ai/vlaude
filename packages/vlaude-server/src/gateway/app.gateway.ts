@@ -25,6 +25,7 @@ import { firstValueFrom } from 'rxjs';
 import { ConfigService } from '@nestjs/config';
 import { DeviceService } from '../device/device.service';
 import { DaemonGateway } from '../module/daemon-gateway/daemon.gateway';
+import { RegistryService } from '../module/registry/registry.service';
 import * as jwt from 'jsonwebtoken';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -88,6 +89,8 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     private readonly deviceService: DeviceService,
     @Inject(forwardRef(() => DaemonGateway))
     private readonly daemonGateway: DaemonGateway,
+    @Inject(forwardRef(() => RegistryService))
+    private readonly registryService: RegistryService,
   ) {
     // 初始化 Daemon URL
     const daemonHost = this.configService.get<string>('DAEMON_HOST', 'localhost');
@@ -925,12 +928,14 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    * 监听来自 DaemonGateway 的 ETerm Session 可用事件
    */
   @OnEvent('app.etermSessionAvailable')
-  handleEtermSessionAvailableEvent(data: { sessionId: string; timestamp: string }) {
+  handleEtermSessionAvailableEvent(data: { sessionId: string; projectPath: string; timestamp: string }) {
     this.logger.log(`🖥️ [ETerm Session] 可用: ${data.sessionId}`);
+    this.logger.log(`   ProjectPath: ${data.projectPath}`);
 
-    // 广播给所有连接的客户端
+    // 广播给所有连接的客户端（包含 projectPath 供 iOS 更新计数）
     this.server.emit('eterm:sessionAvailable', {
       sessionId: data.sessionId,
+      projectPath: data.projectPath,
       timestamp: data.timestamp,
     });
   }
@@ -939,12 +944,16 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    * 监听来自 DaemonGateway 的 ETerm Session 不可用事件
    */
   @OnEvent('app.etermSessionUnavailable')
-  handleEtermSessionUnavailableEvent(data: { sessionId: string; timestamp: string }) {
+  handleEtermSessionUnavailableEvent(data: { sessionId: string; projectPath?: string; timestamp: string }) {
     this.logger.log(`🖥️ [ETerm Session] 不可用: ${data.sessionId}`);
+    if (data.projectPath) {
+      this.logger.log(`   ProjectPath: ${data.projectPath}`);
+    }
 
-    // 广播给所有连接的客户端
+    // 广播给所有连接的客户端（包含 projectPath 供 iOS 更新计数）
     this.server.emit('eterm:sessionUnavailable', {
       sessionId: data.sessionId,
+      projectPath: data.projectPath,
       timestamp: data.timestamp,
     });
   }
@@ -982,17 +991,20 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   handleQueryEtermStatus(@ConnectedSocket() client: Socket) {
     const online = this.daemonGateway.isEtermOnline();
     const sessions = this.daemonGateway.getEtermSessions();
+    const sessionCounts = this.daemonGateway.getEtermSessionCounts();
 
     this.logger.log(`📱 [ETerm 状态查询] 客户端 ${client.id} 查询 ETerm 状态`);
     this.logger.log(`   Online: ${online}`);
     this.logger.log(`   Sessions: ${sessions.length} 个`);
+    this.logger.log(`   SessionCounts: ${JSON.stringify(sessionCounts)}`);
 
     // 直接返回对象，NestJS 会作为 ACK 响应发送
-    // 客户端 emitWithAck 收到的是 [{ online, sessions, timestamp }]
+    // 客户端 emitWithAck 收到的是 [{ online, sessions, sessionCounts, timestamp }]
     // @see docs/DATA_STRUCTURE_SYNC.md#4-websocket-appqueryetermstatus
     return {
       online,
-      sessions,
+      sessions,           // sessionId 数组（兼容旧版本）
+      sessionCounts,      // projectPath -> count 映射（iOS 项目列表使用）
       timestamp: new Date().toISOString(),
     };
   }
@@ -1167,6 +1179,85 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       this.logger.log(`   CLI: ${cli || 'none'}, Swift: ${swift.size}`);
       this.logger.log(`   不需要触发 remote-connect`);
     }
+  }
+
+  // =================== Redis Daemon 状态变化（从 RegistryService 转发）===================
+
+  /**
+   * 监听 Daemon 上线事件（来自 Redis Pub/Sub）
+   */
+  @OnEvent('app.daemonOnline')
+  async handleDaemonOnlineEvent(data: { deviceId: string; timestamp: number }) {
+    this.logger.log(`🟢 [Daemon 上线] deviceId: ${data.deviceId}`);
+
+    // 获取 Daemon 详细信息
+    const daemonInfo = await this.registryService.getDaemon(data.deviceId);
+
+    // 广播给所有连接的客户端
+    this.server.emit('daemon:online', {
+      deviceId: data.deviceId,
+      deviceName: daemonInfo?.deviceName,
+      platform: daemonInfo?.platform,
+      sessions: daemonInfo?.sessions || [],
+      timestamp: data.timestamp,
+    });
+  }
+
+  /**
+   * 监听 Daemon 下线事件（来自 Redis Pub/Sub）
+   */
+  @OnEvent('app.daemonOffline')
+  handleDaemonOfflineEvent(data: { deviceId: string; timestamp: number }) {
+    this.logger.log(`🔴 [Daemon 下线] deviceId: ${data.deviceId}`);
+
+    // 广播给所有连接的客户端
+    this.server.emit('daemon:offline', {
+      deviceId: data.deviceId,
+      timestamp: data.timestamp,
+    });
+  }
+
+  /**
+   * 监听 Daemon Session 更新事件（来自 Redis Pub/Sub）
+   */
+  @OnEvent('app.daemonSessionUpdate')
+  async handleDaemonSessionUpdateEvent(data: { deviceId: string; timestamp: number }) {
+    this.logger.log(`📝 [Daemon Session 更新] deviceId: ${data.deviceId}`);
+
+    // 获取更新后的 Daemon 信息
+    const daemonInfo = await this.registryService.getDaemon(data.deviceId);
+
+    // 广播给所有连接的客户端
+    this.server.emit('daemon:sessionUpdate', {
+      deviceId: data.deviceId,
+      sessions: daemonInfo?.sessions || [],
+      timestamp: data.timestamp,
+    });
+  }
+
+  /**
+   * 客户端查询所有在线 Daemon
+   */
+  @SubscribeMessage('app:queryDaemons')
+  async handleQueryDaemons(@ConnectedSocket() client: Socket) {
+    this.logger.log(`📱 [Daemon 列表查询] 客户端 ${client.id} 查询 Daemon 列表`);
+
+    const daemons = await this.registryService.getDaemons();
+
+    this.logger.log(`   找到 ${daemons.length} 个在线 Daemon`);
+
+    // 返回 Daemon 列表
+    return {
+      daemons: daemons.map((d) => ({
+        deviceId: d.deviceId,
+        deviceName: d.deviceName,
+        platform: d.platform,
+        version: d.version,
+        sessions: d.sessions,
+        registeredAt: d.registeredAt,
+      })),
+      timestamp: Date.now(),
+    };
   }
 
   /**

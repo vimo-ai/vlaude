@@ -77,6 +77,22 @@ struct ApprovalRequest: Codable {
     let description: String
 }
 
+// MARK: - Daemon 信息结构
+struct DaemonStatusInfo: Identifiable, Codable {
+    var id: String { deviceId }
+    let deviceId: String
+    let deviceName: String?
+    let platform: String?
+    let version: String?
+    var sessions: [DaemonSessionInfo]
+    let registeredAt: Int?
+}
+
+struct DaemonSessionInfo: Codable {
+    let sessionId: String
+    let projectPath: String
+}
+
 // MARK: - WebSocket Manager
 class WebSocketManager: ObservableObject {
     static let shared = WebSocketManager()
@@ -84,6 +100,10 @@ class WebSocketManager: ObservableObject {
     @Published var isConnected = false
     @Published var lastError: Error?
     @Published var isEtermOnline = false  // ETerm 是否在线
+    @Published var etermSessionCounts: [String: Int] = [:]  // projectPath -> 在线会话数
+
+    // Daemon 状态（Redis 服务发现）
+    @Published var onlineDaemons: [String: DaemonStatusInfo] = [:]  // deviceId -> DaemonStatusInfo
 
     // 事件回调
     private var eventHandlers: [WebSocketEvent: [(WebSocketMessage) -> Void]] = [:]
@@ -102,11 +122,9 @@ class WebSocketManager: ObservableObject {
     // MARK: - Socket 设置
 
     private func setupSocket(token: String) {
-        // 使用统一配置管理器
-        let vlaudeConfig = VlaudeConfig.shared
         let useMTLS = CertificateManager.shared.isReady
         let protocol_ = useMTLS ? "https" : "http"
-        let url = URL(string: "\(protocol_)://\(vlaudeConfig.serverURL)")!
+        let url = URL(string: "\(protocol_)://\(VlaudeConfig.serverURL)")!
 
         print("✅ [Socket.IO] 使用 Token 设置连接: \(token.prefix(20))...")
         if useMTLS {
@@ -146,6 +164,12 @@ class WebSocketManager: ObservableObject {
             DispatchQueue.main.async {
                 self?.isConnected = true
             }
+
+            // 主动查询 ETerm 状态（解决时序问题：ETerm 先启动时，错过了状态广播）
+            self?.queryEtermStatus()
+
+            // 主动查询所有在线 Daemon（Redis 服务发现）
+            self?.queryDaemons()
         }
 
         // 连接断开
@@ -250,9 +274,59 @@ class WebSocketManager: ObservableObject {
         socket.on("eterm:sessionCreated") { [weak self] data, ack in
             self?.handleEtermSessionCreated(data: data)
         }
+
+        // 监听 ETerm 会话可用
+        socket.on("eterm:sessionAvailable") { [weak self] data, ack in
+            self?.handleEtermSessionAvailable(data: data)
+        }
+
+        // 监听 ETerm 会话不可用
+        socket.on("eterm:sessionUnavailable") { [weak self] data, ack in
+            self?.handleEtermSessionUnavailable(data: data)
+        }
+
+        // =================== Redis Daemon 状态事件 ===================
+
+        // 监听 Daemon 上线
+        socket.on("daemon:online") { [weak self] data, ack in
+            self?.handleDaemonOnline(data: data)
+        }
+
+        // 监听 Daemon 下线
+        socket.on("daemon:offline") { [weak self] data, ack in
+            self?.handleDaemonOffline(data: data)
+        }
+
+        // 监听 Daemon Session 更新
+        socket.on("daemon:sessionUpdate") { [weak self] data, ack in
+            self?.handleDaemonSessionUpdate(data: data)
+        }
     }
 
     // MARK: - ETerm 状态处理
+
+    /// 主动查询 ETerm 状态（解决时序问题）
+    /// 当 Vlaude App 连接时，ETerm 可能已经在线，但错过了状态广播
+    private func queryEtermStatus() {
+        guard let socket = socket else { return }
+
+        socket.emitWithAck("app:queryEtermStatus", []).timingOut(after: 5) { [weak self] data in
+            // 检查是否超时
+            if let status = data.first as? String, status == "NO ACK" {
+                return
+            }
+
+            guard let response = data.first as? [String: Any] else { return }
+
+            let online = response["online"] as? Bool ?? false
+            let sessionCounts = response["sessionCounts"] as? [String: Int] ?? [:]
+
+            DispatchQueue.main.async {
+                self?.isEtermOnline = online
+                self?.etermSessionCounts = sessionCounts
+            }
+        }
+    }
 
     private func handleEtermStatusChanged(data: [Any]) {
         guard let payload = data.first as? [String: Any],
@@ -265,6 +339,59 @@ class WebSocketManager: ObservableObject {
 
         DispatchQueue.main.async { [weak self] in
             self?.isEtermOnline = online
+
+            // 如果离线，清空会话计数
+            if !online {
+                self?.etermSessionCounts = [:]
+            }
+        }
+    }
+
+    /// 处理 ETerm 会话可用事件
+    private func handleEtermSessionAvailable(data: [Any]) {
+        guard let payload = data.first as? [String: Any],
+              let sessionId = payload["sessionId"] as? String else {
+            print("⚠️ [Socket.IO] eterm:sessionAvailable 数据格式错误")
+            return
+        }
+
+        let projectPath = payload["projectPath"] as? String
+
+        print("🖥️ [Socket.IO] ETerm Session 可用: \(sessionId.prefix(8))...\(projectPath != nil ? " (\(projectPath!))" : "")")
+
+        // 更新会话计数
+        if let projectPath = projectPath {
+            DispatchQueue.main.async { [weak self] in
+                let currentCount = self?.etermSessionCounts[projectPath] ?? 0
+                self?.etermSessionCounts[projectPath] = currentCount + 1
+            }
+        }
+    }
+
+    /// 处理 ETerm 会话不可用事件
+    private func handleEtermSessionUnavailable(data: [Any]) {
+        guard let payload = data.first as? [String: Any],
+              let sessionId = payload["sessionId"] as? String else {
+            print("⚠️ [Socket.IO] eterm:sessionUnavailable 数据格式错误")
+            return
+        }
+
+        let projectPath = payload["projectPath"] as? String
+
+        print("🖥️ [Socket.IO] ETerm Session 不可用: \(sessionId.prefix(8))...\(projectPath != nil ? " (\(projectPath!))" : "")")
+
+        // 更新会话计数
+        if let projectPath = projectPath {
+            DispatchQueue.main.async { [weak self] in
+                let currentCount = self?.etermSessionCounts[projectPath] ?? 0
+                if currentCount > 0 {
+                    self?.etermSessionCounts[projectPath] = currentCount - 1
+                }
+                // 如果计数变为 0，从字典中移除
+                if self?.etermSessionCounts[projectPath] == 0 {
+                    self?.etermSessionCounts.removeValue(forKey: projectPath)
+                }
+            }
         }
     }
 
@@ -294,6 +421,163 @@ class WebSocketManager: ObservableObject {
                 "projectPath": projectPath as Any
             ]
         )
+    }
+
+    // MARK: - Redis Daemon 状态处理
+
+    /// 主动查询所有在线 Daemon（解决时序问题）
+    func queryDaemons() {
+        guard let socket = socket else { return }
+
+        socket.emitWithAck("app:queryDaemons", []).timingOut(after: 5) { [weak self] data in
+            // 检查是否超时
+            if let status = data.first as? String, status == "NO ACK" {
+                print("⚠️ [Socket.IO] 查询 Daemon 列表超时")
+                return
+            }
+
+            guard let response = data.first as? [String: Any],
+                  let daemonList = response["daemons"] as? [[String: Any]] else {
+                print("⚠️ [Socket.IO] 解析 Daemon 列表失败")
+                return
+            }
+
+            print("📱 [Socket.IO] 查询到 \(daemonList.count) 个在线 Daemon")
+
+            DispatchQueue.main.async {
+                var daemons: [String: DaemonStatusInfo] = [:]
+
+                for daemonData in daemonList {
+                    guard let deviceId = daemonData["deviceId"] as? String else { continue }
+
+                    // 解析 sessions
+                    var sessions: [DaemonSessionInfo] = []
+                    if let sessionsData = daemonData["sessions"] as? [[String: Any]] {
+                        for sessionData in sessionsData {
+                            if let sessionId = sessionData["sessionId"] as? String,
+                               let projectPath = sessionData["projectPath"] as? String {
+                                sessions.append(DaemonSessionInfo(sessionId: sessionId, projectPath: projectPath))
+                            }
+                        }
+                    }
+
+                    let info = DaemonStatusInfo(
+                        deviceId: deviceId,
+                        deviceName: daemonData["deviceName"] as? String,
+                        platform: daemonData["platform"] as? String,
+                        version: daemonData["version"] as? String,
+                        sessions: sessions,
+                        registeredAt: daemonData["registeredAt"] as? Int
+                    )
+
+                    daemons[deviceId] = info
+                }
+
+                self?.onlineDaemons = daemons
+            }
+        }
+    }
+
+    /// 处理 Daemon 上线事件
+    private func handleDaemonOnline(data: [Any]) {
+        guard let payload = data.first as? [String: Any],
+              let deviceId = payload["deviceId"] as? String else {
+            print("⚠️ [Socket.IO] daemon:online 数据格式错误")
+            return
+        }
+
+        let deviceName = payload["deviceName"] as? String
+        let platform = payload["platform"] as? String
+
+        print("🟢 [Socket.IO] Daemon 上线: \(deviceId) (\(deviceName ?? "Unknown"))")
+
+        // 解析 sessions
+        var sessions: [DaemonSessionInfo] = []
+        if let sessionsData = payload["sessions"] as? [[String: Any]] {
+            for sessionData in sessionsData {
+                if let sessionId = sessionData["sessionId"] as? String,
+                   let projectPath = sessionData["projectPath"] as? String {
+                    sessions.append(DaemonSessionInfo(sessionId: sessionId, projectPath: projectPath))
+                }
+            }
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            let info = DaemonStatusInfo(
+                deviceId: deviceId,
+                deviceName: deviceName,
+                platform: platform,
+                version: nil,
+                sessions: sessions,
+                registeredAt: nil
+            )
+            self?.onlineDaemons[deviceId] = info
+
+            // 发送通知供 ViewModel 使用
+            NotificationCenter.default.post(
+                name: NSNotification.Name("DaemonOnline"),
+                object: nil,
+                userInfo: ["deviceId": deviceId, "deviceName": deviceName ?? "Unknown"]
+            )
+        }
+    }
+
+    /// 处理 Daemon 下线事件
+    private func handleDaemonOffline(data: [Any]) {
+        guard let payload = data.first as? [String: Any],
+              let deviceId = payload["deviceId"] as? String else {
+            print("⚠️ [Socket.IO] daemon:offline 数据格式错误")
+            return
+        }
+
+        print("🔴 [Socket.IO] Daemon 下线: \(deviceId)")
+
+        DispatchQueue.main.async { [weak self] in
+            self?.onlineDaemons.removeValue(forKey: deviceId)
+
+            // 发送通知供 ViewModel 使用
+            NotificationCenter.default.post(
+                name: NSNotification.Name("DaemonOffline"),
+                object: nil,
+                userInfo: ["deviceId": deviceId]
+            )
+        }
+    }
+
+    /// 处理 Daemon Session 更新事件
+    private func handleDaemonSessionUpdate(data: [Any]) {
+        guard let payload = data.first as? [String: Any],
+              let deviceId = payload["deviceId"] as? String else {
+            print("⚠️ [Socket.IO] daemon:sessionUpdate 数据格式错误")
+            return
+        }
+
+        print("📝 [Socket.IO] Daemon Session 更新: \(deviceId)")
+
+        // 解析 sessions
+        var sessions: [DaemonSessionInfo] = []
+        if let sessionsData = payload["sessions"] as? [[String: Any]] {
+            for sessionData in sessionsData {
+                if let sessionId = sessionData["sessionId"] as? String,
+                   let projectPath = sessionData["projectPath"] as? String {
+                    sessions.append(DaemonSessionInfo(sessionId: sessionId, projectPath: projectPath))
+                }
+            }
+        }
+
+        DispatchQueue.main.async { [weak self] in
+            if var daemon = self?.onlineDaemons[deviceId] {
+                daemon.sessions = sessions
+                self?.onlineDaemons[deviceId] = daemon
+            }
+
+            // 发送通知供 ViewModel 使用
+            NotificationCenter.default.post(
+                name: NSNotification.Name("DaemonSessionUpdate"),
+                object: nil,
+                userInfo: ["deviceId": deviceId, "sessionCount": sessions.count]
+            )
+        }
     }
 
     private func handleBusinessEvent(_ event: WebSocketEvent, data: [Any]) {
