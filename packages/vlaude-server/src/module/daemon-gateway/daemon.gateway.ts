@@ -9,10 +9,11 @@ import {
   ConnectedSocket,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { Logger, OnModuleDestroy } from '@nestjs/common';
+import { Logger, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { ProjectService } from '../project/project.service';
 import { SessionService } from '../session/session.service';
+import { RegistryService } from '../registry/registry.service';
 
 
 /**
@@ -35,14 +36,15 @@ export class DaemonGateway
   private readonly logger = new Logger(DaemonGateway.name);
   private connectedDaemons = new Map<string, { socket: Socket; info: any }>();
 
-  // ETerm 状态追踪
-  private etermOnline = false;
-  private etermSessions = new Set<string>(); // ETerm 中可用的 session
+  // ETerm 状态已迁移到 Redis，通过 RegistryService 读取
+  // 详见 PLAN_REDIS_STATE_SYNC.md
 
   constructor(
     private readonly projectService: ProjectService,
     private readonly sessionService: SessionService,
     private readonly eventEmitter: EventEmitter2,
+    @Inject(forwardRef(() => RegistryService))
+    private readonly registryService: RegistryService,
   ) {}
 
   afterInit(server: Server) {
@@ -239,6 +241,20 @@ export class DaemonGateway
 
     // 通过事件转发给 AppGateway，广播给所有 Swift 客户端
     this.eventEmitter.emit('app.notifySessionUpdate', data);
+  }
+
+  /**
+   * Daemon 推送会话列表更新（转发给 AppGateway）
+   */
+  @SubscribeMessage('daemon:sessionListUpdate')
+  handleSessionListUpdate(
+    @MessageBody() data: { projectPath: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`Received session list update for ${data.projectPath} from daemon ${client.id}`);
+
+    // 通过事件转发给 AppGateway，广播给所有 iOS 客户端
+    this.eventEmitter.emit('app.notifySessionListUpdate', data);
   }
 
   /**
@@ -587,6 +603,7 @@ export class DaemonGateway
 
   /**
    * 接收 Daemon 通知：ETerm 已上线
+   * 注意：ETerm 状态由 Redis 维护，此处只转发事件
    */
   @SubscribeMessage('daemon:etermOnline')
   handleEtermOnline(
@@ -594,7 +611,7 @@ export class DaemonGateway
     @ConnectedSocket() client: Socket,
   ) {
     this.logger.log(`🖥️ [ETerm] 上线通知 at ${data.timestamp}`);
-    this.etermOnline = true;
+    // 状态由 VlaudeKit 直接写入 Redis，此处只转发事件给 Mobile 客户端
 
     // 通过事件通知 AppGateway，让它广播给 Mobile 客户端
     this.eventEmitter.emit('app.etermStatusChanged', {
@@ -607,6 +624,7 @@ export class DaemonGateway
 
   /**
    * 接收 Daemon 通知：ETerm 已离线
+   * 注意：ETerm 状态由 Redis 维护（TTL 过期），此处只转发事件
    */
   @SubscribeMessage('daemon:etermOffline')
   handleEtermOffline(
@@ -614,8 +632,7 @@ export class DaemonGateway
     @ConnectedSocket() client: Socket,
   ) {
     this.logger.log(`🖥️ [ETerm] 离线通知 at ${data.timestamp}`);
-    this.etermOnline = false;
-    this.etermSessions.clear();
+    // 状态由 VlaudeKit 从 Redis 注销，此处只转发事件给 Mobile 客户端
 
     // 通过事件通知 AppGateway
     this.eventEmitter.emit('app.etermStatusChanged', {
@@ -628,18 +645,21 @@ export class DaemonGateway
 
   /**
    * 接收 Daemon 通知：某个 session 在 ETerm 中可用
+   * 注意：Session 状态由 VlaudeKit 直接写入 Redis，此处只转发事件
    */
   @SubscribeMessage('daemon:etermSessionAvailable')
   handleEtermSessionAvailable(
-    @MessageBody() data: { sessionId: string; timestamp: string },
+    @MessageBody() data: { sessionId: string; projectPath: string; timestamp: string },
     @ConnectedSocket() client: Socket,
   ) {
     this.logger.log(`🖥️ [ETerm] Session 可用: ${data.sessionId}`);
-    this.etermSessions.add(data.sessionId);
+    this.logger.log(`   ProjectPath: ${data.projectPath}`);
+    // Session 状态由 VlaudeKit 直接写入 Redis
 
-    // 通过事件通知 AppGateway
+    // 通过事件通知 AppGateway（包含 projectPath）
     this.eventEmitter.emit('app.etermSessionAvailable', {
       sessionId: data.sessionId,
+      projectPath: data.projectPath,
       timestamp: data.timestamp,
     });
 
@@ -648,18 +668,20 @@ export class DaemonGateway
 
   /**
    * 接收 Daemon 通知：某个 session 不再在 ETerm 中可用
+   * 注意：Session 状态由 VlaudeKit 直接从 Redis 移除，此处只转发事件
    */
   @SubscribeMessage('daemon:etermSessionUnavailable')
   handleEtermSessionUnavailable(
-    @MessageBody() data: { sessionId: string; timestamp: string },
+    @MessageBody() data: { sessionId: string; projectPath?: string; timestamp: string },
     @ConnectedSocket() client: Socket,
   ) {
     this.logger.log(`🖥️ [ETerm] Session 不可用: ${data.sessionId}`);
-    this.etermSessions.delete(data.sessionId);
+    // Session 状态由 VlaudeKit 直接从 Redis 移除
 
-    // 通过事件通知 AppGateway
+    // 通过事件通知 AppGateway（projectPath 从 Daemon 传入）
     this.eventEmitter.emit('app.etermSessionUnavailable', {
       sessionId: data.sessionId,
+      projectPath: data.projectPath,
       timestamp: data.timestamp,
     });
 
@@ -668,6 +690,7 @@ export class DaemonGateway
 
   /**
    * 接收 Daemon 通知：ETerm 会话创建完成（带 requestId）
+   * 注意：Session 状态由 VlaudeKit 直接写入 Redis，此处只转发事件
    */
   @SubscribeMessage('daemon:etermSessionCreated')
   handleEtermSessionCreated(
@@ -678,9 +701,7 @@ export class DaemonGateway
     this.logger.log(`   RequestId: ${data.requestId}`);
     this.logger.log(`   SessionId: ${data.sessionId}`);
     this.logger.log(`   ProjectPath: ${data.projectPath}`);
-
-    // 将 session 加入 ETerm sessions 集合
-    this.etermSessions.add(data.sessionId);
+    // Session 状态由 VlaudeKit 直接写入 Redis
 
     // 通过事件通知 AppGateway，让它推送给 iOS 客户端
     this.eventEmitter.emit('app.etermSessionCreated', {
@@ -693,39 +714,78 @@ export class DaemonGateway
     return { success: true };
   }
 
-  // =================== ETerm 状态查询方法 ===================
+  // =================== ETerm 状态查询方法（从 Redis 读取）===================
 
   /**
-   * 检查 ETerm 是否在线
+   * 检查 ETerm 是否在线（从 Redis 读取）
+   * ETerm 设备 ID 固定为 "eterm"
    */
-  isEtermOnline(): boolean {
-    return this.etermOnline;
+  async isEtermOnline(): Promise<boolean> {
+    const daemons = await this.registryService.getDaemons();
+    // ETerm 的 deviceId 固定为 "eterm"（或以 "eterm" 开头）
+    return daemons.some(d => d.deviceId === 'eterm' || d.deviceId.startsWith('eterm-'));
   }
 
   /**
-   * 检查指定 session 是否在 ETerm 中可用
+   * 检查指定 session 是否在 ETerm 中可用（从 Redis 读取）
    */
-  isSessionInEterm(sessionId: string): boolean {
-    return this.etermSessions.has(sessionId);
+  async isSessionInEterm(sessionId: string): Promise<boolean> {
+    const daemons = await this.registryService.getDaemons();
+    // 查找 ETerm daemon 的 sessions
+    for (const daemon of daemons) {
+      if (daemon.deviceId === 'eterm' || daemon.deviceId.startsWith('eterm-')) {
+        if (daemon.sessions.some(s => s.sessionId === sessionId)) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /**
-   * 获取所有在 ETerm 中的 session
+   * 获取所有在 ETerm 中的 session（返回 sessionId 数组，从 Redis 读取）
    */
-  getEtermSessions(): string[] {
-    return Array.from(this.etermSessions);
+  async getEtermSessions(): Promise<string[]> {
+    const daemons = await this.registryService.getDaemons();
+    const sessions: string[] = [];
+    for (const daemon of daemons) {
+      if (daemon.deviceId === 'eterm' || daemon.deviceId.startsWith('eterm-')) {
+        sessions.push(...daemon.sessions.map(s => s.sessionId));
+      }
+    }
+    return sessions;
+  }
+
+  /**
+   * 获取每个项目的在线会话数（用于 iOS 项目列表显示，从 Redis 读取）
+   * @returns { [projectPath: string]: number }
+   */
+  async getEtermSessionCounts(): Promise<Record<string, number>> {
+    const daemons = await this.registryService.getDaemons();
+    const counts: Record<string, number> = {};
+    for (const daemon of daemons) {
+      if (daemon.deviceId === 'eterm' || daemon.deviceId.startsWith('eterm-')) {
+        for (const session of daemon.sessions) {
+          counts[session.projectPath] = (counts[session.projectPath] || 0) + 1;
+        }
+      }
+    }
+    return counts;
   }
 
   /**
    * 向 ETerm 注入消息（通过 Daemon 转发）
+   * 注意：现在从 Redis 读取状态，已改为 async
    */
-  injectMessageToEterm(sessionId: string, text: string): boolean {
-    if (!this.etermOnline) {
+  async injectMessageToEterm(sessionId: string, text: string): Promise<boolean> {
+    const online = await this.isEtermOnline();
+    if (!online) {
       this.logger.warn('❌ ETerm 未在线，无法注入消息');
       return false;
     }
 
-    if (!this.etermSessions.has(sessionId)) {
+    const inEterm = await this.isSessionInEterm(sessionId);
+    if (!inEterm) {
       this.logger.warn(`❌ Session ${sessionId} 不在 ETerm 中`);
       return false;
     }
@@ -748,13 +808,15 @@ export class DaemonGateway
 
   /**
    * 请求 ETerm 创建新的 Claude 会话
+   * 注意：现在从 Redis 读取状态，已改为 async
    * @param projectPath 项目路径
    * @param prompt 可选的初始提示词
    * @param requestId 可选的请求ID，用于跟踪会话创建
    * @returns 是否成功发送请求
    */
-  requestEtermCreateSession(projectPath: string, prompt?: string, requestId?: string): boolean {
-    if (!this.etermOnline) {
+  async requestEtermCreateSession(projectPath: string, prompt?: string, requestId?: string): Promise<boolean> {
+    const online = await this.isEtermOnline();
+    if (!online) {
       this.logger.warn('❌ ETerm 未在线，无法创建会话');
       return false;
     }
@@ -778,9 +840,11 @@ export class DaemonGateway
 
   /**
    * 通知 ETerm：Mobile 正在查看某个 session
+   * 注意：现在从 Redis 读取状态，已改为 async
    */
-  notifyEtermMobileViewing(sessionId: string, isViewing: boolean) {
-    if (!this.etermOnline) {
+  async notifyEtermMobileViewing(sessionId: string, isViewing: boolean): Promise<void> {
+    const online = await this.isEtermOnline();
+    if (!online) {
       return;
     }
 
