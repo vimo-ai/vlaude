@@ -213,7 +213,11 @@ class MessageTransformer {
             return transformAssistantMessage(msg, context: context)
 
         case "user":
-            // 判断是否应该显示
+            // 先检查是否是工具结果消息
+            if isToolResultMessage(msg) {
+                return transformToolResultMessage(msg)
+            }
+            // 判断是否应该显示为普通用户消息
             if shouldDisplayUserMessage(msg) {
                 return transformUserMessage(msg)
             }
@@ -225,6 +229,96 @@ class MessageTransformer {
         default:
             return nil
         }
+    }
+
+    /// 转换工具结果消息（单独的气泡）
+    private func transformToolResultMessage(_ msg: Message) -> DisplayMessage? {
+        guard let uuid = msg.uuid else { return nil }
+
+        var displayMsg = DisplayMessage(
+            id: uuid,
+            type: .assistant,  // 显示为 assistant 类型，使用工具结果样式
+            timestamp: parseTimestamp(msg.timestamp)
+        )
+
+        var executions: [ToolExecution] = []
+
+        // 优先从 contentBlocks 提取
+        if let blocks = msg.contentBlocks {
+            for block in blocks {
+                if case .toolResult(let resultBlock) = block {
+                    // 查找对应的工具调用以获取工具名
+                    let toolName = findToolName(forToolUseId: resultBlock.toolUseId)
+
+                    let execution = ToolExecution(
+                        id: resultBlock.toolUseId,
+                        name: toolName,
+                        input: [:],
+                        result: ToolExecution.ToolResult(
+                            content: resultBlock.content,
+                            isError: resultBlock.isError,
+                            timestamp: parseTimestamp(msg.timestamp)
+                        )
+                    )
+                    executions.append(execution)
+                }
+            }
+        } else if let message = msg.message, case .array(let items) = message.content {
+            // fallback: 从 message.content 提取
+            for item in items {
+                guard case .object(let dict) = item,
+                      case .string(let type) = dict["type"],
+                      type == "tool_result",
+                      case .string(let toolUseId) = dict["tool_use_id"] else { continue }
+
+                let content: String
+                if case .string(let str) = dict["content"] {
+                    content = str
+                } else if case .array(let arr) = dict["content"] {
+                    content = arr.compactMap { item -> String? in
+                        if case .object(let obj) = item,
+                           case .string(let text) = obj["text"] {
+                            return text
+                        }
+                        return nil
+                    }.joined(separator: "\n")
+                } else {
+                    content = ""
+                }
+
+                let isError: Bool
+                if case .bool(let err) = dict["is_error"] {
+                    isError = err
+                } else {
+                    isError = false
+                }
+
+                let toolName = findToolName(forToolUseId: toolUseId)
+
+                let execution = ToolExecution(
+                    id: toolUseId,
+                    name: toolName,
+                    input: [:],
+                    result: ToolExecution.ToolResult(
+                        content: content,
+                        isError: isError,
+                        timestamp: parseTimestamp(msg.timestamp)
+                    )
+                )
+                executions.append(execution)
+            }
+        }
+
+        displayMsg.toolExecutions = executions
+        return displayMsg
+    }
+
+    /// 从缓存中查找工具名
+    private func findToolName(forToolUseId toolId: String) -> String {
+        if let cached = toolCache[toolId] {
+            return cached.name
+        }
+        return "Tool"  // 默认名称
     }
 
     /// 转换 Assistant 消息
@@ -239,44 +333,90 @@ class MessageTransformer {
             timestamp: parseTimestamp(msg.timestamp)
         )
 
-        // 提取文本内容和工具调用
-        guard let message = msg.message else { return displayMsg }
-        if case .array(let items) = message.content {
+        // 优先使用服务端解析好的 contentBlocks
+        if let blocks = msg.contentBlocks, !blocks.isEmpty {
             var texts: [String] = []
             var executions: [ToolExecution] = []
 
-            for item in items {
-                guard case .object(let dict) = item else { continue }
+            for block in blocks {
+                switch block {
+                case .text(let textBlock):
+                    texts.append(textBlock.text)
 
-                if case .string(let type) = dict["type"] {
-                    switch type {
-                    case "text":
-                        if case .string(let text) = dict["text"] {
-                            texts.append(text)
+                case .thinking(let thinkingBlock):
+                    displayMsg.thinkingContent = thinkingBlock.thinking
+
+                case .toolUse(let toolBlock):
+                    // 从 contentBlocks 提取工具执行
+                    var input: [String: String] = [:]
+                    if let inputDict = toolBlock.input {
+                        for (key, value) in inputDict {
+                            input[key] = jsonValueToString(value)
                         }
-
-                    case "thinking":
-                        if case .string(let thinking) = dict["thinking"] {
-                            displayMsg.thinkingContent = thinking
-                        }
-
-                    case "tool_use":
-                        if let execution = extractToolExecution(from: dict, context: context) {
-                            executions.append(execution)
-                            // 同时更新工具缓存
-                            toolCache[execution.id] = execution
-                        }
-
-                    default:
-                        break
                     }
+
+                    // 查找工具结果
+                    let result = findToolResultFromContentBlocks(toolId: toolBlock.id, in: context)
+
+                    let execution = ToolExecution(
+                        id: toolBlock.id,
+                        name: toolBlock.name,
+                        input: input,
+                        result: result
+                    )
+                    executions.append(execution)
+                    toolCache[execution.id] = execution
+
+                case .toolResult:
+                    // tool_result 在 assistant 消息中不应出现，跳过
+                    break
+
+                case .unknown:
+                    break
                 }
             }
 
             displayMsg.textContent = texts.joined(separator: "\n")
             displayMsg.toolExecutions = executions
-        } else if case .string(let text) = message.content {
-            displayMsg.textContent = text
+        } else {
+            // fallback: 从 message.content 解析（旧逻辑）
+            guard let message = msg.message else { return displayMsg }
+            if case .array(let items) = message.content {
+                var texts: [String] = []
+                var executions: [ToolExecution] = []
+
+                for item in items {
+                    guard case .object(let dict) = item else { continue }
+
+                    if case .string(let type) = dict["type"] {
+                        switch type {
+                        case "text":
+                            if case .string(let text) = dict["text"] {
+                                texts.append(text)
+                            }
+
+                        case "thinking":
+                            if case .string(let thinking) = dict["thinking"] {
+                                displayMsg.thinkingContent = thinking
+                            }
+
+                        case "tool_use":
+                            if let execution = extractToolExecution(from: dict, context: context) {
+                                executions.append(execution)
+                                toolCache[execution.id] = execution
+                            }
+
+                        default:
+                            break
+                        }
+                    }
+                }
+
+                displayMsg.textContent = texts.joined(separator: "\n")
+                displayMsg.toolExecutions = executions
+            } else if case .string(let text) = message.content {
+                displayMsg.textContent = text
+            }
         }
 
         // Agent 消息标识
@@ -286,6 +426,32 @@ class MessageTransformer {
         }
 
         return displayMsg
+    }
+
+    /// 从 context 中的 contentBlocks 查找工具结果
+    private func findToolResultFromContentBlocks(toolId: String, in messages: [Message]) -> ToolExecution.ToolResult? {
+        // 先检查缓存
+        if let cached = toolCache[toolId], cached.result != nil {
+            return cached.result
+        }
+
+        // 从 user 消息的 contentBlocks 中查找
+        for msg in messages {
+            guard msg.type == "user", let blocks = msg.contentBlocks else { continue }
+
+            for block in blocks {
+                if case .toolResult(let resultBlock) = block, resultBlock.toolUseId == toolId {
+                    return ToolExecution.ToolResult(
+                        content: resultBlock.content,
+                        isError: resultBlock.isError,
+                        timestamp: parseTimestamp(msg.timestamp)
+                    )
+                }
+            }
+        }
+
+        // fallback: 从原始 message.content 查找
+        return findToolResult(toolId: toolId, in: messages)
     }
 
     /// 转换 User 消息
@@ -374,39 +540,80 @@ class MessageTransformer {
 
     /// 判断 User 消息是否应该显示
     private func shouldDisplayUserMessage(_ msg: Message) -> Bool {
-        // 1. 工具执行结果 - 不显示
+        // 1. 工具执行结果 - 特殊处理，不作为普通 User 显示
+        // 但会在 transformToolResultMessage 中单独处理
         if msg.toolUseResult != nil {
             return false
         }
 
-        // 检查 content 中是否包含 tool_result
-        if let message = msg.message,
-           case .array(let items) = message.content {
-            for item in items {
-                if case .object(let dict) = item,
-                   case .string(let type) = dict["type"],
-                   type == "tool_result" {
-                    return false
-                }
+        // 2. 检查 contentBlocks 中是否只包含 tool_result
+        // 如果只有 tool_result，交给专门的处理逻辑
+        if let blocks = msg.contentBlocks, !blocks.isEmpty {
+            let hasOnlyToolResults = blocks.allSatisfy { block in
+                if case .toolResult = block { return true }
+                return false
+            }
+            if hasOnlyToolResults {
+                return false  // 交给 transformToolResultMessage 处理
             }
         }
 
-        // 2. 仅 Transcript 可见 - 不显示
+        // 3. 检查 message.content 中是否只包含 tool_result（fallback）
+        if let message = msg.message,
+           case .array(let items) = message.content {
+            let hasOnlyToolResults = items.allSatisfy { item in
+                if case .object(let dict) = item,
+                   case .string(let type) = dict["type"] {
+                    return type == "tool_result"
+                }
+                return false
+            }
+            if hasOnlyToolResults && !items.isEmpty {
+                return false  // 交给 transformToolResultMessage 处理
+            }
+        }
+
+        // 4. 仅 Transcript 可见 - 不显示
         if msg.isVisibleInTranscriptOnly == true {
             return false
         }
 
-        // 3. 压缩摘要 - 不显示
+        // 5. 压缩摘要 - 不显示
         if msg.isCompactSummary == true {
             return false
         }
 
-        // 4. 元数据消息 - 不显示
+        // 6. 元数据消息 - 不显示
         if msg.isMeta == true {
             return false
         }
 
         return true
+    }
+
+    /// 判断是否是工具结果消息
+    private func isToolResultMessage(_ msg: Message) -> Bool {
+        // 检查 contentBlocks
+        if let blocks = msg.contentBlocks, !blocks.isEmpty {
+            return blocks.contains { block in
+                if case .toolResult = block { return true }
+                return false
+            }
+        }
+
+        // fallback: 检查 message.content
+        if let message = msg.message,
+           case .array(let items) = message.content {
+            return items.contains { item in
+                if case .object(let dict) = item,
+                   case .string(let type) = dict["type"] {
+                    return type == "tool_result"
+                }
+                return false
+            }
+        }
+
+        return false
     }
 
     // MARK: - 工具执行提取

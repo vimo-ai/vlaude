@@ -11,6 +11,7 @@ struct Project: Identifiable, Codable {
     let id: Int
     let name: String
     let path: String
+    let source: String?
     let encodedDirName: String?
     let lastAccessed: Date?
     let createdAt: Date

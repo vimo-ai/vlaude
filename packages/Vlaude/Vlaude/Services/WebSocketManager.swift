@@ -14,6 +14,7 @@ enum WebSocketEvent: String {
     case messageNew = "message:new"
     case projectUpdated = "project:updated"
     case sessionUpdated = "session:updated"
+    case sessionListUpdated = "session:listUpdate"  // Session 列表更新（新 session 创建/删除）
     case approvalRequest = "approval-request"  // 权限请求
     case statuslineMetricsUpdate = "statusline:metricsUpdate"  // Statusline 指标更新
 }
@@ -234,6 +235,12 @@ class WebSocketManager: ObservableObject {
         socket.on("session:updated") { [weak self] data, ack in
             print("🔔 [Socket.IO] 原始 session:updated 事件触发!")
             self?.handleBusinessEvent(.sessionUpdated, data: data)
+        }
+
+        // 监听 Session 列表更新（新 session 创建/删除）
+        socket.on("session:listUpdate") { [weak self] data, ack in
+            print("🔔 [Socket.IO] 收到 session:listUpdate 事件!")
+            self?.handleBusinessEvent(.sessionListUpdated, data: data)
         }
 
         // 监听权限请求
@@ -571,12 +578,8 @@ class WebSocketManager: ObservableObject {
                 self?.onlineDaemons[deviceId] = daemon
             }
 
-            // 发送通知供 ViewModel 使用
-            NotificationCenter.default.post(
-                name: NSNotification.Name("DaemonSessionUpdate"),
-                object: nil,
-                userInfo: ["deviceId": deviceId, "sessionCount": sessions.count]
-            )
+            // 触发 sessionUpdated 事件，通知 SessionListViewModel 刷新
+            self?.handleBusinessEvent(.sessionUpdated, data: [["deviceId": deviceId, "sessions": sessions]])
         }
     }
 

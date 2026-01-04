@@ -81,7 +81,7 @@ struct SessionDetailView: View {
 
                             // 消息列表
                             ForEach(viewModel.displayMessages) { message in
-                                DisplayMessageBubble(message: message)
+                                DisplayMessageBubble(message: message, sessionId: sessionId)
                                     .id(message.id)
                                     .contentShape(Rectangle())
                                     .onTapGesture(count: 2) {
@@ -268,6 +268,7 @@ struct SessionDetailView: View {
 // 新的 DisplayMessage 气泡组件
 struct DisplayMessageBubble: View {
     let message: DisplayMessage
+    let sessionId: String
     @State private var isExpanded = false
 
     private var isUser: Bool {
@@ -344,7 +345,7 @@ struct DisplayMessageBubble: View {
                 // 如果有工具执行，使用工具执行组件
                 if hasToolExecutions {
                     ForEach(message.toolExecutions) { toolExecution in
-                        ToolExecutionBubble(execution: toolExecution)
+                        ToolExecutionBubble(execution: toolExecution, sessionId: sessionId)
                     }
                 }
 
@@ -425,119 +426,40 @@ struct DisplayMessageBubble: View {
     }
 }
 
-// 工具执行气泡组件
-// 💡 当前实现：使用 Markdown 渲染 Edit 工具的代码 diff
-// 🚀 未来升级（方案二）：
-//    可以创建专业的 DiffView 组件，支持：
-//    - 左右对比视图（Split Diff）
-//    - 统一 diff 视图（Unified Diff）
-//    - 字符级精确 diff 高亮
-//    - 数据来源：Message.toolUseResult 中的 oldString/newString
+// 工具执行气泡组件 - 根据工具类型分发到专用视图
 struct ToolExecutionBubble: View {
     let execution: ToolExecution
-    @State private var isExpanded = false
-
-    private var hasResult: Bool {
-        execution.result != nil
-    }
-
-    private var resultContent: String {
-        execution.result?.content ?? ""
-    }
-
-    private var isResultLong: Bool {
-        resultContent.count > 500  // 提高阈值，减少不必要的折叠
-    }
-
-    // 优化：只在需要时才截断字符串
-    private var displayResultContent: String {
-        if !isResultLong {
-            return resultContent
-        }
-
-        if isExpanded {
-            return resultContent
-        } else {
-            // 使用 prefix 而不是创建新字符串
-            return String(resultContent.prefix(500))
-        }
-    }
+    let sessionId: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // 工具名称和输入
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("⏺")
-                        .font(.system(size: 12))
-                    Text(execution.name)
-                        .font(.system(size: 13, design: .monospaced))
-                        .fontWeight(.semibold)
-                }
-
-                if !execution.formattedInput.isEmpty {
-                    Text(execution.formattedInput)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .padding(.leading, 20)
-                }
-            }
-
-            // 工具执行结果
-            if hasResult {
-                Divider()
-
-                HStack(alignment: .top, spacing: 6) {
-                    Text("⎿")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        if execution.result?.isError == true {
-                            Label("执行失败", systemImage: "xmark.circle.fill")
-                                .font(.system(size: 11))
-                                .foregroundColor(.red)
-                        }
-
-                        // 根据工具类型选择渲染方式
-                        if execution.shouldRenderAsMarkdown,
-                           let markdownContent = execution.formattedResultAsMarkdown {
-                            // 使用 Markdown 渲染（适用于 Edit 工具等）
-                            Markdown(markdownContent)
-                                .markdownTheme(.claudeCode)
-                                .markdownCodeSyntaxHighlighter(HighlightrCodeSyntaxHighlighter())
-                                .textSelection(.enabled)
-                        } else {
-                            // 普通文本显示
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(displayResultContent)
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundColor(execution.result?.isError == true ? .red : .primary)
-                                    .textSelection(.enabled)
-
-                                if isResultLong {
-                                    Button(action: {
-                                        // 不使用动画，直接切换
-                                        isExpanded.toggle()
-                                    }) {
-                                        Text(isExpanded ? "收起" : "查看更多")
-                                            .font(.caption)
-                                            .foregroundColor(.blue)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        switch execution.name {
+        case "Bash":
+            BashToolView(execution: execution)
+        case "Read":
+            ReadToolView(execution: execution)
+        case "Grep":
+            GrepToolView(execution: execution)
+        case "Glob":
+            GlobToolView(execution: execution)
+        case "Write":
+            WriteToolView(execution: execution)
+        case "Edit":
+            EditToolView(execution: execution)
+        case "TodoWrite":
+            TodoWriteToolView(execution: execution)
+        case "AskUserQuestion":
+            AskUserQuestionToolView(execution: execution, sessionId: sessionId)
+        case "Task":
+            TaskToolView(execution: execution)
+        case "WebSearch":
+            WebSearchToolView(execution: execution)
+        case "WebFetch":
+            WebFetchToolView(execution: execution)
+        case let name where name.hasPrefix("mcp__"):
+            MCPToolView(execution: execution)
+        default:
+            GenericToolView(execution: execution)
         }
-        .padding(12)
-        .background(Color.gray.opacity(0.1))
-        .cornerRadius(12)
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.gray.opacity(0.3), lineWidth: 1)
-        )
     }
 }
 

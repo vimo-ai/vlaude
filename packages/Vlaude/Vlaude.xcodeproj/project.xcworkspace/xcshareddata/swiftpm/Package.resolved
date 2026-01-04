@@ -1,6 +1,15 @@
 {
-  "originHash" : "fee4c36aca8091292bc073b2e0b53a855a35209d5bbc9503bcebeac7f48d79cd",
+  "originHash" : "4009de58f96b06fc459b70db8b1e77b1bde4b2ee40a44185a814bc1c106b4d76",
   "pins" : [
+    {
+      "identity" : "corenetworkkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/vimo-ai/CoreNetworkKit",
+      "state" : {
+        "revision" : "95db102b7d5470185a6b66549d5941a69bec61eb",
+        "version" : "0.0.1"
+      }
+    },
     {
       "identity" : "highlightswift",
       "kind" : "remoteSourceControl",
@@ -8,6 +17,15 @@
       "state" : {
         "revision" : "784ca3ccfc8a2cf724fbb2f06cb6ec3329424da3",
         "version" : "1.1.0"
+      }
+    },
+    {
+      "identity" : "mloggerkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/vimo-ai/MLoggerKit.git",
+      "state" : {
+        "revision" : "cd942add68ced8736daa5e217dc8dc8ccd087a10",
+        "version" : "0.0.1"
       }
     },
     {
