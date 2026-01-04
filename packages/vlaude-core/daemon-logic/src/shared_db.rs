@@ -35,7 +35,7 @@ impl SharedDbAdapter {
                 let home = std::env::var("HOME").unwrap_or_default();
                 format!("{}/.vimo", home)
             });
-            PathBuf::from(format!("{}/db/claude-session.db", vimo_root))
+            PathBuf::from(format!("{}/db/ai-cli-session.db", vimo_root))
         });
 
         if let Some(parent) = db_path.parent() {

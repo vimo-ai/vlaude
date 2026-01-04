@@ -23,7 +23,6 @@ dependencies = [
 [[package]]
 name = "ai-cli-session-collector"
 version = "0.1.0"
-source = "git+https://github.com/vimo-ai/ai-cli-session-collector#e4dfaee7f9983c56ca069558a92f375a07a630c8"
 dependencies = [
  "anyhow",
  "chrono",

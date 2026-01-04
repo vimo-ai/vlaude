@@ -66,3 +66,7 @@ daemon-logic = { path = "daemon-logic" }
 
 # External crates - 通过 claude-session-db 统一依赖 ai-cli-session-collector
 claude-session-db = { path = "../../../claude-session-db" }
+
+# Patch git dependencies to use local paths
+[patch."https://github.com/vimo-ai/ai-cli-session-collector"]
+ai-cli-session-collector = { path = "../../../ai-cli-session-collector" }

@@ -249,6 +249,54 @@ fn start_event_loop(handle: &SocketClientHandle) {
     });
 }
 
+/// 启动重连监听循环（监听 Server online 事件并自动重连）
+fn start_reconnect_loop(handle: &SocketClientHandle) {
+    let client = handle.client.clone();
+    let callback_holder = handle.event_callback.clone();
+
+    handle.runtime.spawn(async move {
+        loop {
+            // 等待重连信号
+            if client.wait_for_reconnect().await {
+                eprintln!("[SocketClient FFI] Received reconnect signal, attempting reconnect...");
+
+                // 尝试重连
+                match client.reconnect().await {
+                    Ok(_) => {
+                        eprintln!("[SocketClient FFI] Reconnect successful");
+                        // 通知 Swift 层已重连
+                        let callback = callback_holder.read().await;
+                        if let Some(ref cb) = *callback {
+                            if let (Ok(event_c), Ok(data_c)) = (
+                                CString::new("__reconnected"),
+                                CString::new("{}"),
+                            ) {
+                                (cb.callback)(event_c.as_ptr(), data_c.as_ptr(), cb.user_data);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("[SocketClient FFI] Reconnect failed: {:?}", e);
+                        // 通知 Swift 层重连失败
+                        let callback = callback_holder.read().await;
+                        if let Some(ref cb) = *callback {
+                            if let (Ok(event_c), Ok(data_c)) = (
+                                CString::new("__reconnect_failed"),
+                                CString::new(format!("{{\"error\": \"{}\"}}", e)),
+                            ) {
+                                (cb.callback)(event_c.as_ptr(), data_c.as_ptr(), cb.user_data);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Channel closed，退出循环
+                break;
+            }
+        }
+    });
+}
+
 // ==================== 上行事件 ====================
 
 /// 发送事件
@@ -618,6 +666,38 @@ pub unsafe extern "C" fn socket_client_notify_project_update(
     }
 }
 
+/// 通知会话列表更新
+///
+/// # Safety
+/// - `handle` 必须是有效句柄
+/// - `project_path` 必须是有效字符串
+#[no_mangle]
+pub unsafe extern "C" fn socket_client_notify_session_list_update(
+    handle: *mut SocketClientHandle,
+    project_path: *const c_char,
+) -> SocketClientError {
+    if handle.is_null() || project_path.is_null() {
+        return SocketClientError::NullPointer;
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let handle = &*handle;
+        let ppath = CStr::from_ptr(project_path)
+            .to_str()
+            .map_err(|_| SocketClientError::InvalidUtf8)?;
+
+        handle.runtime.block_on(async {
+            handle.client.notify_session_list_update(ppath).await
+        }).map_err(|_| SocketClientError::EmitFailed)
+    }));
+
+    match result {
+        Ok(Ok(_)) => SocketClientError::Success,
+        Ok(Err(e)) => e,
+        Err(_) => SocketClientError::Unknown,
+    }
+}
+
 // ==================== V3 写操作响应 ====================
 
 /// 发送会话创建结果
@@ -944,6 +1024,7 @@ pub unsafe extern "C" fn socket_client_create_with_redis(
 /// 3. 连接 Socket
 /// 4. 注册到 Redis
 /// 5. 启动心跳
+/// 6. 启动重连监听（监听 Server online 事件）
 ///
 /// # Safety
 /// - `handle` 必须是有效句柄
@@ -960,13 +1041,18 @@ pub unsafe extern "C" fn socket_client_connect_with_discovery(
         .runtime
         .block_on(async { handle.client.connect_with_discovery().await });
 
+    // 无论连接成功与否，都启动事件循环和重连循环
+    // 这样即使首次连接失败，也能在 Server 上线后自动重连
+    start_event_loop(handle);
+    start_reconnect_loop(handle);
+
     match result {
-        Ok(_) => {
-            // 启动事件接收循环
-            start_event_loop(handle);
-            SocketClientError::Success
-        }
+        Ok(_) => SocketClientError::Success,
         Err(e) => {
+            eprintln!(
+                "[SocketClient FFI] Initial connection failed: {:?}, waiting for server online...",
+                e
+            );
             if e.to_string().contains("Registry") {
                 SocketClientError::RegistryError
             } else {
