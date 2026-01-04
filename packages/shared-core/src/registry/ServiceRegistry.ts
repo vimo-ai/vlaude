@@ -3,7 +3,7 @@ import Redis from 'ioredis';
 /**
  * 服务注册事件类型
  */
-export type ServiceEventType = 'online' | 'offline';
+export type ServiceEventType = 'online' | 'offline' | 'session_update';
 
 /**
  * 服务注册事件
@@ -27,6 +27,34 @@ export interface ServiceInfo {
   address: string;
   /** TTL（秒） */
   ttl: number;
+  /** 注册时间戳 */
+  registeredAt: number;
+}
+
+/**
+ * Session 信息
+ */
+export interface SessionInfo {
+  /** 会话 ID */
+  sessionId: string;
+  /** 项目路径 */
+  projectPath: string;
+}
+
+/**
+ * Daemon 信息（用于 VlaudeKit / vlaude-daemon-rs）
+ */
+export interface DaemonInfo {
+  /** 设备 ID */
+  deviceId: string;
+  /** 设备名称 */
+  deviceName: string;
+  /** 平台 */
+  platform: string;
+  /** 版本 */
+  version: string;
+  /** 活跃会话列表 */
+  sessions: SessionInfo[];
   /** 注册时间戳 */
   registeredAt: number;
 }
@@ -297,6 +325,83 @@ export class ServiceRegistry {
       console.error('[ServiceRegistry] 获取 Server 列表失败:', err.message);
       return [];
     }
+  }
+
+  // =================== Daemon 管理方法 ===================
+
+  /**
+   * 获取所有已注册的 Daemon
+   */
+  async getDaemons(): Promise<DaemonInfo[]> {
+    try {
+      const pattern = this.buildDaemonKey('*');
+      const keys = await this.redis.keys(pattern);
+
+      if (keys.length === 0) {
+        return [];
+      }
+
+      const daemons: DaemonInfo[] = [];
+      for (const key of keys) {
+        const value = await this.redis.get(key);
+        if (value) {
+          try {
+            const info = JSON.parse(value) as DaemonInfo;
+            daemons.push(info);
+          } catch {
+            console.warn(`[ServiceRegistry] 解析 Daemon 信息失败: ${key}`);
+          }
+        }
+      }
+
+      return daemons;
+    } catch (error) {
+      const err = error as Error;
+      console.error('[ServiceRegistry] 获取 Daemon 列表失败:', err.message);
+      return [];
+    }
+  }
+
+  /**
+   * 获取指定 Daemon 信息
+   * @param deviceId 设备 ID
+   */
+  async getDaemon(deviceId: string): Promise<DaemonInfo | null> {
+    try {
+      const key = this.buildDaemonKey(deviceId);
+      const value = await this.redis.get(key);
+
+      if (!value) {
+        return null;
+      }
+
+      return JSON.parse(value) as DaemonInfo;
+    } catch (error) {
+      const err = error as Error;
+      console.error(`[ServiceRegistry] 获取 Daemon 失败: ${err.message}`);
+      return null;
+    }
+  }
+
+  /**
+   * 检查 Daemon 是否在线
+   * @param deviceId 设备 ID
+   */
+  async isDaemonOnline(deviceId: string): Promise<boolean> {
+    try {
+      const key = this.buildDaemonKey(deviceId);
+      return (await this.redis.exists(key)) === 1;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * 构建 Daemon Key
+   * 格式: vlaude:daemons:{deviceId}
+   */
+  private buildDaemonKey(deviceId: string): string {
+    return `${this.keyPrefix}daemons:${deviceId}`;
   }
 
   /**

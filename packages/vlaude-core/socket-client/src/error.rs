@@ -27,4 +27,7 @@ pub enum SocketError {
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    #[error("Registry error: {0}")]
+    RegistryError(String),
 }

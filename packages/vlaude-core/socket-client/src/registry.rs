@@ -12,10 +12,11 @@ use tracing::{debug, error, info, warn};
 
 /// 服务事件类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum ServiceEventType {
     Online,
     Offline,
+    SessionUpdate,
 }
 
 /// 服务事件
@@ -24,15 +25,47 @@ pub struct ServiceEvent {
     #[serde(rename = "type")]
     pub event_type: ServiceEventType,
     pub service: String,
-    pub address: String,
+    /// Server 使用 address，Daemon 使用 device_id
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub address: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    /// session_update 事件携带的 session 列表
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sessions: Option<Vec<SessionInfo>>,
     pub timestamp: u64,
 }
 
-/// 服务信息
+/// 服务信息（用于 Server）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceInfo {
     pub address: String,
     pub ttl: u64,
+    #[serde(rename = "registeredAt")]
+    pub registered_at: u64,
+}
+
+/// Session 信息
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionInfo {
+    #[serde(rename = "sessionId")]
+    pub session_id: String,
+    #[serde(rename = "projectPath")]
+    pub project_path: String,
+}
+
+/// Daemon 信息（用于 VlaudeKit / vlaude-daemon-rs）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DaemonInfo {
+    #[serde(rename = "deviceId")]
+    pub device_id: String,
+    #[serde(rename = "deviceName")]
+    pub device_name: String,
+    pub platform: String,
+    pub version: String,
+    /// 当前打开的 session 列表
+    #[serde(default)]
+    pub sessions: Vec<SessionInfo>,
     #[serde(rename = "registeredAt")]
     pub registered_at: u64,
 }
@@ -122,7 +155,7 @@ impl ServiceRegistry {
         format!("{}services:{}:{}", self.config.key_prefix, service, address)
     }
 
-    /// 注册服务
+    /// 注册服务（用于 Server）
     pub async fn register(&self, service: &str, address: &str, ttl: u64) -> Result<()> {
         let mut conn = self.get_conn().await?;
         let key = self.build_service_key(service, address);
@@ -147,7 +180,9 @@ impl ServiceRegistry {
         self.publish_event(ServiceEvent {
             event_type: ServiceEventType::Online,
             service: service.to_string(),
-            address: address.to_string(),
+            address: Some(address.to_string()),
+            device_id: None,
+            sessions: None,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
         })
         .await?;
@@ -155,7 +190,7 @@ impl ServiceRegistry {
         Ok(())
     }
 
-    /// 注销服务
+    /// 注销服务（用于 Server）
     pub async fn unregister(&self, service: &str, address: &str) -> Result<()> {
         let mut conn = self.get_conn().await?;
         let key = self.build_service_key(service, address);
@@ -170,12 +205,183 @@ impl ServiceRegistry {
         self.publish_event(ServiceEvent {
             event_type: ServiceEventType::Offline,
             service: service.to_string(),
-            address: address.to_string(),
+            address: Some(address.to_string()),
+            device_id: None,
+            sessions: None,
             timestamp: chrono::Utc::now().timestamp_millis() as u64,
         })
         .await?;
 
         Ok(())
+    }
+
+    // ==================== Daemon 相关方法 ====================
+
+    /// 构建 Daemon Key
+    fn build_daemon_key(&self, device_id: &str) -> String {
+        format!("{}services:daemon:{}", self.config.key_prefix, device_id)
+    }
+
+    /// 注册 Daemon（用于 VlaudeKit / vlaude-daemon-rs）
+    pub async fn register_daemon(&self, info: &DaemonInfo, ttl: u64) -> Result<()> {
+        let mut conn = self.get_conn().await?;
+        let key = self.build_daemon_key(&info.device_id);
+
+        let value = serde_json::to_string(info)?;
+
+        conn.set_ex::<_, _, ()>(&key, &value, ttl)
+            .await
+            .context("Failed to register daemon")?;
+
+        info!(
+            "[ServiceRegistry] Daemon registered: {} ({}) (TTL: {}s)",
+            info.device_id, info.device_name, ttl
+        );
+
+        // 发布 online 事件
+        self.publish_event(ServiceEvent {
+            event_type: ServiceEventType::Online,
+            service: "daemon".to_string(),
+            address: None,
+            device_id: Some(info.device_id.clone()),
+            sessions: Some(info.sessions.clone()),
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    /// 注销 Daemon
+    pub async fn unregister_daemon(&self, device_id: &str) -> Result<()> {
+        let mut conn = self.get_conn().await?;
+        let key = self.build_daemon_key(device_id);
+
+        conn.del::<_, ()>(&key)
+            .await
+            .context("Failed to unregister daemon")?;
+
+        info!("[ServiceRegistry] Daemon unregistered: {}", device_id);
+
+        // 发布 offline 事件
+        self.publish_event(ServiceEvent {
+            event_type: ServiceEventType::Offline,
+            service: "daemon".to_string(),
+            address: None,
+            device_id: Some(device_id.to_string()),
+            sessions: None,
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    /// 续期 Daemon
+    pub async fn keep_alive_daemon(&self, device_id: &str, ttl: u64) -> Result<()> {
+        let mut conn = self.get_conn().await?;
+        let key = self.build_daemon_key(device_id);
+
+        let exists: bool = conn.exists(&key).await?;
+        if exists {
+            conn.expire::<_, ()>(&key, ttl as i64).await?;
+            debug!("[ServiceRegistry] Daemon keep-alive: {}", device_id);
+        } else {
+            warn!(
+                "[ServiceRegistry] Daemon {} not found, need re-register",
+                device_id
+            );
+            return Err(anyhow::anyhow!("Daemon not found, need re-register"));
+        }
+
+        Ok(())
+    }
+
+    /// 更新 Daemon 的 Session 列表
+    pub async fn update_daemon_sessions(
+        &self,
+        device_id: &str,
+        sessions: Vec<SessionInfo>,
+        ttl: u64,
+    ) -> Result<()> {
+        let mut conn = self.get_conn().await?;
+        let key = self.build_daemon_key(device_id);
+
+        // 读取现有 daemon 信息
+        let value: Option<String> = conn.get(&key).await?;
+        let mut info: DaemonInfo = match value {
+            Some(v) => serde_json::from_str(&v)?,
+            None => return Err(anyhow::anyhow!("Daemon not found")),
+        };
+
+        // 更新 sessions
+        info.sessions = sessions.clone();
+
+        // 写回
+        let new_value = serde_json::to_string(&info)?;
+        conn.set_ex::<_, _, ()>(&key, &new_value, ttl)
+            .await
+            .context("Failed to update daemon sessions")?;
+
+        debug!(
+            "[ServiceRegistry] Daemon {} sessions updated: {} sessions",
+            device_id,
+            sessions.len()
+        );
+
+        // 发布 session_update 事件
+        self.publish_event(ServiceEvent {
+            event_type: ServiceEventType::SessionUpdate,
+            service: "daemon".to_string(),
+            address: None,
+            device_id: Some(device_id.to_string()),
+            sessions: Some(sessions),
+            timestamp: chrono::Utc::now().timestamp_millis() as u64,
+        })
+        .await?;
+
+        Ok(())
+    }
+
+    /// 获取所有 Daemon
+    pub async fn get_daemons(&self) -> Result<Vec<DaemonInfo>> {
+        let mut conn = self.get_conn().await?;
+        let pattern = format!("{}services:daemon:*", self.config.key_prefix);
+
+        let keys: Vec<String> = redis::cmd("KEYS")
+            .arg(&pattern)
+            .query_async(&mut conn)
+            .await
+            .context("Failed to get daemon keys")?;
+
+        if keys.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut daemons = Vec::new();
+        for key in keys {
+            if let Ok(value) = conn.get::<_, Option<String>>(&key).await {
+                if let Some(value) = value {
+                    if let Ok(info) = serde_json::from_str::<DaemonInfo>(&value) {
+                        daemons.push(info);
+                    }
+                }
+            }
+        }
+
+        Ok(daemons)
+    }
+
+    /// 获取指定 Daemon
+    pub async fn get_daemon(&self, device_id: &str) -> Result<Option<DaemonInfo>> {
+        let mut conn = self.get_conn().await?;
+        let key = self.build_daemon_key(device_id);
+
+        let value: Option<String> = conn.get(&key).await?;
+        match value {
+            Some(v) => Ok(Some(serde_json::from_str(&v)?)),
+            None => Ok(None),
+        }
     }
 
     /// 续期服务

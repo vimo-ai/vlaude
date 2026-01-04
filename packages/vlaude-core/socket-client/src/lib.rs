@@ -7,9 +7,12 @@ mod error;
 mod events;
 mod registry;
 
-pub use client::{SocketClient, SocketConfig, TlsConfig};
+pub use client::{DaemonRegistration, SocketClient, SocketConfig, TlsConfig};
 pub use error::SocketError;
-pub use registry::{ServiceEvent, ServiceEventType, ServiceInfo, ServiceRegistry, ServiceRegistryConfig};
+pub use registry::{
+    DaemonInfo, ServiceEvent, ServiceEventType, ServiceInfo, ServiceRegistry,
+    ServiceRegistryConfig, SessionInfo,
+};
 pub use events::{
     // 上行事件数据
     RegisterData, OnlineData, OfflineData,

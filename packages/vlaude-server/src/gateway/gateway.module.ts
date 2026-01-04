@@ -10,6 +10,7 @@ import { HttpModule } from '@nestjs/axios';
 import { AppGateway } from './app.gateway';
 import { DaemonGatewayModule } from '../module/daemon-gateway/daemon-gateway.module';
 import { DeviceModule } from '../device/device.module';
+import { RegistryModule } from '../module/registry/registry.module';
 
 @Module({
   imports: [
@@ -17,6 +18,7 @@ import { DeviceModule } from '../device/device.module';
     HttpModule,
     DeviceModule,
     forwardRef(() => DaemonGatewayModule),
+    forwardRef(() => RegistryModule),
   ],
   providers: [AppGateway],
   exports: [AppGateway],
