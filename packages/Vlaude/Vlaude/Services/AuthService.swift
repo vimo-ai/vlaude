@@ -124,8 +124,8 @@ class AuthService {
 
         Task {
             do {
-                // 调用 APIClient 获取 Token（包含 deviceName 用于设备白名单注册）
-                let token = try await APIClient.shared.generateToken(clientId: deviceId, clientType: "ios", deviceName: deviceName)
+                // 调用 VlaudeClient 获取 Token（包含 deviceName 用于设备白名单注册）
+                let token = try await VlaudeClient.shared.generateToken(clientId: deviceId, clientType: "ios", deviceName: deviceName)
 
                 // 保存 Token 到 Keychain
                 if self.saveToken(token) {

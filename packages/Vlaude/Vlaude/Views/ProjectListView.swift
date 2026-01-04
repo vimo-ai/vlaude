@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ProjectListView: View {
     @StateObject private var viewModel = ProjectListViewModel()
+    @ObservedObject private var webSocketManager = WebSocketManager.shared
 
     var body: some View {
         NavigationStack {
@@ -46,7 +47,10 @@ struct ProjectListView: View {
                             NavigationLink {
                                 SessionListView(projectPath: project.path, projectName: project.name)
                             } label: {
-                                ProjectRow(project: project)
+                                ProjectRow(
+                                    project: project,
+                                    etermSessionCount: webSocketManager.etermSessionCounts[project.path] ?? 0
+                                )
                             }
                         }
 
@@ -86,6 +90,11 @@ struct ProjectListView: View {
                 }
             }
             .navigationTitle("项目列表")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    EtermStatusIndicator(isOnline: webSocketManager.isEtermOnline)
+                }
+            }
             .task {
                 await viewModel.loadProjects(reset: true)
             }
@@ -101,13 +110,52 @@ struct ProjectListView: View {
     }
 }
 
+// MARK: - ETerm 状态指示器
+struct EtermStatusIndicator: View {
+    let isOnline: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle()
+                .fill(isOnline ? Color.green : Color.gray)
+                .frame(width: 8, height: 8)
+            Text("ETerm")
+                .font(.caption)
+                .foregroundColor(isOnline ? .primary : .secondary)
+        }
+    }
+}
+
 struct ProjectRow: View {
     let project: Project
+    let etermSessionCount: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(project.name)
-                .font(.headline)
+            HStack {
+                Text(project.name)
+                    .font(.headline)
+
+                Spacer()
+
+                // ETerm 会话计数 badge
+                if etermSessionCount > 0 {
+                    HStack(spacing: 4) {
+                        Image(systemName: "terminal")
+                            .font(.caption2)
+                        Text("\(etermSessionCount)")
+                            .font(.caption2)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundColor(.green)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(Color.green.opacity(0.15))
+                    )
+                }
+            }
 
             Text(project.path)
                 .font(.caption)

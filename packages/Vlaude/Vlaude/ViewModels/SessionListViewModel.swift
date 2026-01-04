@@ -7,9 +7,10 @@
 
 import Foundation
 import Combine
+import CoreNetworkKit
 
 /// 创建会话的结果
-enum CreateSessionResult {
+enum CreateSessionResultType {
     case session(Session)                    // SDK 模式，返回 Session，可以直接跳转
     case etermPending(String, String)        // ETerm 模式，等待终端启动 (message, requestId)
 }
@@ -24,7 +25,7 @@ class SessionListViewModel: ObservableObject {
     @Published var hasMore = false
     @Published var etermMessage: String?  // ETerm 模式的提示消息
 
-    private let apiClient = APIClient.shared
+    private let client = VlaudeClient.shared
     private let wsManager = WebSocketManager.shared
     private var loadTask: Task<Void, Never>?
     private var currentOffset = 0
@@ -66,7 +67,7 @@ class SessionListViewModel: ObservableObject {
                 // 检查是否被取消
                 try Task.checkCancellation()
 
-                let result = try await apiClient.getSessions(
+                let result = try await client.getSessions(
                     projectPath: projectPath,
                     limit: pageSize,
                     offset: currentOffset
@@ -88,29 +89,12 @@ class SessionListViewModel: ObservableObject {
             } catch is CancellationError {
                 // Task 被取消,静默处理
                 print("⚠️ [SessionListViewModel] 加载被取消")
-            } catch let error as APIError {
-                errorMessage = handleAPIError(error)
             } catch {
-                errorMessage = "未知错误: \(error.localizedDescription)"
+                errorMessage = error.localizedDescription
             }
         }
 
         await loadTask?.value
-    }
-
-    private func handleAPIError(_ error: APIError) -> String {
-        switch error {
-        case .invalidURL:
-            return "无效的 URL"
-        case .networkError(let error):
-            return "网络错误: \(error.localizedDescription)"
-        case .decodingError(let error):
-            return "数据解析错误: \(error.localizedDescription)"
-        case .serverError(let message):
-            return "服务器错误: \(message)"
-        case .unknown:
-            return "未知错误"
-        }
     }
 
     /// 创建新会话
@@ -119,7 +103,7 @@ class SessionListViewModel: ObservableObject {
     ///   - prompt: 可选的初始提示词(默认 "Hi")
     ///   - requestId: 可选的请求ID，用于跟踪 ETerm 会话创建
     /// - Returns: 创建结果（SDK 模式返回 Session，ETerm 模式返回提示和 requestId）
-    func createSession(projectPath: String, prompt: String? = nil, requestId: String? = nil) async -> CreateSessionResult? {
+    func createSession(projectPath: String, prompt: String? = nil, requestId: String? = nil) async -> CreateSessionResultType? {
         isCreatingSession = true
         errorMessage = nil
         etermMessage = nil
@@ -129,7 +113,7 @@ class SessionListViewModel: ObservableObject {
         }
 
         do {
-            let result = try await apiClient.createSession(projectPath: projectPath, prompt: prompt, requestId: requestId)
+            let result = try await client.createSession(projectPath: projectPath, prompt: prompt, requestId: requestId)
 
             switch result {
             case .session(let session):
@@ -145,12 +129,8 @@ class SessionListViewModel: ObservableObject {
                 await loadSessions(projectPath: projectPath, reset: true)
                 return .etermPending(message, returnedRequestId)
             }
-        } catch let error as APIError {
-            errorMessage = handleAPIError(error)
-            print("❌ [SessionListViewModel] 创建会话失败: \(errorMessage ?? "")")
-            return nil
         } catch {
-            errorMessage = "创建会话失败: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
             print("❌ [SessionListViewModel] 创建会话失败: \(errorMessage ?? "")")
             return nil
         }
@@ -180,12 +160,34 @@ class SessionListViewModel: ObservableObject {
                 await self.refreshSilently(projectPath: projectPath)
             }
         }
+
+        // 监听 Session 列表更新（新 session 创建/删除）
+        wsManager.on(.sessionListUpdated) { [weak self] message in
+            guard let self = self else { return }
+
+            print("🔔 [SessionListViewModel] 收到 session 列表更新事件")
+
+            // 检查是否是当前项目的更新
+            if let projectPath = message.projectPath,
+               projectPath == self.currentProjectPath {
+                Task { @MainActor in
+                    await self.refreshSilently(projectPath: projectPath)
+                }
+            } else if self.currentProjectPath != nil {
+                // 如果没有 projectPath 或者不匹配，也刷新当前列表
+                Task { @MainActor in
+                    if let projectPath = self.currentProjectPath {
+                        await self.refreshSilently(projectPath: projectPath)
+                    }
+                }
+            }
+        }
     }
 
     /// 静默刷新（后台更新，不显示 loading）
     private func refreshSilently(projectPath: String) async {
         do {
-            let result = try await apiClient.getSessions(
+            let result = try await client.getSessions(
                 projectPath: projectPath,
                 limit: currentOffset + pageSize,  // 加载当前已显示的所有数据
                 offset: 0

@@ -16,7 +16,7 @@ class ProjectListViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var hasMore = false
 
-    private let apiClient = APIClient.shared
+    private let client = VlaudeClient.shared
     private let wsManager = WebSocketManager.shared
     private var loadTask: Task<Void, Never>?
     private var currentOffset = 0
@@ -51,7 +51,7 @@ class ProjectListViewModel: ObservableObject {
                 // 检查是否被取消
                 try Task.checkCancellation()
 
-                let result = try await apiClient.getProjects(
+                let result = try await client.getProjects(
                     limit: pageSize,
                     offset: currentOffset
                 )
@@ -70,29 +70,12 @@ class ProjectListViewModel: ObservableObject {
             } catch is CancellationError {
                 // Task 被取消,静默处理
                 print("⚠️ [ProjectListViewModel] 加载被取消")
-            } catch let error as APIError {
-                errorMessage = handleAPIError(error)
             } catch {
-                errorMessage = "未知错误: \(error.localizedDescription)"
+                errorMessage = error.localizedDescription
             }
         }
 
         await loadTask?.value
-    }
-
-    private func handleAPIError(_ error: APIError) -> String {
-        switch error {
-        case .invalidURL:
-            return "无效的 URL"
-        case .networkError(let error):
-            return "网络错误: \(error.localizedDescription)"
-        case .decodingError(let error):
-            return "数据解析错误: \(error.localizedDescription)"
-        case .serverError(let message):
-            return "服务器错误: \(message)"
-        case .unknown:
-            return "未知错误"
-        }
     }
 
     // MARK: - WebSocket 热更新
@@ -145,7 +128,7 @@ class ProjectListViewModel: ObservableObject {
     /// 静默刷新（后台更新，不显示 loading）
     private func refreshSilently() async {
         do {
-            let result = try await apiClient.getProjects(
+            let result = try await client.getProjects(
                 limit: currentOffset + pageSize,  // 加载当前已显示的所有数据
                 offset: 0
             )

@@ -11,20 +11,10 @@ import CoreNetworkKit
 // MARK: - Base Configuration
 
 enum VlaudeAPI {
-    /// 服务器主机地址（可通过 Info.plist 的 VLAUDE_SERVER_HOST 配置，默认 localhost）
-    static var serverHost: String {
-        Bundle.main.object(forInfoDictionaryKey: "VLAUDE_SERVER_HOST") as? String ?? "localhost"
-    }
-
-    /// 服务器端口（可通过 Info.plist 的 VLAUDE_SERVER_PORT 配置，默认 10005）
-    static var serverPort: Int {
-        Bundle.main.object(forInfoDictionaryKey: "VLAUDE_SERVER_PORT") as? Int ?? 10005
-    }
-
     static var baseURL: URL {
         let useMTLS = CertificateManager.shared.isReady
         let scheme = useMTLS ? "https" : "http"
-        return URL(string: "\(scheme)://\(serverHost):\(serverPort)")!
+        return URL(string: "\(scheme)://\(VlaudeConfig.serverURL)")!
     }
 }
 

@@ -28,7 +28,7 @@ class SessionDetailViewModel: ObservableObject {
         timestamp: Date()
     )
 
-    private let apiClient = APIClient.shared
+    private let client = VlaudeClient.shared
     private let wsManager = WebSocketManager.shared
     private let messageTransformer = MessageTransformer()
     private var rawMessages: [Message] = []  // 保存原始消息用于转换
@@ -43,15 +43,13 @@ class SessionDetailViewModel: ObservableObject {
         errorMessage = nil
 
         do {
-            session = try await apiClient.getSessionDetail(sessionId: sessionId)
+            session = try await client.getSessionDetail(sessionId: sessionId)
             await loadMessages(sessionId: sessionId, reset: true)
 
             // 订阅 WebSocket 实时消息
             subscribeToSession(sessionId)
-        } catch let error as APIError {
-            errorMessage = handleAPIError(error)
         } catch {
-            errorMessage = "未知错误: \(error.localizedDescription)"
+            errorMessage = error.localizedDescription
         }
 
         isLoading = false
@@ -164,6 +162,7 @@ class SessionDetailViewModel: ObservableObject {
                 role: "user",
                 content: .string(text)
             ),
+            contentBlocks: nil,
             isSidechain: nil,
             userType: nil,
             cwd: nil,
@@ -260,9 +259,12 @@ class SessionDetailViewModel: ObservableObject {
 
                 print("📱 [SessionDetailViewModel] 开始加载消息: sessionId=\(sessionId), offset=\(currentOffset), limit=\(pageSize), order=desc")
 
+                let projectPath = session?.project?.path ?? ""
+
                 // 使用倒序（desc）加载最新消息
-                let result = try await apiClient.getSessionMessages(
+                let result = try await client.getSessionMessages(
                     sessionId: sessionId,
+                    projectPath: projectPath,
                     limit: pageSize,
                     offset: currentOffset,
                     order: "desc"
@@ -292,30 +294,12 @@ class SessionDetailViewModel: ObservableObject {
             } catch is CancellationError {
                 // Task 被取消,静默处理
                 print("⚠️ [SessionDetailViewModel] 加载消息被取消")
-            } catch let error as APIError {
-                print("❌ [SessionDetailViewModel] API错误: \(error)")
-                errorMessage = handleAPIError(error)
             } catch {
-                print("❌ [SessionDetailViewModel] 未知错误: \(error)")
-                errorMessage = "未知错误: \(error.localizedDescription)"
+                print("❌ [SessionDetailViewModel] 错误: \(error)")
+                errorMessage = error.localizedDescription
             }
         }
 
         await loadMessagesTask?.value
-    }
-
-    private func handleAPIError(_ error: APIError) -> String {
-        switch error {
-        case .invalidURL:
-            return "无效的 URL"
-        case .networkError(let error):
-            return "网络错误: \(error.localizedDescription)"
-        case .decodingError(let error):
-            return "数据解析错误: \(error.localizedDescription)"
-        case .serverError(let message):
-            return "服务器错误: \(message)"
-        case .unknown:
-            return "未知错误"
-        }
     }
 }

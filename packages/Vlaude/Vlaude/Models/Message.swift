@@ -7,6 +7,97 @@
 
 import Foundation
 
+// MARK: - ContentBlock 类型（服务端解析后的结构化内容）
+
+/// 结构化内容块（用于富文本 UI 渲染）
+enum ContentBlock: Codable {
+    case text(TextBlock)
+    case toolUse(ToolUseBlock)
+    case toolResult(ToolResultBlock)
+    case thinking(ThinkingBlock)
+    case unknown(UnknownBlock)
+
+    struct TextBlock: Codable {
+        let text: String
+    }
+
+    struct ToolUseBlock: Codable {
+        let id: String
+        let name: String
+        let input: [String: JSONValue]?
+        let displayText: String  // 人类可读描述，如"读取文件: config.json"
+        let iconName: String     // SF Symbol 名称
+    }
+
+    struct ToolResultBlock: Codable {
+        let toolUseId: String
+        let isError: Bool
+        let content: String
+        let preview: String      // 前 200 字符
+        let hasMore: Bool
+        let sizeDescription: String
+    }
+
+    struct ThinkingBlock: Codable {
+        let thinking: String
+    }
+
+    struct UnknownBlock: Codable {
+        let raw: String
+    }
+
+    // Custom Codable 实现
+    enum CodingKeys: String, CodingKey {
+        case type
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let type = try container.decode(String.self, forKey: .type)
+
+        switch type {
+        case "text":
+            let block = try TextBlock(from: decoder)
+            self = .text(block)
+        case "tool_use":
+            let block = try ToolUseBlock(from: decoder)
+            self = .toolUse(block)
+        case "tool_result":
+            let block = try ToolResultBlock(from: decoder)
+            self = .toolResult(block)
+        case "thinking":
+            let block = try ThinkingBlock(from: decoder)
+            self = .thinking(block)
+        default:
+            let block = try UnknownBlock(from: decoder)
+            self = .unknown(block)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .text(let block):
+            try container.encode("text", forKey: .type)
+            try block.encode(to: encoder)
+        case .toolUse(let block):
+            try container.encode("tool_use", forKey: .type)
+            try block.encode(to: encoder)
+        case .toolResult(let block):
+            try container.encode("tool_result", forKey: .type)
+            try block.encode(to: encoder)
+        case .thinking(let block):
+            try container.encode("thinking", forKey: .type)
+            try block.encode(to: encoder)
+        case .unknown(let block):
+            try container.encode("unknown", forKey: .type)
+            try block.encode(to: encoder)
+        }
+    }
+}
+
+// MARK: - Message
+
 // Claude Code 原始消息格式
 struct Message: Identifiable, Codable {
     // 不同类型的消息有不同的唯一标识
@@ -29,6 +120,9 @@ struct Message: Identifiable, Codable {
     let sessionId: String?
     let parentUuid: String?
     let message: MessageInner?
+
+    // 结构化内容块（服务端解析后返回，用于富文本渲染）
+    let contentBlocks: [ContentBlock]?
 
     // ========================================
     // user/assistant 类型字段
@@ -116,12 +210,46 @@ struct Message: Identifiable, Codable {
             return sysContent
         }
 
-        // user/assistant 类型显示 message 内容
+        // 优先使用 contentBlocks（服务端解析的结构化内容）
+        if let blocks = contentBlocks, !blocks.isEmpty {
+            return extractContentFromBlocks(blocks)
+        }
+
+        // fallback: user/assistant 类型显示 message 内容
         if let msg = message {
             return msg.extractedContent
         }
 
         return ""
+    }
+
+    /// 从 contentBlocks 提取显示内容
+    private func extractContentFromBlocks(_ blocks: [ContentBlock]) -> String {
+        var parts: [String] = []
+
+        for block in blocks {
+            switch block {
+            case .text(let textBlock):
+                parts.append(textBlock.text)
+
+            case .toolUse(let toolBlock):
+                // 使用服务端生成的人类可读描述
+                parts.append("🔧 \(toolBlock.displayText)")
+
+            case .toolResult(let resultBlock):
+                let prefix = resultBlock.isError ? "❌ " : "✅ "
+                parts.append("\(prefix)\(resultBlock.preview)")
+
+            case .thinking:
+                // 思考过程目前隐藏
+                break
+
+            case .unknown:
+                break
+            }
+        }
+
+        return parts.joined(separator: "\n")
     }
 
     var timestampDate: Date {
@@ -188,7 +316,7 @@ struct Message: Identifiable, Codable {
 
     enum CodingKeys: String, CodingKey {
         // 通用字段
-        case uuid, type, timestamp, sessionId, parentUuid, message
+        case uuid, type, timestamp, sessionId, parentUuid, message, contentBlocks
 
         // user/assistant 字段
         case isSidechain, userType, cwd, version, gitBranch, requestId, agentId, isApiErrorMessage
