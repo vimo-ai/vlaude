@@ -528,9 +528,10 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       });
 
       // 如果 session 在 ETerm 中，通知 ETerm 有 Mobile 正在查看
-      if (this.daemonGateway.isSessionInEterm(sessionId)) {
+      const inEterm = await this.daemonGateway.isSessionInEterm(sessionId);
+      if (inEterm) {
         this.logger.log(`📱 [ETerm] 通知 Mobile 正在查看 session ${sessionId}`);
-        this.daemonGateway.notifyEtermMobileViewing(sessionId, true);
+        await this.daemonGateway.notifyEtermMobileViewing(sessionId, true);
       }
     }
 
@@ -539,9 +540,10 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
   /**
    * 客户端取消订阅
+   * 注意：现在从 Redis 读取状态，已改为 async
    */
   @SubscribeMessage('session:unsubscribe')
-  handleSessionUnsubscribe(
+  async handleSessionUnsubscribe(
     @MessageBody() data: { sessionId: string },
     @ConnectedSocket() client: Socket,
   ) {
@@ -566,9 +568,10 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         this.sessionSubscriptions.delete(sessionId);
 
         // 如果 session 在 ETerm 中，通知 ETerm 没有 Mobile 在查看了
-        if (this.daemonGateway.isSessionInEterm(sessionId)) {
+        const inEterm = await this.daemonGateway.isSessionInEterm(sessionId);
+        if (inEterm) {
           this.logger.log(`📱 [ETerm] 通知 Mobile 离开了 session ${sessionId}`);
-          this.daemonGateway.notifyEtermMobileViewing(sessionId, false);
+          await this.daemonGateway.notifyEtermMobileViewing(sessionId, false);
         }
       }
     }
@@ -598,10 +601,11 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     }
 
     // 检查 session 是否在 ETerm 中
-    if (this.daemonGateway.isSessionInEterm(sessionId)) {
+    const inEterm = await this.daemonGateway.isSessionInEterm(sessionId);
+    if (inEterm) {
       this.logger.log(`🖥️ [ETerm 注入] Session ${sessionId} 在 ETerm 中，使用注入方式`);
 
-      const injected = this.daemonGateway.injectMessageToEterm(sessionId, text);
+      const injected = await this.daemonGateway.injectMessageToEterm(sessionId, text);
 
       if (injected) {
         this.logger.log(`✅ [ETerm 注入] 消息已发送到 ETerm`);
@@ -908,6 +912,23 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     this.notifySessionUpdate(data.sessionId, data.metadata);
   }
 
+  /**
+   * 监听来自 DaemonGateway 的会话列表更新事件
+   */
+  @OnEvent('app.notifySessionListUpdate')
+  handleNotifySessionListUpdateEvent(data: { projectPath: string }) {
+    this.logger.log(`📥 [事件监听] 收到会话列表更新事件: ${data.projectPath}`);
+    this.notifySessionListUpdate(data.projectPath);
+  }
+
+  /**
+   * 通知所有客户端会话列表已更新
+   */
+  notifySessionListUpdate(projectPath: string) {
+    this.server.emit('session:listUpdate', { projectPath });
+    this.logger.log(`📤 [广播] session:listUpdate for ${projectPath}`);
+  }
+
   // =================== ETerm 状态变化 ===================
 
   /**
@@ -984,14 +1005,16 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    * 返回格式：直接返回对象，NestJS 会作为 ACK 响应发送
    * 客户端使用 emitWithAck 后，响应数组的第一个元素就是这个对象
    *
+   * 注意：现在从 Redis 读取状态，已改为 async
+   *
    * @see docs/DATA_STRUCTURE_SYNC.md#4-websocket-appqueryetermstatus
    * @see Vlaude/Services/WebSocketManager.swift - iOS 端 WebSocket 处理
    */
   @SubscribeMessage('app:queryEtermStatus')
-  handleQueryEtermStatus(@ConnectedSocket() client: Socket) {
-    const online = this.daemonGateway.isEtermOnline();
-    const sessions = this.daemonGateway.getEtermSessions();
-    const sessionCounts = this.daemonGateway.getEtermSessionCounts();
+  async handleQueryEtermStatus(@ConnectedSocket() client: Socket) {
+    const online = await this.daemonGateway.isEtermOnline();
+    const sessions = await this.daemonGateway.getEtermSessions();
+    const sessionCounts = await this.daemonGateway.getEtermSessionCounts();
 
     this.logger.log(`📱 [ETerm 状态查询] 客户端 ${client.id} 查询 ETerm 状态`);
     this.logger.log(`   Online: ${online}`);

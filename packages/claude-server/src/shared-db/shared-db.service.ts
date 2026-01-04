@@ -4,7 +4,7 @@
  * @date 2025-12-30
  * @version v1.0.0
  *
- * 路径: ~/.vimo/db/claude-session.db
+ * 路径: ~/.vimo/db/ai-cli-session.db
  *
  * 表结构:
  * - projects: 项目列表 (id, path, name, source, created_at, updated_at)
@@ -62,7 +62,7 @@ export class SharedDbService implements OnModuleInit, OnModuleDestroy {
   private available = false;
 
   constructor() {
-    this.dbPath = path.join(os.homedir(), '.vimo', 'db', 'claude-session.db');
+    this.dbPath = path.join(os.homedir(), '.vimo', 'db', 'ai-cli-session.db');
   }
 
   onModuleInit() {

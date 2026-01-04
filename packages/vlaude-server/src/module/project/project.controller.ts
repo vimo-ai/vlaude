@@ -71,9 +71,10 @@ export class ProjectController {
       total: result.total,
       hasMore: result.hasMore,
       // ETerm 在线状态（解决时序问题）
+      // 注意：现在从 Redis 读取状态
       // @see docs/DATA_STRUCTURE_SYNC.md#1-projectlistresponse
-      etermOnline: this.daemonGateway.isEtermOnline(),
-      etermSessions: this.daemonGateway.getEtermSessions(),
+      etermOnline: await this.daemonGateway.isEtermOnline(),
+      etermSessions: await this.daemonGateway.getEtermSessions(),
     };
   }
 

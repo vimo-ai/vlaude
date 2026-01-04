@@ -32,26 +32,28 @@ export class SessionController {
 
   /**
    * 序列化会话数据
+   * 注意：现在从 Redis 读取 inEterm 状态，已改为 async
    *
    * @see docs/DATA_STRUCTURE_SYNC.md#3-session-模型-ineterm-字段
    * @see Vlaude/Models/Session.swift - iOS 端 Session 定义
    */
-  private serializeSession(session: any) {
+  private async serializeSession(session: any): Promise<any> {
     if (!session) return session;
     return {
       ...session,
       lastFileSize: session.lastFileSize?.toString(),
       // 标记该 session 是否在 ETerm 中打开
       // @see docs/DATA_STRUCTURE_SYNC.md#3-session-模型-ineterm-字段
-      inEterm: this.daemonGateway.isSessionInEterm(session.sessionId),
+      inEterm: await this.daemonGateway.isSessionInEterm(session.sessionId),
     };
   }
 
   /**
    * 序列化会话数组
+   * 注意：使用 Promise.all 并行处理
    */
-  private serializeSessions(sessions: any[]) {
-    return sessions.map(s => this.serializeSession(s));
+  private async serializeSessions(sessions: any[]): Promise<any[]> {
+    return Promise.all(sessions.map(s => this.serializeSession(s)));
   }
 
   /**
@@ -97,12 +99,12 @@ export class SessionController {
 
     return {
       success: true,
-      data: this.serializeSessions(result.sessions),
+      data: await this.serializeSessions(result.sessions),
       total: result.total,
       hasMore: result.hasMore,
       // ETerm 在线状态（解决时序问题）
       // @see docs/DATA_STRUCTURE_SYNC.md#2-sessionlistresponse
-      etermOnline: this.daemonGateway.isEtermOnline(),
+      etermOnline: await this.daemonGateway.isEtermOnline(),
     };
   }
 
@@ -125,7 +127,7 @@ export class SessionController {
 
     return {
       success: true,
-      data: this.serializeSession(session),
+      data: await this.serializeSession(session),
     };
   }
 
@@ -143,7 +145,7 @@ export class SessionController {
 
     return {
       success: true,
-      data: this.serializeSessions(sessions),
+      data: await this.serializeSessions(sessions),
       total: sessions.length,
     };
   }
@@ -200,7 +202,7 @@ export class SessionController {
 
     return {
       success: true,
-      data: this.serializeSession(session),
+      data: await this.serializeSession(session),
     };
   }
 

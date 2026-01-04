@@ -4,7 +4,7 @@
  * @date 2025-12-30
  * @version v1.0.0
  *
- * 路径: ~/.vimo/db/claude-session.db
+ * 路径: ~/.vimo/db/ai-cli-session.db
  *
  * 表结构:
  * - projects: 项目列表 (id, path, name, source, created_at, updated_at)
@@ -172,16 +172,21 @@ export class SharedDbService implements OnModuleInit, OnModuleDestroy {
   // ===================== Sessions =====================
 
   /**
-   * 获取项目的所有会话
+   * 获取项目的所有会话（过滤 agent session）
    */
   getSessionsByProjectId(projectId: number): SharedSession[] {
     const db = this.ensureConnection();
-    const stmt = db.prepare('SELECT * FROM sessions WHERE project_id = ? ORDER BY updated_at DESC');
+    // 过滤 agent-xxx session（子 agent 会话）
+    const stmt = db.prepare(`
+      SELECT * FROM sessions
+      WHERE project_id = ? AND session_id NOT LIKE 'agent-%'
+      ORDER BY updated_at DESC
+    `);
     return stmt.all(projectId) as SharedSession[];
   }
 
   /**
-   * 获取项目的所有会话（通过项目路径）
+   * 获取项目的所有会话（通过项目路径，过滤 agent session）
    */
   getSessionsByProjectPath(projectPath: string): SessionWithProject[] {
     const db = this.ensureConnection();
@@ -189,7 +194,7 @@ export class SharedDbService implements OnModuleInit, OnModuleDestroy {
       SELECT s.*, p.path as project_path, p.name as project_name
       FROM sessions s
       JOIN projects p ON s.project_id = p.id
-      WHERE p.path = ?
+      WHERE p.path = ? AND s.session_id NOT LIKE 'agent-%'
       ORDER BY s.updated_at DESC
     `);
     return stmt.all(projectPath) as SessionWithProject[];
@@ -205,7 +210,7 @@ export class SharedDbService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
-   * 获取最近更新的会话列表
+   * 获取最近更新的会话列表（过滤 agent session）
    */
   getRecentSessions(limit = 50): SessionWithProject[] {
     const db = this.ensureConnection();
@@ -213,6 +218,7 @@ export class SharedDbService implements OnModuleInit, OnModuleDestroy {
       SELECT s.*, p.path as project_path, p.name as project_name
       FROM sessions s
       JOIN projects p ON s.project_id = p.id
+      WHERE s.session_id NOT LIKE 'agent-%'
       ORDER BY s.updated_at DESC
       LIMIT ?
     `);

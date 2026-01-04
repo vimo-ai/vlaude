@@ -398,10 +398,11 @@ export class ServiceRegistry {
 
   /**
    * 构建 Daemon Key
-   * 格式: vlaude:daemons:{deviceId}
+   * 格式: vlaude:services:daemon:{deviceId}
+   * 注意：与 Rust 端 socket-client 保持一致
    */
   private buildDaemonKey(deviceId: string): string {
-    return `${this.keyPrefix}daemons:${deviceId}`;
+    return `${this.keyPrefix}services:daemon:${deviceId}`;
   }
 
   /**
