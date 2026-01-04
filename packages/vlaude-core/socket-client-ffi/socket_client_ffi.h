@@ -49,6 +49,7 @@ enum SocketClientError socket_client_connect(struct SocketClientHandle *handle);
  * 3. 连接 Socket
  * 4. 注册到 Redis
  * 5. 启动心跳
+ * 6. 启动重连监听（监听 Server online 事件）
  *
  * # Safety
  * - `handle` 必须是有效句柄
@@ -166,6 +167,16 @@ enum SocketClientError socket_client_notify_new_message(struct SocketClientHandl
 enum SocketClientError socket_client_notify_project_update(struct SocketClientHandle *handle,
                                                            const char *project_path,
                                                            const char *metadata_json);
+
+/**
+ * 通知会话列表更新
+ *
+ * # Safety
+ * - `handle` 必须是有效句柄
+ * - `project_path` 必须是有效字符串
+ */
+enum SocketClientError socket_client_notify_session_list_update(struct SocketClientHandle *handle,
+                                                                const char *project_path);
 
 /**
  * 注册 daemon

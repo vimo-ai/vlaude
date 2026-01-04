@@ -1,12 +1,13 @@
 //! 领域类型定义
 //!
-//! 大部分类型从 claude-session-db 重导出（它统一了 ai-cli-session-collector 的类型）
+//! session-reader 专用的类型。
+//! 大部分类型从 claude-session-db 重导出。
 
 use serde::Serialize;
 
-// Re-export core types from claude-session-db (which re-exports from ai-cli-session-collector)
+// Re-export core types from claude-session-db
 pub use claude_session_db::{
-    IndexableMessage, IndexableSession, MessageType, ParseResult, ParsedMessage, SessionMeta,
+    IndexableMessage, IndexableSession, MessageType, ParsedMessage, ParseResult, SessionMeta,
     Source,
 };
 
@@ -26,7 +27,7 @@ pub struct ProjectInfo {
     pub path: String,
     /// 项目名称（从路径提取）
     pub name: String,
-    /// 会话数量
+    /// 会话数量（不包含 agent session）
     pub session_count: usize,
     /// 最后活跃时间（毫秒时间戳）
     pub last_active: Option<u64>,

@@ -600,17 +600,11 @@ impl DaemonService {
             session_reader::Order::Asc
         };
 
-        // 构建会话文件路径
-        let reader = self.reader.read().await;
-        let encoded_dir = reader
-            .get_encoded_dir_name(project_path)
-            .unwrap_or_else(|| ClaudeReader::encode_path(project_path));
-
-        let home = std::env::var("HOME").unwrap_or_default();
-        let session_path = format!(
-            "{}/.claude/projects/{}/{}.jsonl",
-            home, encoded_dir, session_id
-        );
+        // 获取会话文件路径
+        let mut reader = self.reader.write().await;
+        let session_path = reader
+            .get_session_path(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
 
         // 使用 read_messages_raw 返回原始 JSONL 格式，不做转换
         let result = reader.read_messages_raw(&session_path, limit, offset, order)?;
@@ -656,16 +650,11 @@ impl DaemonService {
             .await
             .insert(session_id.to_string());
 
-        let reader = self.reader.read().await;
-        let encoded_dir = reader
-            .get_encoded_dir_name(project_path)
-            .unwrap_or_else(|| ClaudeReader::encode_path(project_path));
-
-        let home = std::env::var("HOME").unwrap_or_default();
-        let session_path = PathBuf::from(format!(
-            "{}/.claude/projects/{}/{}.jsonl",
-            home, encoded_dir, session_id
-        ));
+        let mut reader = self.reader.write().await;
+        let session_path = reader
+            .get_session_path(session_id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+        let session_path = PathBuf::from(session_path);
 
         self.session_watcher
             .watch_session(session_id, &session_path, project_path)
@@ -1238,7 +1227,8 @@ impl DaemonService {
         let msg_input = MessageInput {
             uuid,
             r#type: msg_type,
-            content,
+            content_text: content.clone(),
+            content_full: content,
             timestamp,
             sequence: 0,
             source: Some("claude".to_string()),

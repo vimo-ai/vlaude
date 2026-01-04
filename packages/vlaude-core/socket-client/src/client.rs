@@ -2,7 +2,7 @@
 
 use crate::error::SocketError;
 use crate::events::*;
-use crate::registry::{DaemonInfo, ServiceRegistry, ServiceRegistryConfig, SessionInfo};
+use crate::registry::{DaemonInfo, ServiceEventType, ServiceRegistry, ServiceRegistryConfig, SessionInfo};
 use anyhow::Result;
 use native_tls::{Certificate, Identity, TlsConnector};
 use rust_socketio::{
@@ -99,12 +99,18 @@ pub struct SocketClient {
     current_url: Arc<RwLock<String>>,
     /// 心跳任务句柄
     keepalive_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    /// 事件监听任务句柄（监听 Server online 事件触发重连）
+    event_listener_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
+    /// 重连通知 channel
+    reconnect_tx: mpsc::Sender<()>,
+    reconnect_rx: Arc<RwLock<mpsc::Receiver<()>>>,
 }
 
 impl SocketClient {
     /// 创建客户端
     pub fn new(config: SocketConfig) -> Self {
         let (event_tx, event_rx) = mpsc::channel(100);
+        let (reconnect_tx, reconnect_rx) = mpsc::channel(1);
         let current_url = config.url.clone();
 
         Self {
@@ -116,6 +122,9 @@ impl SocketClient {
             registry: Arc::new(RwLock::new(None)),
             current_url: Arc::new(RwLock::new(current_url)),
             keepalive_handle: Arc::new(RwLock::new(None)),
+            event_listener_handle: Arc::new(RwLock::new(None)),
+            reconnect_tx,
+            reconnect_rx: Arc::new(RwLock::new(reconnect_rx)),
         }
     }
 
@@ -273,26 +282,136 @@ impl SocketClient {
         }
     }
 
+    /// 启动事件监听任务（监听 Server online 事件触发重连）
+    async fn start_event_listener(&self) {
+        // 停止旧的监听任务
+        self.stop_event_listener().await;
+
+        let registry = self.registry.clone();
+        let reconnect_tx = self.reconnect_tx.clone();
+        let connected = self.connected.clone();
+
+        let handle = tokio::spawn(async move {
+            // 获取 registry 的事件接收器
+            let rx = {
+                let reg_guard = registry.read().await;
+                if let Some(ref reg) = *reg_guard {
+                    Some(reg.subscribe())
+                } else {
+                    None
+                }
+            };
+
+            if let Some(mut rx) = rx {
+                info!("[SocketClient] Event listener started");
+                loop {
+                    match rx.recv().await {
+                        Ok(event) => {
+                            // 只处理 server online 事件
+                            if event.service == "server" && event.event_type == ServiceEventType::Online {
+                                let is_connected = connected.load(Ordering::SeqCst);
+                                if !is_connected {
+                                    info!(
+                                        "[SocketClient] Server online detected: {:?}, triggering reconnect",
+                                        event.address
+                                    );
+                                    // 发送重连信号
+                                    let _ = reconnect_tx.send(()).await;
+                                } else {
+                                    debug!("[SocketClient] Server online but already connected, ignoring");
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!("[SocketClient] Event receiver error: {}, resubscribing...", e);
+                            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+                            // 尝试重新订阅
+                            let reg_guard = registry.read().await;
+                            if let Some(ref reg) = *reg_guard {
+                                rx = reg.subscribe();
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        *self.event_listener_handle.write().await = Some(handle);
+    }
+
+    /// 停止事件监听任务
+    async fn stop_event_listener(&self) {
+        if let Some(handle) = self.event_listener_handle.write().await.take() {
+            handle.abort();
+            info!("[SocketClient] Event listener stopped");
+        }
+    }
+
+    /// 等待重连信号（阻塞直到收到信号）
+    pub async fn wait_for_reconnect(&self) -> bool {
+        self.reconnect_rx.write().await.recv().await.is_some()
+    }
+
+    /// 尝试接收重连信号（非阻塞）
+    pub async fn try_recv_reconnect(&self) -> bool {
+        self.reconnect_rx.write().await.try_recv().is_ok()
+    }
+
     /// 连接并自动发现（如果启用 Redis）
     pub async fn connect_with_discovery(&self) -> Result<(), SocketError> {
         // 1. 初始化 Redis
         self.init_registry().await?;
 
-        // 2. 尝试从 Redis 发现 Server
+        // 2. 启动事件监听（监听 Server online 事件）
+        self.start_event_listener().await;
+
+        // 3. 尝试从 Redis 发现 Server
         if let Some(server_addr) = self.discover_server().await? {
-            // 使用发现的地址
-            *self.current_url.write().await = server_addr;
+            // 使用发现的地址（添加 https:// 协议前缀）
+            *self.current_url.write().await = format!("https://{}", server_addr);
         }
 
-        // 3. 连接 Socket
+        // 4. 连接 Socket
         self.connect().await?;
 
-        // 4. 注册到 Redis
+        // 5. 注册到 Redis
         self.register_daemon_to_redis().await?;
 
-        // 5. 启动心跳
+        // 6. 启动心跳
         self.start_keepalive().await;
 
+        Ok(())
+    }
+
+    /// 重新连接（Server 重启后调用）
+    pub async fn reconnect(&self) -> Result<(), SocketError> {
+        info!("[SocketClient] Reconnecting...");
+
+        // 1. 断开旧连接（但不注销 Redis）
+        self.stop_keepalive().await;
+        if let Some(client) = self.client.write().await.take() {
+            let _ = client.disconnect().await;
+        }
+        self.connected.store(false, Ordering::SeqCst);
+
+        // 2. 重新发现 Server
+        if let Some(server_addr) = self.discover_server().await? {
+            // 添加 https:// 协议前缀
+            *self.current_url.write().await = format!("https://{}", server_addr);
+        }
+
+        // 3. 重新连接
+        self.connect().await?;
+
+        // 4. 重新注册到 Redis
+        self.register_daemon_to_redis().await?;
+
+        // 5. 重启心跳
+        self.start_keepalive().await;
+
+        info!("[SocketClient] Reconnected successfully");
         Ok(())
     }
 
@@ -653,10 +772,13 @@ impl SocketClient {
         // 1. 停止心跳任务
         self.stop_keepalive().await;
 
-        // 2. 从 Redis 注销（忽略错误，因为可能 Redis 已断开）
+        // 2. 停止事件监听任务
+        self.stop_event_listener().await;
+
+        // 3. 从 Redis 注销（忽略错误，因为可能 Redis 已断开）
         let _ = self.unregister_daemon_from_redis().await;
 
-        // 3. 断开 Socket
+        // 4. 断开 Socket
         if let Some(client) = self.client.write().await.take() {
             if let Err(e) = client.disconnect().await {
                 error!("Disconnect error: {:?}", e);
@@ -664,7 +786,7 @@ impl SocketClient {
         }
         self.connected.store(false, Ordering::SeqCst);
 
-        // 4. 断开 Redis
+        // 5. 断开 Redis
         if let Some(ref registry) = *self.registry.read().await {
             registry.disconnect().await;
         }
