@@ -27,13 +27,19 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: vimo-ai/ai-cli-session-db
-          path: ../claude-session-db
+          path: deps/claude-session-db
 
       - name: Checkout ai-cli-session-collector
         uses: actions/checkout@v4
         with:
           repository: vimo-ai/ai-cli-session-collector
-          path: ../ai-cli-session-collector
+          path: deps/ai-cli-session-collector
+
+      - name: Create symlinks for dependencies
+        run: |
+          # Create symlinks at the expected paths
+          ln -s $GITHUB_WORKSPACE/deps/claude-session-db $GITHUB_WORKSPACE/../claude-session-db
+          ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-collector $GITHUB_WORKSPACE/../ai-cli-session-collector
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
