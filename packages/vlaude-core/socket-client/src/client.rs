@@ -91,6 +91,8 @@ pub struct SocketClient {
     config: SocketConfig,
     client: Arc<RwLock<Option<Client>>>,
     connected: Arc<AtomicBool>,
+    /// 重连中标志（防止重连风暴）
+    reconnecting: Arc<AtomicBool>,
     event_tx: mpsc::Sender<(String, Value)>,
     event_rx: Arc<RwLock<mpsc::Receiver<(String, Value)>>>,
     /// Redis 服务注册中心（可选）
@@ -117,6 +119,7 @@ impl SocketClient {
             config,
             client: Arc::new(RwLock::new(None)),
             connected: Arc::new(AtomicBool::new(false)),
+            reconnecting: Arc::new(AtomicBool::new(false)),
             event_tx,
             event_rx: Arc::new(RwLock::new(event_rx)),
             registry: Arc::new(RwLock::new(None)),
@@ -283,13 +286,17 @@ impl SocketClient {
     }
 
     /// 启动事件监听任务（监听 Server online 事件触发重连）
+    ///
+    /// 修复：
+    /// 1. 移除 connected 检查 - 即使 connected=true 也触发重连（因为状态可能脏）
+    /// 2. 使用 reconnecting 标志防止重连风暴
     async fn start_event_listener(&self) {
         // 停止旧的监听任务
         self.stop_event_listener().await;
 
         let registry = self.registry.clone();
         let reconnect_tx = self.reconnect_tx.clone();
-        let connected = self.connected.clone();
+        let reconnecting = self.reconnecting.clone();
 
         let handle = tokio::spawn(async move {
             // 获取 registry 的事件接收器
@@ -309,16 +316,22 @@ impl SocketClient {
                         Ok(event) => {
                             // 只处理 server online 事件
                             if event.service == "server" && event.event_type == ServiceEventType::Online {
-                                let is_connected = connected.load(Ordering::SeqCst);
-                                if !is_connected {
-                                    info!(
-                                        "[SocketClient] Server online detected: {:?}, triggering reconnect",
-                                        event.address
-                                    );
-                                    // 发送重连信号
-                                    let _ = reconnect_tx.send(()).await;
+                                // 检查是否正在重连中（防止风暴）
+                                let is_reconnecting = reconnecting.load(Ordering::SeqCst);
+                                if is_reconnecting {
+                                    debug!("[SocketClient] Server online but already reconnecting, ignoring");
+                                    continue;
+                                }
+
+                                info!(
+                                    "[SocketClient] Server online detected: {:?}, triggering reconnect",
+                                    event.address
+                                );
+                                // 先尝试发送，成功后再设置标志（避免 send 失败导致标志卡住）
+                                if reconnect_tx.send(()).await.is_ok() {
+                                    reconnecting.store(true, Ordering::SeqCst);
                                 } else {
-                                    debug!("[SocketClient] Server online but already connected, ignoring");
+                                    warn!("[SocketClient] Failed to send reconnect signal, channel may be closed");
                                 }
                             }
                         }
@@ -389,30 +402,38 @@ impl SocketClient {
     pub async fn reconnect(&self) -> Result<(), SocketError> {
         info!("[SocketClient] Reconnecting...");
 
-        // 1. 断开旧连接（但不注销 Redis）
-        self.stop_keepalive().await;
-        if let Some(client) = self.client.write().await.take() {
-            let _ = client.disconnect().await;
-        }
-        self.connected.store(false, Ordering::SeqCst);
+        // 使用 scopeguard 模式确保 reconnecting 标志被重置
+        let result = async {
+            // 1. 断开旧连接（但不注销 Redis）
+            self.stop_keepalive().await;
+            if let Some(client) = self.client.write().await.take() {
+                let _ = client.disconnect().await;
+            }
+            self.connected.store(false, Ordering::SeqCst);
 
-        // 2. 重新发现 Server
-        if let Some(server_addr) = self.discover_server().await? {
-            // 添加 https:// 协议前缀
-            *self.current_url.write().await = format!("https://{}", server_addr);
-        }
+            // 2. 重新发现 Server
+            if let Some(server_addr) = self.discover_server().await? {
+                // 添加 https:// 协议前缀
+                *self.current_url.write().await = format!("https://{}", server_addr);
+            }
 
-        // 3. 重新连接
-        self.connect().await?;
+            // 3. 重新连接
+            self.connect().await?;
 
-        // 4. 重新注册到 Redis
-        self.register_daemon_to_redis().await?;
+            // 4. 重新注册到 Redis
+            self.register_daemon_to_redis().await?;
 
-        // 5. 重启心跳
-        self.start_keepalive().await;
+            // 5. 重启心跳
+            self.start_keepalive().await;
 
-        info!("[SocketClient] Reconnected successfully");
-        Ok(())
+            info!("[SocketClient] Reconnected successfully");
+            Ok(())
+        }.await;
+
+        // 无论成功失败，都重置 reconnecting 标志
+        self.reconnecting.store(false, Ordering::SeqCst);
+
+        result
     }
 
     /// 获取 ServiceRegistry 引用（用于外部访问）
@@ -740,6 +761,31 @@ impl SocketClient {
                     async move {
                         if let Some(data) = extract_payload(payload) {
                             let _ = tx.send(("server:sendMessage".into(), data)).await;
+                        }
+                    }
+                    .boxed()
+                }
+            })
+            // ETerm 专用事件（VlaudeKit 使用）
+            .on("server:injectToEterm", {
+                let tx = event_tx.clone();
+                move |payload, _| {
+                    let tx = tx.clone();
+                    async move {
+                        if let Some(data) = extract_payload(payload) {
+                            let _ = tx.send(("server:injectToEterm".into(), data)).await;
+                        }
+                    }
+                    .boxed()
+                }
+            })
+            .on("server:createSessionInEterm", {
+                let tx = event_tx.clone();
+                move |payload, _| {
+                    let tx = tx.clone();
+                    async move {
+                        if let Some(data) = extract_payload(payload) {
+                            let _ = tx.send(("server:createSessionInEterm".into(), data)).await;
                         }
                     }
                     .boxed()
