@@ -40,6 +40,8 @@ pub struct SocketClientHandle {
     runtime: Arc<Runtime>,
     /// 事件回调（下行事件）
     event_callback: Arc<RwLock<Option<EventCallback>>>,
+    /// 事件循环任务句柄（用于避免多次启动）
+    event_loop_handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
 }
 
 /// 事件回调类型
@@ -107,6 +109,7 @@ pub unsafe extern "C" fn socket_client_create(
             client: Arc::new(client),
             runtime: Arc::new(runtime),
             event_callback: Arc::new(RwLock::new(None)),
+            event_loop_handle: Arc::new(RwLock::new(None)),
         })
     }));
 
@@ -222,30 +225,54 @@ pub unsafe extern "C" fn socket_client_set_event_callback(
 }
 
 /// 启动事件接收循环
+///
+/// 修复：
+/// 1. 使用 match 而非 if let，正确处理 channel 关闭（None）
+/// 2. 不在 __disconnected 时退出，让事件传递给 Swift 后继续循环
+/// 3. 存储 JoinHandle，避免多次启动重复消费
 fn start_event_loop(handle: &SocketClientHandle) {
     let client = handle.client.clone();
     let callback_holder = handle.event_callback.clone();
+    let event_loop_holder = handle.event_loop_handle.clone();
 
-    handle.runtime.spawn(async move {
+    // 先停止旧的事件循环（如果存在）
+    handle.runtime.block_on(async {
+        let mut guard = event_loop_holder.write().await;
+        if let Some(old_handle) = guard.take() {
+            old_handle.abort();
+        }
+    });
+
+    let join_handle = handle.runtime.spawn(async move {
         loop {
-            if let Some((event, data)) = client.recv_event().await {
-                let callback = callback_holder.read().await;
-                if let Some(ref cb) = *callback {
-                    // 转换为 C 字符串
-                    if let (Ok(event_c), Ok(data_c)) = (
-                        CString::new(event.clone()),
-                        CString::new(data.to_string()),
-                    ) {
-                        (cb.callback)(event_c.as_ptr(), data_c.as_ptr(), cb.user_data);
+            match client.recv_event().await {
+                Some((event, data)) => {
+                    let callback = callback_holder.read().await;
+                    if let Some(ref cb) = *callback {
+                        // 转换为 C 字符串
+                        if let (Ok(event_c), Ok(data_c)) = (
+                            CString::new(event.clone()),
+                            CString::new(data.to_string()),
+                        ) {
+                            (cb.callback)(event_c.as_ptr(), data_c.as_ptr(), cb.user_data);
+                        }
                     }
+                    // 注意：不在 __disconnected 时 break
+                    // 让 Swift 层处理断开事件，循环继续等待重连后的新事件
                 }
-
-                // 检查是否断开
-                if event == "__disconnected" {
+                None => {
+                    // Channel 关闭（所有 sender 已 drop），退出循环
+                    eprintln!("[SocketClient FFI] Event channel closed, exiting event loop");
                     break;
                 }
             }
         }
+    });
+
+    // 存储 JoinHandle
+    handle.runtime.block_on(async {
+        let mut guard = event_loop_holder.write().await;
+        *guard = Some(join_handle);
     });
 }
 
@@ -1004,6 +1031,7 @@ pub unsafe extern "C" fn socket_client_create_with_redis(
             client: Arc::new(client),
             runtime: Arc::new(runtime),
             event_callback: Arc::new(RwLock::new(None)),
+            event_loop_handle: Arc::new(RwLock::new(None)),
         })
     }));
 
