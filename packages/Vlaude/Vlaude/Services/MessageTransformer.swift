@@ -825,10 +825,13 @@ class MessageTransformer {
             return "\(flag)"
         case .null:
             return "null"
-        case .array(let arr):
-            return "[\(arr.count) items]"
-        case .object(let dict):
-            return "{\(dict.count) fields}"
+        case .array, .object:
+            // 数组和对象需要序列化为 JSON 字符串
+            if let data = try? JSONEncoder().encode(value),
+               let jsonString = String(data: data, encoding: .utf8) {
+                return jsonString
+            }
+            return ""
         }
     }
 }
