@@ -774,10 +774,17 @@ export class DaemonGateway
   }
 
   /**
-   * 向 ETerm 注入消息（通过 Daemon 转发）
+   * 向 ETerm 注入消息（通过广播给所有 Daemon）
    * 注意：现在从 Redis 读取状态，已改为 async
+   *
+   * 改进：广播给所有连接的 daemon，让拥有 sessionId 的 daemon 处理
+   * 这样可以确保消息到达 VlaudeKit（Swift 插件），而不是只发给第一个 daemon
+   *
+   * @param sessionId 会话ID
+   * @param text 消息内容
+   * @param clientMessageId 客户端生成的消息ID，用于乐观更新去重
    */
-  async injectMessageToEterm(sessionId: string, text: string): Promise<boolean> {
+  async injectMessageToEterm(sessionId: string, text: string, clientMessageId?: string): Promise<boolean> {
     const online = await this.isEtermOnline();
     if (!online) {
       this.logger.warn('❌ ETerm 未在线，无法注入消息');
@@ -790,24 +797,21 @@ export class DaemonGateway
       return false;
     }
 
-    const daemons = Array.from(this.connectedDaemons.values());
-    if (daemons.length === 0) {
-      this.logger.warn('❌ 没有 Daemon 连接，无法注入消息');
-      return false;
-    }
-
-    const daemon = daemons[0];
-    daemon.socket.emit('server:injectToEterm', {
+    // 广播给所有连接的 daemon，让拥有 sessionId 的 daemon 处理
+    // VlaudeKit 和 vlaude-daemon-rs 都连接到 /daemon namespace
+    // 只有实际拥有该 sessionId 的 daemon 会处理这个事件
+    this.server.emit('server:injectToEterm', {
       sessionId,
       text,
+      clientMessageId,  // 透传 clientMessageId，用于消息去重
     });
 
-    this.logger.log(`💉 [ETerm] 发送注入请求: session=${sessionId}`);
+    this.logger.log(`💉 [ETerm] 广播注入请求: session=${sessionId}, text.length=${text.length}, clientMsgId=${clientMessageId || 'N/A'}`);
     return true;
   }
 
   /**
-   * 请求 ETerm 创建新的 Claude 会话
+   * 请求 ETerm 创建新的 Claude 会话（通过广播给所有 Daemon）
    * 注意：现在从 Redis 读取状态，已改为 async
    * @param projectPath 项目路径
    * @param prompt 可选的初始提示词
@@ -821,25 +825,19 @@ export class DaemonGateway
       return false;
     }
 
-    const daemons = Array.from(this.connectedDaemons.values());
-    if (daemons.length === 0) {
-      this.logger.warn('❌ 没有 Daemon 连接，无法创建会话');
-      return false;
-    }
-
-    const daemon = daemons[0];
-    daemon.socket.emit('server:createSessionInEterm', {
+    // 广播给所有 daemon，VlaudeKit 会处理
+    this.server.emit('server:createSessionInEterm', {
       projectPath,
       prompt,
       requestId,  // 透传 requestId
     });
 
-    this.logger.log(`🖥️ [ETerm] 请求创建会话: projectPath=${projectPath}, requestId=${requestId || 'N/A'}`);
+    this.logger.log(`🖥️ [ETerm] 广播创建会话请求: projectPath=${projectPath}, requestId=${requestId || 'N/A'}`);
     return true;
   }
 
   /**
-   * 通知 ETerm：Mobile 正在查看某个 session
+   * 通知 ETerm：Mobile 正在查看某个 session（通过广播给所有 Daemon）
    * 注意：现在从 Redis 读取状态，已改为 async
    */
   async notifyEtermMobileViewing(sessionId: string, isViewing: boolean): Promise<void> {
@@ -848,18 +846,13 @@ export class DaemonGateway
       return;
     }
 
-    const daemons = Array.from(this.connectedDaemons.values());
-    if (daemons.length === 0) {
-      return;
-    }
-
-    const daemon = daemons[0];
-    daemon.socket.emit('server:mobileViewing', {
+    // 广播给所有 daemon，VlaudeKit 会处理
+    this.server.emit('server:mobileViewing', {
       sessionId,
       isViewing,
     });
 
-    this.logger.log(`📱 [ETerm] Mobile ${isViewing ? '正在查看' : '离开了'} session ${sessionId}`);
+    this.logger.log(`📱 [ETerm] 广播 Mobile ${isViewing ? '正在查看' : '离开了'} session ${sessionId}`);
   }
 
   /**
