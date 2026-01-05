@@ -37,6 +37,9 @@ class SessionDetailViewModel: ObservableObject {
     private var currentSessionId: String?
     private var loadMessagesTask: Task<Void, Never>?
 
+    // clientMessageId 去重：存储待确认的消息 (clientMessageId -> 乐观更新的消息索引)
+    private var pendingMessages: [String: Int] = [:]
+
 
     func loadSessionDetail(sessionId: String) async {
         isLoading = true
@@ -85,18 +88,31 @@ class SessionDetailViewModel: ObservableObject {
             }
 
             Task { @MainActor in
-                print("📨 [SessionDetailViewModel] 收到新消息推送: \(newMessage.id)")
+                print("📨 [SessionDetailViewModel] 收到新消息推送: \(newMessage.id), type=\(newMessage.type)")
 
                 // 收到 assistant 响应，隐藏 loading
                 if newMessage.type == "assistant" {
                     self.isWaitingForResponse = false
                 }
 
-                // 避免重复添加
+                // clientMessageId 去重逻辑
+                if let clientMsgId = newMessage.clientMessageId,
+                   let pendingIndex = self.pendingMessages[clientMsgId] {
+                    // 找到匹配的乐观更新消息，用真实消息替换
+                    print("✅ [SessionDetailViewModel] clientMessageId 匹配成功: \(clientMsgId)")
+                    self.rawMessages[pendingIndex] = newMessage
+                    self.pendingMessages.removeValue(forKey: clientMsgId)
+                    self.displayMessages = self.messageTransformer.transform(messages: self.rawMessages)
+                    return
+                }
+
+                // 常规 uuid 去重
                 if !self.rawMessages.contains(where: { $0.id == newMessage.id }) {
                     self.rawMessages.append(newMessage)
                     // 重新转换所有消息
                     self.displayMessages = self.messageTransformer.transform(messages: self.rawMessages)
+                } else {
+                    print("⚠️ [SessionDetailViewModel] 消息已存在，跳过: \(newMessage.id)")
                 }
             }
         }
@@ -149,7 +165,10 @@ class SessionDetailViewModel: ObservableObject {
 
         let projectPath = session.project?.path ?? ""
 
-        print("📤 [SessionDetailViewModel] 发送消息: sessionId=\(sessionId)")
+        // 生成 clientMessageId 用于去重
+        let clientMessageId = UUID().uuidString
+
+        print("📤 [SessionDetailViewModel] 发送消息: sessionId=\(sessionId), clientMsgId=\(clientMessageId)")
 
         // 乐观更新：立即添加用户消息到本地列表
         let userMessage = Message(
@@ -199,8 +218,14 @@ class SessionDetailViewModel: ObservableObject {
             messageId: nil,
             snapshot: nil,
             isSnapshotUpdate: nil,
-            mergedToolExecutions: []
+            mergedToolExecutions: [],
+            clientMessageId: clientMessageId  // 携带 clientMessageId
         )
+
+        // 记录 pending 状态（存储消息索引，用于后续替换）
+        let messageIndex = rawMessages.count
+        pendingMessages[clientMessageId] = messageIndex
+
         rawMessages.append(userMessage)
         // 重新转换所有消息
         displayMessages = messageTransformer.transform(messages: rawMessages)
@@ -211,8 +236,8 @@ class SessionDetailViewModel: ObservableObject {
         // 显示等待响应状态
         isWaitingForResponse = true
 
-        // 发送消息到 Server
-        wsManager.sendMessage(text, sessionId: sessionId)
+        // 发送消息到 Server，携带 clientMessageId
+        wsManager.sendMessage(text, sessionId: sessionId, clientMessageId: clientMessageId)
     }
 
     func unsubscribeFromCurrentSession() {

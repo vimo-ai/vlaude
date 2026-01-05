@@ -722,18 +722,24 @@ class WebSocketManager: ObservableObject {
 
     // MARK: - 发送消息
 
-    func sendMessage(_ text: String, sessionId: String) {
+    func sendMessage(_ text: String, sessionId: String, clientMessageId: String? = nil) {
         guard isConnected else {
             print("⚠️ [Socket.IO] 未连接,无法发送消息")
             return
         }
 
-        socket.emit("message:send", [
+        var payload: [String: Any] = [
             "sessionId": sessionId,
             "text": text
-        ])
+        ]
 
-        print("📤 [Socket.IO] 已发送消息: sessionId=\(sessionId), length=\(text.count)")
+        if let clientMsgId = clientMessageId {
+            payload["clientMessageId"] = clientMsgId
+        }
+
+        socket.emit("message:send", payload)
+
+        print("📤 [Socket.IO] 已发送消息: sessionId=\(sessionId), length=\(text.count), clientMsgId=\(clientMessageId ?? "nil")")
     }
 
     // MARK: - 事件监听

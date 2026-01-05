@@ -188,6 +188,11 @@ struct Message: Identifiable, Codable {
     let snapshot: JSONValue?
     let isSnapshotUpdate: Bool?
 
+    // ========================================
+    // clientMessageId 去重字段
+    // ========================================
+    let clientMessageId: String?  // 客户端生成的消息 ID，用于乐观更新去重
+
     // 用于显示的合并后的工具执行结果（在 ViewModel 中填充）
     var mergedToolExecutions: [ToolExecution] = []
 
@@ -339,6 +344,9 @@ struct Message: Identifiable, Codable {
 
         // file-history-snapshot 字段
         case messageId, snapshot, isSnapshotUpdate
+
+        // clientMessageId 去重字段
+        case clientMessageId
     }
 }
 
