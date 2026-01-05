@@ -584,47 +584,45 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @SubscribeMessage('message:send')
   async handleMessageSend(
-    @MessageBody() data: { sessionId: string; text: string },
+    @MessageBody() data: { sessionId: string; text: string; clientMessageId?: string },
     @ConnectedSocket() client: Socket,
   ) {
-    const { sessionId, text } = data;
+    const { sessionId, text, clientMessageId } = data;
 
     this.logger.log(`📤 [消息发送] 收到来自 ${client.id} 的消息`);
     this.logger.log(`   Session: ${sessionId}`);
     this.logger.log(`   Text length: ${text.length}`);
+    this.logger.log(`   ClientMessageId: ${clientMessageId || 'N/A'}`);
 
-    // 获取客户端信息
-    const clientInfo = this.clients.get(client.id);
-    if (!clientInfo) {
-      this.logger.warn(`⚠️ [消息发送] 客户端 ${client.id} 未加入任何会话`);
-      return { success: false, message: '请先加入会话' };
-    }
-
-    // 检查 session 是否在 ETerm 中
+    // 优先检查 ETerm 路径（只需要 sessionId + text + clientMessageId）
     const inEterm = await this.daemonGateway.isSessionInEterm(sessionId);
     if (inEterm) {
       this.logger.log(`🖥️ [ETerm 注入] Session ${sessionId} 在 ETerm 中，使用注入方式`);
 
-      const injected = await this.daemonGateway.injectMessageToEterm(sessionId, text);
+      const injected = await this.daemonGateway.injectMessageToEterm(sessionId, text, clientMessageId);
 
       if (injected) {
         this.logger.log(`✅ [ETerm 注入] 消息已发送到 ETerm`);
         return { success: true, via: 'eterm' };
       } else {
         this.logger.warn(`⚠️ [ETerm 注入] 注入失败，回退到 SDK`);
-        // 回退到 SDK 方式（继续执行下面的代码）
       }
     }
 
+    // 回退到 SDK 方式（需要 clientInfo）
+    const clientInfo = this.clients.get(client.id);
+    if (!clientInfo) {
+      this.logger.warn(`⚠️ [消息发送] 客户端 ${client.id} 未加入会话，且 ETerm 不可用`);
+      return { success: false, message: '会话不可用' };
+    }
+
     try {
-      // V2: 只传递 projectPath，Daemon 内部查表
-      // V3: 添加 clientId 用于权限请求
       const response = await firstValueFrom(
         this.httpService.post(`${this.DAEMON_URL}/sessions/send-message`, {
           sessionId,
           text,
           projectPath: clientInfo.projectPath,
-          clientId: client.id,  // 添加 iOS 客户端 ID
+          clientId: client.id,
         }),
       );
 
