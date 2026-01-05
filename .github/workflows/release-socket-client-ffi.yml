@@ -23,6 +23,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Checkout claude-session-db
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/ai-cli-session-db
+          path: ../claude-session-db
+
+      - name: Checkout ai-cli-session-collector
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/ai-cli-session-collector
+          path: ../ai-cli-session-collector
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
