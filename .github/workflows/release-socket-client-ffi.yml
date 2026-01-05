@@ -64,8 +64,8 @@ jobs:
           # Get sha256
           SHA256=$(shasum -a 256 "$DYLIB_PATH" | cut -d' ' -f1)
 
-          # Get version from tag
-          VERSION=${GITHUB_REF#refs/tags/v}
+          # Get version from tag (strip socket-ffi-v prefix)
+          VERSION=${GITHUB_REF#refs/tags/socket-ffi-v}
 
           echo "path=$DYLIB_PATH" >> $GITHUB_OUTPUT
           echo "header=$HEADER_PATH" >> $GITHUB_OUTPUT
