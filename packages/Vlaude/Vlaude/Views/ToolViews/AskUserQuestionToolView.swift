@@ -70,8 +70,6 @@ struct AskUserQuestionToolView: View {
     }
 
     var body: some View {
-        let _ = print("🔍 [AskUserQuestion] needsUserInput: \(needsUserInput), result: \(String(describing: execution.result)), resultContent: '\(resultContent)'")
-
         VStack(alignment: .leading, spacing: 0) {
             // 头部
             HStack(spacing: 8) {
@@ -170,6 +168,14 @@ struct QuestionCard: View {
     let isInteractive: Bool
     let sessionId: String
 
+    // 本地状态：当前选中的选项索引
+    @State private var selectedIndex: Int?
+
+    // 是否已回答（本地选择或服务器返回）
+    private var hasAnswered: Bool {
+        selectedIndex != nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             // 问题头部
@@ -194,9 +200,18 @@ struct QuestionCard: View {
                         .cornerRadius(4)
                 }
 
-                // 等待输入指示
-                if isInteractive {
-                    Spacer()
+                Spacer()
+
+                // 状态指示
+                if hasAnswered {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text("已回答")
+                            .font(.system(size: 10))
+                            .foregroundColor(.green)
+                    }
+                } else if isInteractive {
                     HStack(spacing: 4) {
                         ProgressView()
                             .scaleEffect(0.6)
@@ -221,7 +236,8 @@ struct QuestionCard: View {
                             index: index,
                             multiSelect: question.multiSelect,
                             isInteractive: isInteractive,
-                            sessionId: sessionId
+                            sessionId: sessionId,
+                            selectedIndex: $selectedIndex
                         )
                     }
                 }
@@ -237,10 +253,23 @@ struct OptionRow: View {
     let multiSelect: Bool
     let isInteractive: Bool
     let sessionId: String
+    @Binding var selectedIndex: Int?
+
+    @State private var isSending = false
+
+    // 是否是当前选中的选项
+    private var isSelected: Bool {
+        selectedIndex == index
+    }
+
+    // 是否禁用（已有选择且不是当前选项）
+    private var isDisabled: Bool {
+        selectedIndex != nil && !isSelected
+    }
 
     var body: some View {
-        if isInteractive {
-            // 可交互模式 - 按钮
+        if isInteractive && selectedIndex == nil {
+            // 可交互模式 - 按钮（未选择状态）
             Button {
                 sendSelection()
             } label: {
@@ -252,18 +281,34 @@ struct OptionRow: View {
                     )
             }
             .buttonStyle(PlainButtonStyle())
+            .disabled(isSending)
+        } else if isSelected {
+            // 已选中状态 - 显示选中样式
+            optionContent
+                .background(Color.green.opacity(0.15))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(Color.green.opacity(0.5), lineWidth: 1.5)
+                )
         } else {
-            // 静态模式 - 普通展示
+            // 静态模式或已有其他选择 - 普通展示
             optionContent
                 .background(Color.gray.opacity(0.06))
+                .opacity(isDisabled ? 0.5 : 1.0)
         }
     }
 
     private var optionContent: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: multiSelect ? "square" : "circle")
-                .font(.system(size: 12))
-                .foregroundColor(isInteractive ? .indigo : .secondary)
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(.green)
+            } else {
+                Image(systemName: multiSelect ? "square" : "circle")
+                    .font(.system(size: 12))
+                    .foregroundColor(isInteractive && selectedIndex == nil ? .indigo : .secondary)
+            }
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(option.label)
@@ -279,7 +324,11 @@ struct OptionRow: View {
 
             Spacer()
 
-            if isInteractive {
+            if isSelected {
+                Text("已发送")
+                    .font(.system(size: 10))
+                    .foregroundColor(.green)
+            } else if isInteractive && selectedIndex == nil {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 10))
                     .foregroundColor(.indigo.opacity(0.6))
@@ -292,6 +341,12 @@ struct OptionRow: View {
     }
 
     private func sendSelection() {
+        guard !isSending else { return }
+        isSending = true
+
+        // 更新选中状态
+        selectedIndex = index
+
         // 发送选项索引到终端（1-based，因为 Claude Code 使用 1, 2, 3...）
         let inputText = "\(index + 1)"
         print("📤 [AskUserQuestion] 发送选择: \(inputText) (选项: \(option.label))")
