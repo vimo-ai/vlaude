@@ -218,8 +218,8 @@ class SessionDetailViewModel: ObservableObject {
             messageId: nil,
             snapshot: nil,
             isSnapshotUpdate: nil,
-            mergedToolExecutions: [],
-            clientMessageId: clientMessageId  // 携带 clientMessageId
+            clientMessageId: clientMessageId,  // 携带 clientMessageId
+            mergedToolExecutions: []
         )
 
         // 记录 pending 状态（存储消息索引，用于后续替换）
