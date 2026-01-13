@@ -78,39 +78,75 @@ struct ApprovalRequest: Codable {
     let description: String
 }
 
-// MARK: - Daemon 信息结构
-struct DaemonStatusInfo: Identifiable, Codable {
-    var id: String { deviceId }
-    let deviceId: String
-    let deviceName: String?
-    let platform: String?
-    let version: String?
-    var sessions: [DaemonSessionInfo]
-    let registeredAt: Int?
+// MARK: - Status Update Types
+
+/// Sessions 页面订阅返回的初始状态
+struct SessionsPageState {
+    let onlineSessions: [String]
 }
 
-struct DaemonSessionInfo: Codable {
-    let sessionId: String
+/// Sessions 状态更新（用于 Combine Publisher）
+struct SessionsStatusUpdate {
     let projectPath: String
+    let onlineSessions: [String]
+}
+
+/// Session 状态更新（单个 session 的 inEterm 状态）
+struct SessionStatusUpdate {
+    let sessionId: String
+    let inEterm: Bool
+}
+
+/// 订阅错误
+enum SubscriptionError: Error {
+    case notConnected
+    case timeout
+    case invalidResponse
 }
 
 // MARK: - WebSocket Manager
 class WebSocketManager: ObservableObject {
     static let shared = WebSocketManager()
 
+    // MARK: - Published State
+
     @Published var isConnected = false
     @Published var lastError: Error?
-    @Published var isEtermOnline = false  // ETerm 是否在线
-    @Published var etermSessionCounts: [String: Int] = [:]  // projectPath -> 在线会话数
+    @Published var isEtermOnline = false
+    @Published var etermSessionCounts: [String: Int] = [:]
 
-    // Daemon 状态（Redis 服务发现）
-    @Published var onlineDaemons: [String: DaemonStatusInfo] = [:]  // deviceId -> DaemonStatusInfo
+    // MARK: - Combine Publishers（状态推送）
 
-    // 事件回调
-    private var eventHandlers: [WebSocketEvent: [(WebSocketMessage) -> Void]] = [:]
+    /// Sessions 列表在线状态更新
+    let sessionsUpdatePublisher = PassthroughSubject<SessionsStatusUpdate, Never>()
 
-    // 记录已 join 的 session (sessionId -> projectPath)
+    /// 单个 Session 状态更新
+    let sessionUpdatePublisher = PassthroughSubject<SessionStatusUpdate, Never>()
+
+    // MARK: - Event Handler Token
+
+    /// 事件监听 Token，用于移除特定的监听器
+    struct EventHandlerToken: Hashable {
+        let id: UUID
+        let event: WebSocketEvent
+
+        init(event: WebSocketEvent) {
+            self.id = UUID()
+            self.event = event
+        }
+    }
+
+    /// 带 token 的事件处理器
+    private struct TokenizedHandler {
+        let token: EventHandlerToken
+        let handler: (WebSocketMessage) -> Void
+    }
+
+    // MARK: - Private State
+
+    private var eventHandlers: [WebSocketEvent: [TokenizedHandler]] = [:]
     private var joinedSessions: [String: String] = [:]
+    private var pendingSubscription: (page: PageType, projectPath: String?, sessionId: String?)?
 
     // Socket.IO Manager 和 Socket
     private var manager: SocketManager!
@@ -126,11 +162,6 @@ class WebSocketManager: ObservableObject {
         let useMTLS = CertificateManager.shared.isReady
         let protocol_ = useMTLS ? "https" : "http"
         let url = URL(string: "\(protocol_)://\(VlaudeConfig.serverURL)")!
-
-        print("✅ [Socket.IO] 使用 Token 设置连接: \(token.prefix(20))...")
-        if useMTLS {
-            print("🔐 [Socket.IO] mTLS 模式已启用")
-        }
 
         var config: SocketIOClientConfiguration = [
             .log(false),
@@ -161,21 +192,16 @@ class WebSocketManager: ObservableObject {
     private func setupEventHandlers() {
         // 连接成功
         socket.on(clientEvent: .connect) { [weak self] data, ack in
-            print("✅ [Socket.IO] 连接成功")
             DispatchQueue.main.async {
                 self?.isConnected = true
             }
 
-            // 主动查询 ETerm 状态（解决时序问题：ETerm 先启动时，错过了状态广播）
-            self?.queryEtermStatus()
-
-            // 主动查询所有在线 Daemon（Redis 服务发现）
-            self?.queryDaemons()
+            // Phase 3: 重试待订阅的页面
+            self?.retryPendingSubscription()
         }
 
         // 连接断开
         socket.on(clientEvent: .disconnect) { [weak self] data, ack in
-            print("❌ [Socket.IO] 连接断开")
             DispatchQueue.main.async {
                 self?.isConnected = false
             }
@@ -183,13 +209,10 @@ class WebSocketManager: ObservableObject {
 
         // 连接错误
         socket.on(clientEvent: .error) { [weak self] data, ack in
-            print("❌ [Socket.IO] 连接错误: \(data)")
-
             // 检查是否是认证错误
             if let errorDict = data.first as? [String: Any],
                let message = errorDict["message"] as? String {
                 if message.contains("Authentication") || message.contains("Token") {
-                    print("❌ [Socket.IO] 认证错误，清除 Token 并重新获取")
                     _ = AuthService.shared.deleteToken()
 
                     // 通知应用重新认证
@@ -209,61 +232,52 @@ class WebSocketManager: ObservableObject {
 
         // 重连中
         socket.on(clientEvent: .reconnect) { data, ack in
-            print("🔄 [Socket.IO] 重连成功")
         }
 
         // 重连尝试
         socket.on(clientEvent: .reconnectAttempt) { data, ack in
-            print("🔄 [Socket.IO] 尝试重连...")
         }
 
         // 监听业务事件
         socket.on("message:new") { [weak self] data, ack in
-            print("🔔 [Socket.IO] 原始 message:new 事件触发! data count: \(data.count)")
-            if let firstData = data.first {
-                print("🔔 [Socket.IO] 第一个数据类型: \(type(of: firstData))")
-                print("🔔 [Socket.IO] 第一个数据内容: \(firstData)")
-            }
             self?.handleBusinessEvent(.messageNew, data: data)
         }
 
         socket.on("project:updated") { [weak self] data, ack in
-            print("🔔 [Socket.IO] 原始 project:updated 事件触发!")
             self?.handleBusinessEvent(.projectUpdated, data: data)
         }
 
         socket.on("session:updated") { [weak self] data, ack in
-            print("🔔 [Socket.IO] 原始 session:updated 事件触发!")
             self?.handleBusinessEvent(.sessionUpdated, data: data)
         }
 
         // 监听 Session 列表更新（新 session 创建/删除）
         socket.on("session:listUpdate") { [weak self] data, ack in
-            print("🔔 [Socket.IO] 收到 session:listUpdate 事件!")
             self?.handleBusinessEvent(.sessionListUpdated, data: data)
         }
 
         // 监听权限请求
         socket.on("approval-request") { [weak self] data, ack in
-            print("🔔 [Socket.IO] 收到权限请求!")
             self?.handleApprovalRequest(data: data)
         }
 
         // 监听权限超时
         socket.on("approval-timeout") { [weak self] data, ack in
-            print("⏰ [Socket.IO] 收到权限超时通知!")
             self?.handleApprovalTimeout(data: data)
         }
 
         // 监听延迟响应
         socket.on("approval-expired") { [weak self] data, ack in
-            print("⚠️ [Socket.IO] 收到延迟响应通知!")
             self?.handleApprovalExpired(data: data)
+        }
+
+        // 监听 ETerm 审批确认
+        socket.on("approval-ack") { [weak self] data, ack in
+            self?.handleApprovalAck(data: data)
         }
 
         // 监听 SDK 错误
         socket.on("sdk-error") { [weak self] data, ack in
-            print("❌ [Socket.IO] 收到 SDK 错误通知!")
             self?.handleSDKError(data: data)
         }
 
@@ -272,151 +286,50 @@ class WebSocketManager: ObservableObject {
             self?.handleStatuslineMetricsUpdate(data: data)
         }
 
-        // 监听 ETerm 状态变化
-        socket.on("eterm:statusChanged") { [weak self] data, ack in
-            self?.handleEtermStatusChanged(data: data)
-        }
-
-        // 监听 ETerm 会话创建完成
+        // 监听 ETerm 会话创建完成（保留：用于创建会话回调）
         socket.on("eterm:sessionCreated") { [weak self] data, ack in
             self?.handleEtermSessionCreated(data: data)
         }
 
-        // 监听 ETerm 会话可用
-        socket.on("eterm:sessionAvailable") { [weak self] data, ack in
-            self?.handleEtermSessionAvailable(data: data)
+        // =================== StatusManager 状态事件（Phase 3）===================
+
+        // Daemon 上线（Server StatusManager 推送）
+        socket.on("status:daemonOnline") { [weak self] data, ack in
+            self?.handleStatusDaemonOnline(data: data)
         }
 
-        // 监听 ETerm 会话不可用
-        socket.on("eterm:sessionUnavailable") { [weak self] data, ack in
-            self?.handleEtermSessionUnavailable(data: data)
+        // Daemon 下线（Server StatusManager 推送）
+        socket.on("status:daemonOffline") { [weak self] data, ack in
+            self?.handleStatusDaemonOffline(data: data)
         }
 
-        // =================== Redis Daemon 状态事件 ===================
-
-        // 监听 Daemon 上线
-        socket.on("daemon:online") { [weak self] data, ack in
-            self?.handleDaemonOnline(data: data)
+        // 项目列表更新（sessionCounts 变化）
+        socket.on("status:projectsUpdate") { [weak self] data, ack in
+            self?.handleStatusProjectsUpdate(data: data)
         }
 
-        // 监听 Daemon 下线
-        socket.on("daemon:offline") { [weak self] data, ack in
-            self?.handleDaemonOffline(data: data)
+        // Session 列表更新（某项目的在线 sessions 变化）
+        socket.on("status:sessionsUpdate") { [weak self] data, ack in
+            self?.handleStatusSessionsUpdate(data: data)
         }
 
-        // 监听 Daemon Session 更新
-        socket.on("daemon:sessionUpdate") { [weak self] data, ack in
-            self?.handleDaemonSessionUpdate(data: data)
-        }
-    }
-
-    // MARK: - ETerm 状态处理
-
-    /// 主动查询 ETerm 状态（解决时序问题）
-    /// 当 Vlaude App 连接时，ETerm 可能已经在线，但错过了状态广播
-    private func queryEtermStatus() {
-        guard let socket = socket else { return }
-
-        socket.emitWithAck("app:queryEtermStatus", []).timingOut(after: 5) { [weak self] data in
-            // 检查是否超时
-            if let status = data.first as? String, status == "NO ACK" {
-                return
-            }
-
-            guard let response = data.first as? [String: Any] else { return }
-
-            let online = response["online"] as? Bool ?? false
-            let sessionCounts = response["sessionCounts"] as? [String: Int] ?? [:]
-
-            DispatchQueue.main.async {
-                self?.isEtermOnline = online
-                self?.etermSessionCounts = sessionCounts
-            }
+        // 单个 Session 状态更新（inEterm 状态）
+        socket.on("status:sessionUpdate") { [weak self] data, ack in
+            self?.handleStatusSessionUpdate(data: data)
         }
     }
 
-    private func handleEtermStatusChanged(data: [Any]) {
-        guard let payload = data.first as? [String: Any],
-              let online = payload["online"] as? Bool else {
-            print("⚠️ [Socket.IO] eterm:statusChanged 数据格式错误")
-            return
-        }
-
-        print("🖥️ [Socket.IO] ETerm 状态变化: \(online ? "在线" : "离线")")
-
-        DispatchQueue.main.async { [weak self] in
-            self?.isEtermOnline = online
-
-            // 如果离线，清空会话计数
-            if !online {
-                self?.etermSessionCounts = [:]
-            }
-        }
-    }
-
-    /// 处理 ETerm 会话可用事件
-    private func handleEtermSessionAvailable(data: [Any]) {
-        guard let payload = data.first as? [String: Any],
-              let sessionId = payload["sessionId"] as? String else {
-            print("⚠️ [Socket.IO] eterm:sessionAvailable 数据格式错误")
-            return
-        }
-
-        let projectPath = payload["projectPath"] as? String
-
-        print("🖥️ [Socket.IO] ETerm Session 可用: \(sessionId.prefix(8))...\(projectPath != nil ? " (\(projectPath!))" : "")")
-
-        // 更新会话计数
-        if let projectPath = projectPath {
-            DispatchQueue.main.async { [weak self] in
-                let currentCount = self?.etermSessionCounts[projectPath] ?? 0
-                self?.etermSessionCounts[projectPath] = currentCount + 1
-            }
-        }
-    }
-
-    /// 处理 ETerm 会话不可用事件
-    private func handleEtermSessionUnavailable(data: [Any]) {
-        guard let payload = data.first as? [String: Any],
-              let sessionId = payload["sessionId"] as? String else {
-            print("⚠️ [Socket.IO] eterm:sessionUnavailable 数据格式错误")
-            return
-        }
-
-        let projectPath = payload["projectPath"] as? String
-
-        print("🖥️ [Socket.IO] ETerm Session 不可用: \(sessionId.prefix(8))...\(projectPath != nil ? " (\(projectPath!))" : "")")
-
-        // 更新会话计数
-        if let projectPath = projectPath {
-            DispatchQueue.main.async { [weak self] in
-                let currentCount = self?.etermSessionCounts[projectPath] ?? 0
-                if currentCount > 0 {
-                    self?.etermSessionCounts[projectPath] = currentCount - 1
-                }
-                // 如果计数变为 0，从字典中移除
-                if self?.etermSessionCounts[projectPath] == 0 {
-                    self?.etermSessionCounts.removeValue(forKey: projectPath)
-                }
-            }
-        }
-    }
+    // MARK: - ETerm 会话创建
 
     /// 处理 ETerm 会话创建完成事件
     private func handleEtermSessionCreated(data: [Any]) {
         guard let payload = data.first as? [String: Any],
               let requestId = payload["requestId"] as? String,
               let sessionId = payload["sessionId"] as? String else {
-            print("⚠️ [Socket.IO] eterm:sessionCreated 数据格式错误")
             return
         }
 
         let projectPath = payload["projectPath"] as? String
-
-        print("🖥️ [Socket.IO] ETerm 会话创建完成:")
-        print("   RequestId: \(requestId)")
-        print("   SessionId: \(sessionId)")
-        print("   ProjectPath: \(projectPath ?? "N/A")")
 
         // 通过通知发送，让 SessionListView 监听并跳转
         NotificationCenter.default.post(
@@ -430,192 +343,153 @@ class WebSocketManager: ObservableObject {
         )
     }
 
-    // MARK: - Redis Daemon 状态处理
+    // MARK: - StatusManager 事件处理（Phase 3）
 
-    /// 主动查询所有在线 Daemon（解决时序问题）
-    func queryDaemons() {
-        guard let socket = socket else { return }
-
-        socket.emitWithAck("app:queryDaemons", []).timingOut(after: 5) { [weak self] data in
-            // 检查是否超时
-            if let status = data.first as? String, status == "NO ACK" {
-                print("⚠️ [Socket.IO] 查询 Daemon 列表超时")
-                return
-            }
-
-            guard let response = data.first as? [String: Any],
-                  let daemonList = response["daemons"] as? [[String: Any]] else {
-                print("⚠️ [Socket.IO] 解析 Daemon 列表失败")
-                return
-            }
-
-            print("📱 [Socket.IO] 查询到 \(daemonList.count) 个在线 Daemon")
-
-            DispatchQueue.main.async {
-                var daemons: [String: DaemonStatusInfo] = [:]
-
-                for daemonData in daemonList {
-                    guard let deviceId = daemonData["deviceId"] as? String else { continue }
-
-                    // 解析 sessions
-                    var sessions: [DaemonSessionInfo] = []
-                    if let sessionsData = daemonData["sessions"] as? [[String: Any]] {
-                        for sessionData in sessionsData {
-                            if let sessionId = sessionData["sessionId"] as? String,
-                               let projectPath = sessionData["projectPath"] as? String {
-                                sessions.append(DaemonSessionInfo(sessionId: sessionId, projectPath: projectPath))
-                            }
-                        }
-                    }
-
-                    let info = DaemonStatusInfo(
-                        deviceId: deviceId,
-                        deviceName: daemonData["deviceName"] as? String,
-                        platform: daemonData["platform"] as? String,
-                        version: daemonData["version"] as? String,
-                        sessions: sessions,
-                        registeredAt: daemonData["registeredAt"] as? Int
-                    )
-
-                    daemons[deviceId] = info
-                }
-
-                self?.onlineDaemons = daemons
-            }
-        }
-    }
-
-    /// 处理 Daemon 上线事件
-    private func handleDaemonOnline(data: [Any]) {
+    /// 处理 Daemon 上线事件（新架构）
+    private func handleStatusDaemonOnline(data: [Any]) {
         guard let payload = data.first as? [String: Any],
               let deviceId = payload["deviceId"] as? String else {
-            print("⚠️ [Socket.IO] daemon:online 数据格式错误")
             return
         }
 
-        let deviceName = payload["deviceName"] as? String
-        let platform = payload["platform"] as? String
+        let isReconnect = payload["isReconnect"] as? Bool ?? false
 
-        print("🟢 [Socket.IO] Daemon 上线: \(deviceId) (\(deviceName ?? "Unknown"))")
-
-        // 解析 sessions
-        var sessions: [DaemonSessionInfo] = []
-        if let sessionsData = payload["sessions"] as? [[String: Any]] {
-            for sessionData in sessionsData {
-                if let sessionId = sessionData["sessionId"] as? String,
-                   let projectPath = sessionData["projectPath"] as? String {
-                    sessions.append(DaemonSessionInfo(sessionId: sessionId, projectPath: projectPath))
-                }
-            }
-        }
+        // 解析 info（可选）
+        let info = payload["info"] as? [String: Any]
+        let deviceName = info?["deviceName"] as? String
+        let platform = info?["platform"] as? String
 
         DispatchQueue.main.async { [weak self] in
-            let info = DaemonStatusInfo(
-                deviceId: deviceId,
-                deviceName: deviceName,
-                platform: platform,
-                version: nil,
-                sessions: sessions,
-                registeredAt: nil
-            )
-            self?.onlineDaemons[deviceId] = info
+            // 更新 isEtermOnline（如果是 eterm 设备，支持 eterm-main 等变体）
+            if deviceId.hasPrefix("eterm") {
+                self?.isEtermOnline = true
+            }
 
-            // 发送通知供 ViewModel 使用
+            // 通过通知转发（供 ViewModel 使用）
             NotificationCenter.default.post(
-                name: NSNotification.Name("DaemonOnline"),
+                name: NSNotification.Name("StatusDaemonOnline"),
                 object: nil,
-                userInfo: ["deviceId": deviceId, "deviceName": deviceName ?? "Unknown"]
+                userInfo: [
+                    "deviceId": deviceId,
+                    "deviceName": deviceName ?? "Unknown",
+                    "platform": platform ?? "unknown",
+                    "isReconnect": isReconnect
+                ]
             )
         }
     }
 
-    /// 处理 Daemon 下线事件
-    private func handleDaemonOffline(data: [Any]) {
+    /// 处理 Daemon 下线事件（新架构）
+    private func handleStatusDaemonOffline(data: [Any]) {
         guard let payload = data.first as? [String: Any],
               let deviceId = payload["deviceId"] as? String else {
-            print("⚠️ [Socket.IO] daemon:offline 数据格式错误")
             return
         }
 
-        print("🔴 [Socket.IO] Daemon 下线: \(deviceId)")
+        let affectedProjects = payload["affectedProjects"] as? [String] ?? []
+
+        // 更新 sessionCounts（如果有）
+        if let sessionCounts = payload["sessionCounts"] as? [String: Int] {
+            DispatchQueue.main.async { [weak self] in
+                self?.etermSessionCounts = sessionCounts
+            }
+        }
 
         DispatchQueue.main.async { [weak self] in
-            self?.onlineDaemons.removeValue(forKey: deviceId)
+            // 更新 isEtermOnline（如果是 eterm 设备，支持 eterm-main 等变体）
+            if deviceId.hasPrefix("eterm") {
+                self?.isEtermOnline = false
+                self?.etermSessionCounts = [:]  // 清空会话计数
+            }
 
-            // 发送通知供 ViewModel 使用
+            // 通过通知转发
             NotificationCenter.default.post(
-                name: NSNotification.Name("DaemonOffline"),
+                name: NSNotification.Name("StatusDaemonOffline"),
                 object: nil,
-                userInfo: ["deviceId": deviceId]
+                userInfo: [
+                    "deviceId": deviceId,
+                    "affectedProjects": affectedProjects
+                ]
             )
         }
     }
 
-    /// 处理 Daemon Session 更新事件
-    private func handleDaemonSessionUpdate(data: [Any]) {
+    /// 处理项目列表更新事件（sessionCounts 变化）
+    private func handleStatusProjectsUpdate(data: [Any]) {
         guard let payload = data.first as? [String: Any],
-              let deviceId = payload["deviceId"] as? String else {
-            print("⚠️ [Socket.IO] daemon:sessionUpdate 数据格式错误")
+              let sessionCounts = payload["sessionCounts"] as? [String: Int] else {
             return
         }
 
-        print("📝 [Socket.IO] Daemon Session 更新: \(deviceId)")
-
-        // 解析 sessions
-        var sessions: [DaemonSessionInfo] = []
-        if let sessionsData = payload["sessions"] as? [[String: Any]] {
-            for sessionData in sessionsData {
-                if let sessionId = sessionData["sessionId"] as? String,
-                   let projectPath = sessionData["projectPath"] as? String {
-                    sessions.append(DaemonSessionInfo(sessionId: sessionId, projectPath: projectPath))
-                }
-            }
-        }
 
         DispatchQueue.main.async { [weak self] in
-            if var daemon = self?.onlineDaemons[deviceId] {
-                daemon.sessions = sessions
-                self?.onlineDaemons[deviceId] = daemon
-            }
+            self?.etermSessionCounts = sessionCounts
 
-            // 触发 sessionUpdated 事件，通知 SessionListViewModel 刷新
-            self?.handleBusinessEvent(.sessionUpdated, data: [["deviceId": deviceId, "sessions": sessions]])
+            // 通过通知转发
+            NotificationCenter.default.post(
+                name: NSNotification.Name("StatusProjectsUpdate"),
+                object: nil,
+                userInfo: ["sessionCounts": sessionCounts]
+            )
         }
+    }
+
+    /// 处理 Session 列表更新事件（某项目的在线 sessions 变化）
+    private func handleStatusSessionsUpdate(data: [Any]) {
+        guard let payload = data.first as? [String: Any],
+              let projectPath = payload["projectPath"] as? String,
+              let onlineSessions = payload["onlineSessions"] as? [String] else {
+            return
+        }
+
+
+        // 通过 Combine Publisher 推送（新架构）
+        sessionsUpdatePublisher.send(SessionsStatusUpdate(
+            projectPath: projectPath,
+            onlineSessions: onlineSessions
+        ))
+    }
+
+    /// 处理单个 Session 状态更新事件（inEterm 状态）
+    private func handleStatusSessionUpdate(data: [Any]) {
+        guard let payload = data.first as? [String: Any],
+              let sessionId = payload["sessionId"] as? String else {
+            return
+        }
+
+        let inEterm = payload["inEterm"] as? Bool ?? false
+
+
+        // 通过 Combine Publisher 推送（新架构）
+        sessionUpdatePublisher.send(SessionStatusUpdate(
+            sessionId: sessionId,
+            inEterm: inEterm
+        ))
     }
 
     private func handleBusinessEvent(_ event: WebSocketEvent, data: [Any]) {
-        print("📨 [Socket.IO] 收到事件: \(event.rawValue)")
-        print("📨 [Socket.IO] 当前事件回调数量: \(eventHandlers[event]?.count ?? 0)")
 
         guard let payload = data.first else {
-            print("⚠️ [Socket.IO] 事件数据为空")
             return
         }
 
-        print("📨 [Socket.IO] 开始解析 payload...")
 
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: payload)
-            print("📨 [Socket.IO] JSON 序列化成功，数据大小: \(jsonData.count) bytes")
 
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
 
             let message = try decoder.decode(WebSocketMessage.self, from: jsonData)
-            print("📨 [Socket.IO] 解码成功! sessionId: \(message.sessionId ?? "nil"), message: \(message.message != nil)")
 
             // 触发事件回调
             let handlerCount = eventHandlers[event]?.count ?? 0
-            print("📨 [Socket.IO] 准备触发 \(handlerCount) 个回调")
 
-            eventHandlers[event]?.forEach { handler in
-                print("📨 [Socket.IO] 调用回调...")
-                handler(message)
+            eventHandlers[event]?.forEach { tokenizedHandler in
+                tokenizedHandler.handler(message)
             }
         } catch {
-            print("❌ [Socket.IO] 解析消息失败: \(error)")
             if let decodingError = error as? DecodingError {
-                print("❌ [Socket.IO] 详细错误: \(decodingError)")
             }
         }
     }
@@ -625,8 +499,6 @@ class WebSocketManager: ObservableObject {
     func connect() {
         // 检查是否有 Token
         guard let token = AuthService.shared.getToken() else {
-            print("❌ [Socket.IO] 缺少 Token，无法连接")
-            print("⚠️ [Socket.IO] 请先调用 AuthService.ensureAuthenticated() 获取 Token")
             return
         }
 
@@ -636,23 +508,19 @@ class WebSocketManager: ObservableObject {
         }
 
         // 连接
-        print("🔌 [Socket.IO] 开始连接...")
         socket.connect()
     }
 
     func disconnect() {
-        print("🔌 [Socket.IO] 断开连接...")
         socket.disconnect()
     }
 
     /// 重新设置 Socket（用于 Token 更新后）
     func reconnectWithNewToken() {
         guard let token = AuthService.shared.getToken() else {
-            print("❌ [Socket.IO] Token 仍然缺失，无法重连")
             return
         }
 
-        print("🔄 [Socket.IO] Token 已更新，重新设置连接...")
 
         // 断开旧连接
         if socket != nil {
@@ -668,13 +536,11 @@ class WebSocketManager: ObservableObject {
 
     func joinSession(_ sessionId: String, projectPath: String) {
         guard isConnected else {
-            print("⚠️ [Socket.IO] 未连接,无法加入会话")
             return
         }
 
         // 避免重复 join
         if joinedSessions[sessionId] != nil {
-            print("⚠️ [Socket.IO] 会话已加入,跳过: \(sessionId)")
             return
         }
 
@@ -687,14 +553,10 @@ class WebSocketManager: ObservableObject {
         // 记录已 join 的 session
         joinedSessions[sessionId] = projectPath
 
-        print("📌 [Socket.IO] 已加入会话: \(sessionId)")
-        print("   项目路径: \(projectPath)")
-        print("   客户端类型: swift")
     }
 
     func subscribeToSession(_ sessionId: String, projectPath: String) {
         guard isConnected else {
-            print("⚠️ [Socket.IO] 未连接,无法订阅会话")
             return
         }
 
@@ -703,8 +565,6 @@ class WebSocketManager: ObservableObject {
             "projectPath": projectPath
         ])
 
-        print("📌 [Socket.IO] 已订阅会话: \(sessionId)")
-        print("   项目路径: \(projectPath)")
     }
 
     func unsubscribeFromSession(_ sessionId: String) {
@@ -717,14 +577,232 @@ class WebSocketManager: ObservableObject {
         // 清理 join 记录
         joinedSessions.removeValue(forKey: sessionId)
 
-        print("📌 [Socket.IO] 已取消订阅会话: \(sessionId)")
+    }
+
+    // MARK: - 页面订阅（StatusManager 新架构）
+
+    /// 页面类型枚举
+    enum PageType: String {
+        case projects = "projects"
+        case sessions = "sessions"
+        case chat = "chat"
+    }
+
+    /// 订阅页面状态更新
+    /// - Parameters:
+    ///   - page: 页面类型
+    ///   - projectPath: 项目路径（sessions 页面需要）
+    ///   - sessionId: 会话 ID（chat 页面需要）
+    func subscribe(page: PageType, projectPath: String? = nil, sessionId: String? = nil) {
+        // 保存待订阅信息（用于连接成功后重试）
+        pendingSubscription = (page, projectPath, sessionId)
+
+        guard isConnected else {
+            return
+        }
+
+        doSubscribe(page: page, projectPath: projectPath, sessionId: sessionId)
+    }
+
+    /// 执行订阅（内部方法）
+    private func doSubscribe(page: PageType, projectPath: String?, sessionId: String?) {
+        var payload: [String: Any] = ["page": page.rawValue]
+
+        if let projectPath = projectPath {
+            payload["projectPath"] = projectPath
+        }
+        if let sessionId = sessionId {
+            payload["sessionId"] = sessionId
+        }
+
+        // 使用 emitWithAck 接收初始状态
+        socket.emitWithAck("app:subscribe", payload).timingOut(after: 10) { [weak self] data in
+            guard let self = self else { return }
+
+
+            // 检查是否超时
+            if let status = data.first as? String, status == "NO ACK" {
+                return
+            }
+
+            guard let response = data.first as? [String: Any],
+                  let success = response["success"] as? Bool, success else {
+                return
+            }
+
+            // 处理初始状态
+            switch page {
+            case .projects:
+                DispatchQueue.main.async {
+                    if let isOnline = response["isEtermOnline"] as? Bool {
+                        self.isEtermOnline = isOnline
+                    }
+                    if let counts = response["sessionCounts"] as? [String: Int] {
+                        self.etermSessionCounts = counts
+                    }
+                }
+
+            case .sessions:
+                // 通过 Combine Publisher 推送
+                if let onlineSessions = response["onlineSessions"] as? [String],
+                   let path = projectPath {
+                    self.sessionsUpdatePublisher.send(SessionsStatusUpdate(
+                        projectPath: path,
+                        onlineSessions: onlineSessions
+                    ))
+                }
+
+            case .chat:
+                // 通过 Combine Publisher 推送
+                if let inEterm = response["inEterm"] as? Bool,
+                   let sid = sessionId {
+                    self.sessionUpdatePublisher.send(SessionStatusUpdate(
+                        sessionId: sid,
+                        inEterm: inEterm
+                    ))
+                }
+            }
+        }
+
+        if let projectPath = projectPath {
+        }
+        if let sessionId = sessionId {
+        }
+    }
+
+    /// 重试待订阅（连接成功后调用）
+    private func retryPendingSubscription() {
+        guard let pending = pendingSubscription else { return }
+
+        doSubscribe(page: pending.page, projectPath: pending.projectPath, sessionId: pending.sessionId)
+    }
+
+    // MARK: - Async Subscribe Methods（新架构）
+
+    /// 订阅 Sessions 页面，返回初始状态
+    /// - Parameter projectPath: 项目路径
+    /// - Returns: 初始在线 session 列表
+    func subscribeSessionsPage(projectPath: String) async throws -> SessionsPageState {
+        // 记录订阅信息，用于断线重连恢复
+        pendingSubscription = (.sessions, projectPath, nil)
+
+        if !isConnected {
+            try await waitForConnection()
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let payload: [String: Any] = [
+                "page": PageType.sessions.rawValue,
+                "projectPath": projectPath
+            ]
+
+            socket.emitWithAck("app:subscribe", payload).timingOut(after: 10) { [weak self] data in
+                if let status = data.first as? String, status == "NO ACK" {
+                    continuation.resume(throwing: SubscriptionError.timeout)
+                    return
+                }
+
+                guard let response = data.first as? [String: Any],
+                      let success = response["success"] as? Bool, success else {
+                    continuation.resume(throwing: SubscriptionError.invalidResponse)
+                    return
+                }
+
+                let onlineSessions = response["onlineSessions"] as? [String] ?? []
+
+                // 重连时通过 Publisher 推送初始状态
+                self?.sessionsUpdatePublisher.send(SessionsStatusUpdate(
+                    projectPath: projectPath,
+                    onlineSessions: onlineSessions
+                ))
+
+                continuation.resume(returning: SessionsPageState(onlineSessions: onlineSessions))
+            }
+        }
+    }
+
+    /// 订阅 Chat 页面，返回初始状态
+    /// - Parameter sessionId: 会话 ID
+    /// - Returns: 初始 inEterm 状态
+    func subscribeChatPage(sessionId: String) async throws -> SessionStatusUpdate {
+        // 记录订阅信息，用于断线重连恢复
+        pendingSubscription = (.chat, nil, sessionId)
+
+        if !isConnected {
+            try await waitForConnection()
+        }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let payload: [String: Any] = [
+                "page": PageType.chat.rawValue,
+                "sessionId": sessionId
+            ]
+
+            socket.emitWithAck("app:subscribe", payload).timingOut(after: 10) { [weak self] data in
+                if let status = data.first as? String, status == "NO ACK" {
+                    continuation.resume(throwing: SubscriptionError.timeout)
+                    return
+                }
+
+                guard let response = data.first as? [String: Any],
+                      let success = response["success"] as? Bool, success else {
+                    continuation.resume(throwing: SubscriptionError.invalidResponse)
+                    return
+                }
+
+                let inEterm = response["inEterm"] as? Bool ?? false
+
+                // 重连时通过 Publisher 推送初始状态
+                self?.sessionUpdatePublisher.send(SessionStatusUpdate(
+                    sessionId: sessionId,
+                    inEterm: inEterm
+                ))
+
+                continuation.resume(returning: SessionStatusUpdate(sessionId: sessionId, inEterm: inEterm))
+            }
+        }
+    }
+
+    /// 等待 WebSocket 连接（带超时）
+    private func waitForConnection(timeout: TimeInterval = 10) async throws {
+        let startTime = Date()
+
+        while !isConnected {
+            if Date().timeIntervalSince(startTime) > timeout {
+                throw SubscriptionError.notConnected
+            }
+            try await Task.sleep(nanoseconds: 100_000_000) // 100ms
+        }
+    }
+
+    /// 获取完整状态快照（首屏加载用）
+    /// - Parameter completion: 完成回调，返回快照数据
+    func getSnapshot(completion: @escaping ([String: Any]?) -> Void) {
+        guard isConnected else {
+            completion(nil)
+            return
+        }
+
+        socket.emitWithAck("app:getSnapshot", []).timingOut(after: 10) { data in
+            // 检查是否超时
+            if let status = data.first as? String, status == "NO ACK" {
+                completion(nil)
+                return
+            }
+
+            guard let snapshot = data.first as? [String: Any] else {
+                completion(nil)
+                return
+            }
+
+            completion(snapshot)
+        }
     }
 
     // MARK: - 发送消息
 
     func sendMessage(_ text: String, sessionId: String, clientMessageId: String? = nil) {
         guard isConnected else {
-            print("⚠️ [Socket.IO] 未连接,无法发送消息")
             return
         }
 
@@ -739,18 +817,30 @@ class WebSocketManager: ObservableObject {
 
         socket.emit("message:send", payload)
 
-        print("📤 [Socket.IO] 已发送消息: sessionId=\(sessionId), length=\(text.count), clientMsgId=\(clientMessageId ?? "nil")")
     }
 
     // MARK: - 事件监听
 
-    func on(_ event: WebSocketEvent, handler: @escaping (WebSocketMessage) -> Void) {
+    /// 注册事件监听，返回 token 用于后续移除
+    @discardableResult
+    func on(_ event: WebSocketEvent, handler: @escaping (WebSocketMessage) -> Void) -> EventHandlerToken {
+        let token = EventHandlerToken(event: event)
+        let tokenizedHandler = TokenizedHandler(token: token, handler: handler)
+
         if eventHandlers[event] == nil {
             eventHandlers[event] = []
         }
-        eventHandlers[event]?.append(handler)
+        eventHandlers[event]?.append(tokenizedHandler)
+
+        return token
     }
 
+    /// 移除特定的事件监听（按 token）
+    func off(token: EventHandlerToken) {
+        eventHandlers[token.event]?.removeAll { $0.token.id == token.id }
+    }
+
+    /// 移除某事件的所有监听（慎用，会影响其他模块）
     func off(_ event: WebSocketEvent) {
         eventHandlers[event] = nil
     }
@@ -758,10 +848,8 @@ class WebSocketManager: ObservableObject {
     // MARK: - 权限请求处理
 
     private func handleApprovalRequest(data: [Any]) {
-        print("🔐 [Socket.IO] 处理权限请求")
 
         guard let payload = data.first else {
-            print("⚠️ [Socket.IO] 权限请求数据为空")
             return
         }
 
@@ -770,13 +858,9 @@ class WebSocketManager: ObservableObject {
             let decoder = JSONDecoder()
             let request = try decoder.decode(ApprovalRequest.self, from: jsonData)
 
-            print("🔐 [Socket.IO] 权限请求解析成功:")
-            print("   RequestID: \(request.requestId)")
-            print("   Tool: \(request.toolName)")
-            print("   Description: \(request.description)")
 
             // 触发权限请求事件回调
-            eventHandlers[.approvalRequest]?.forEach { handler in
+            eventHandlers[.approvalRequest]?.forEach { tokenizedHandler in
                 // 将 ApprovalRequest 包装成 WebSocketMessage 格式
                 let message = WebSocketMessage(
                     sessionId: request.sessionId,
@@ -784,7 +868,7 @@ class WebSocketManager: ObservableObject {
                     projectPath: nil,
                     metadata: nil
                 )
-                handler(message)
+                tokenizedHandler.handler(message)
             }
 
             // 同时通过通知发送，方便 ViewModel 监听
@@ -793,48 +877,44 @@ class WebSocketManager: ObservableObject {
                 object: nil,
                 userInfo: [
                     "requestId": request.requestId,
+                    "sessionId": request.sessionId,
                     "toolName": request.toolName,
+                    "toolUseID": request.toolUseID,
+                    "input": request.input ?? [:],
                     "description": request.description
                 ]
             )
 
         } catch {
-            print("❌ [Socket.IO] 权限请求解析失败: \(error)")
         }
     }
 
     /// 发送权限响应
-    func sendApprovalResponse(requestId: String, approved: Bool, reason: String? = nil) {
+    /// - Parameters:
+    ///   - requestId: 请求 ID
+    ///   - sessionId: 会话 ID
+    ///   - action: 响应动作 (y=允许一次, n=拒绝, a=始终允许, 或 "n: 理由")
+    ///   - toolUseId: 工具调用 ID（用于 ETerm 返回 approval-ack），可选，旧的 Alert 审批方式不传此参数
+    func sendApprovalResponse(requestId: String, sessionId: String, action: String, toolUseId: String = "") {
         guard isConnected else {
-            print("⚠️ [Socket.IO] 未连接,无法发送权限响应")
             return
         }
 
-        var payload: [String: Any] = [
+        let payload: [String: Any] = [
             "requestId": requestId,
-            "approved": approved
+            "sessionId": sessionId,
+            "action": action,
+            "toolUseId": toolUseId
         ]
-
-        if let reason = reason {
-            payload["reason"] = reason
-        }
 
         socket.emit("approval-response", payload)
 
-        print("✅ [Socket.IO] 已发送权限响应:")
-        print("   RequestID: \(requestId)")
-        print("   Approved: \(approved)")
-        if let reason = reason {
-            print("   Reason: \(reason)")
-        }
     }
 
     /// 处理权限超时通知
     private func handleApprovalTimeout(data: [Any]) {
-        print("⏰ [Socket.IO] 处理权限超时")
 
         guard let payload = data.first else {
-            print("⚠️ [Socket.IO] 超时通知数据为空")
             return
         }
 
@@ -844,9 +924,6 @@ class WebSocketManager: ObservableObject {
                let requestId = json["requestId"] as? String,
                let message = json["message"] as? String {
 
-                print("⏰ [Socket.IO] 权限超时:")
-                print("   RequestID: \(requestId)")
-                print("   Message: \(message)")
 
                 // 通过通知发送，让 ViewModel 关闭 Alert
                 NotificationCenter.default.post(
@@ -859,16 +936,13 @@ class WebSocketManager: ObservableObject {
                 )
             }
         } catch {
-            print("❌ [Socket.IO] 超时通知解析失败: \(error)")
         }
     }
 
     /// 处理延迟响应通知
     private func handleApprovalExpired(data: [Any]) {
-        print("⚠️ [Socket.IO] 处理延迟响应")
 
         guard let payload = data.first else {
-            print("⚠️ [Socket.IO] 延迟响应数据为空")
             return
         }
 
@@ -878,9 +952,6 @@ class WebSocketManager: ObservableObject {
                let requestId = json["requestId"] as? String,
                let message = json["message"] as? String {
 
-                print("⚠️ [Socket.IO] 延迟响应:")
-                print("   RequestID: \(requestId)")
-                print("   Message: \(message)")
 
                 // 通过通知发送，让 UI 显示错误提示
                 NotificationCenter.default.post(
@@ -893,16 +964,50 @@ class WebSocketManager: ObservableObject {
                 )
             }
         } catch {
-            print("❌ [Socket.IO] 延迟响应解析失败: \(error)")
+        }
+    }
+
+    /// 处理 ETerm 审批确认
+    private func handleApprovalAck(data: [Any]) {
+
+        guard let payload = data.first else {
+            return
+        }
+
+        do {
+            let jsonData = try JSONSerialization.data(withJSONObject: payload)
+            if let json = try JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+               let toolUseId = json["toolUseId"] as? String,
+               let success = json["success"] as? Bool {
+
+                let message = json["message"] as? String
+
+                if let msg = message {
+                }
+
+                // 通过通知发送，让 ViewModel 更新状态
+                var userInfo: [String: Any] = [
+                    "toolUseId": toolUseId,
+                    "success": success
+                ]
+                if let msg = message {
+                    userInfo["message"] = msg
+                }
+
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("ApprovalAck"),
+                    object: nil,
+                    userInfo: userInfo
+                )
+            }
+        } catch {
         }
     }
 
     /// 处理 SDK 错误通知
     private func handleSDKError(data: [Any]) {
-        print("❌ [Socket.IO] 处理 SDK 错误")
 
         guard let payload = data.first else {
-            print("⚠️ [Socket.IO] SDK 错误数据为空")
             return
         }
 
@@ -914,10 +1019,6 @@ class WebSocketManager: ObservableObject {
                let errorType = error["type"] as? String,
                let errorMessage = error["message"] as? String {
 
-                print("❌ [Socket.IO] SDK 错误:")
-                print("   SessionId: \(sessionId)")
-                print("   Type: \(errorType)")
-                print("   Message: \(errorMessage)")
 
                 // 通过通知发送，让 ViewModel 停止 loading
                 NotificationCenter.default.post(
@@ -931,7 +1032,6 @@ class WebSocketManager: ObservableObject {
                 )
             }
         } catch {
-            print("❌ [Socket.IO] SDK 错误解析失败: \(error)")
         }
     }
 
@@ -985,7 +1085,6 @@ class WebSocketManager: ObservableObject {
                 )
             }
         } catch {
-            print("❌ [Socket.IO] Statusline 数据解析失败: \(error)")
         }
     }
 }
@@ -1027,9 +1126,7 @@ class SocketURLSessionDelegate: NSObject, URLSessionDelegate {
         if CertificateManager.shared.validateServerTrust(serverTrust, for: host) {
             let credential = URLCredential(trust: serverTrust)
             completionHandler(.useCredential, credential)
-            print("✅ [Socket.IO] 服务端证书验证通过: \(host)")
         } else {
-            print("❌ [Socket.IO] 服务端证书验证失败: \(host)")
             completionHandler(.cancelAuthenticationChallenge, nil)
         }
     }
@@ -1039,10 +1136,8 @@ class SocketURLSessionDelegate: NSObject, URLSessionDelegate {
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
         if let credential = CertificateManager.shared.getClientCredential() {
-            print("✅ [Socket.IO] 提供客户端证书")
             completionHandler(.useCredential, credential)
         } else {
-            print("❌ [Socket.IO] 无法提供客户端证书")
             completionHandler(.cancelAuthenticationChallenge, nil)
         }
     }

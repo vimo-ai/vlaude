@@ -584,208 +584,208 @@ impl SocketClient {
                 }
             })
             // Server events
-            .on("server:requestProjectData", {
+            .on(server_events::REQUEST_PROJECT_DATA, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:requestProjectData".into(), data)).await;
+                            let _ = tx.send((server_events::REQUEST_PROJECT_DATA.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:requestSessionMetadata", {
+            .on(server_events::REQUEST_SESSION_METADATA, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:requestSessionMetadata".into(), data)).await;
+                            let _ = tx.send((server_events::REQUEST_SESSION_METADATA.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:requestSessionMessages", {
+            .on(server_events::REQUEST_SESSION_MESSAGES, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:requestSessionMessages".into(), data)).await;
+                            let _ = tx.send((server_events::REQUEST_SESSION_MESSAGES.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:startWatching", {
+            .on(server_events::START_WATCHING, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:startWatching".into(), data)).await;
+                            let _ = tx.send((server_events::START_WATCHING.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:stopWatching", {
+            .on(server_events::STOP_WATCHING, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:stopWatching".into(), data)).await;
+                            let _ = tx.send((server_events::STOP_WATCHING.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:mobileViewing", {
+            .on(server_events::MOBILE_VIEWING, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:mobileViewing".into(), data)).await;
+                            let _ = tx.send((server_events::MOBILE_VIEWING.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
             // 缺失的服务器事件
-            .on("server:resumeLocal", {
+            .on(server_events::RESUME_LOCAL, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:resumeLocal".into(), data)).await;
+                            let _ = tx.send((server_events::RESUME_LOCAL.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:watchNewSession", {
+            .on(server_events::WATCH_NEW_SESSION, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:watchNewSession".into(), data)).await;
+                            let _ = tx.send((server_events::WATCH_NEW_SESSION.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:findNewSession", {
+            .on(server_events::FIND_NEW_SESSION, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:findNewSession".into(), data)).await;
+                            let _ = tx.send((server_events::FIND_NEW_SESSION.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:sessionDiscovered", {
+            .on(server_events::SESSION_DISCOVERED, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:sessionDiscovered".into(), data)).await;
+                            let _ = tx.send((server_events::SESSION_DISCOVERED.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:approvalResponse", {
+            .on(server_events::PERMISSION_RESPONSE, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:approvalResponse".into(), data)).await;
+                            let _ = tx.send((server_events::PERMISSION_RESPONSE.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:command", {
+            .on(server_events::COMMAND, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:command".into(), data)).await;
+                            let _ = tx.send((server_events::COMMAND.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
             // V3: 写操作事件（从 HTTP API 改为 WebSocket）
-            .on("server:createSession", {
+            .on(server_events::CREATE_SESSION, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:createSession".into(), data)).await;
+                            let _ = tx.send((server_events::CREATE_SESSION.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:checkLoading", {
+            .on(server_events::CHECK_LOADING, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:checkLoading".into(), data)).await;
+                            let _ = tx.send((server_events::CHECK_LOADING.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:sendMessage", {
+            .on(server_events::SEND_MESSAGE, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:sendMessage".into(), data)).await;
+                            let _ = tx.send((server_events::SEND_MESSAGE.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
             // ETerm 专用事件（VlaudeKit 使用）
-            .on("server:injectToEterm", {
+            .on(server_events::INJECT_TO_ETERM, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:injectToEterm".into(), data)).await;
+                            let _ = tx.send((server_events::INJECT_TO_ETERM.into(), data)).await;
                         }
                     }
                     .boxed()
                 }
             })
-            .on("server:createSessionInEterm", {
+            .on(server_events::CREATE_SESSION_IN_ETERM, {
                 let tx = event_tx.clone();
                 move |payload, _| {
                     let tx = tx.clone();
                     async move {
                         if let Some(data) = extract_payload(payload) {
-                            let _ = tx.send(("server:createSessionInEterm".into(), data)).await;
+                            let _ = tx.send((server_events::CREATE_SESSION_IN_ETERM.into(), data)).await;
                         }
                     }
                     .boxed()
@@ -931,7 +931,7 @@ impl SocketClient {
     /// 注册 daemon
     pub async fn register(&self, data: RegisterData) -> Result<Value, SocketError> {
         // 暂时用普通 emit，避免 ack 阻塞问题
-        self.emit("daemon:register", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::REGISTER, serde_json::to_value(data).unwrap())
             .await?;
         Ok(json!({"success": true}))
     }
@@ -941,7 +941,7 @@ impl SocketClient {
         let data = OnlineData {
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
-        self.emit("daemon:etermOnline", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::ETERM_ONLINE, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -950,7 +950,7 @@ impl SocketClient {
         let data = OfflineData {
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
-        self.emit("daemon:etermOffline", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::ETERM_OFFLINE, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -964,7 +964,7 @@ impl SocketClient {
             projects,
             request_id,
         };
-        self.emit("daemon:projectData", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::PROJECT_DATA, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -981,7 +981,7 @@ impl SocketClient {
             request_id,
         };
         self.emit(
-            "daemon:sessionMetadata",
+            daemon_events::SESSION_METADATA,
             serde_json::to_value(data).unwrap(),
         )
         .await
@@ -998,7 +998,7 @@ impl SocketClient {
             message,
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
-        self.emit("daemon:newMessage", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::NEW_MESSAGE, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1013,7 +1013,7 @@ impl SocketClient {
             metrics,
             timestamp: chrono::Utc::now().to_rfc3339(),
         };
-        self.emit("daemon:metricsUpdate", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::METRICS_UPDATE, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1035,7 +1035,7 @@ impl SocketClient {
             has_more,
             request_id,
         };
-        self.emit("daemon:sessionMessages", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::SESSION_MESSAGES, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1055,7 +1055,7 @@ impl SocketClient {
             project_path: project_path.to_string(),
             encoded_dir_name: encoded_dir_name.to_string(),
         };
-        self.emit("daemon:newSessionFound", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::NEW_SESSION_FOUND, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1069,7 +1069,7 @@ impl SocketClient {
             client_id: client_id.to_string(),
             project_path: project_path.to_string(),
         };
-        self.emit("daemon:newSessionNotFound", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::NEW_SESSION_NOT_FOUND, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1083,7 +1083,7 @@ impl SocketClient {
             client_id: client_id.to_string(),
             project_path: project_path.to_string(),
         };
-        self.emit("daemon:watchStarted", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::WATCH_STARTED, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1099,7 +1099,7 @@ impl SocketClient {
             session_id: session_id.to_string(),
             project_path: project_path.to_string(),
         };
-        self.emit("daemon:newSessionCreated", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::NEW_SESSION_CREATED, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1113,7 +1113,7 @@ impl SocketClient {
             project_path: project_path.to_string(),
             metadata,
         };
-        self.emit("daemon:projectUpdate", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::PROJECT_UPDATE, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1127,18 +1127,18 @@ impl SocketClient {
             session_id: session_id.to_string(),
             metadata,
         };
-        self.emit("daemon:sessionUpdate", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::SESSION_UPDATE, serde_json::to_value(data).unwrap())
             .await
     }
 
     /// 通知项目列表更新
     pub async fn notify_project_list_update(&self) -> Result<(), SocketError> {
-        self.emit("daemon:projectListUpdate", json!({})).await
+        self.emit(daemon_events::PROJECT_LIST_UPDATE, json!({})).await
     }
 
     /// 通知会话列表更新
     pub async fn notify_session_list_update(&self, project_path: &str) -> Result<(), SocketError> {
-        self.emit("daemon:sessionListUpdate", json!({ "projectPath": project_path }))
+        self.emit(daemon_events::SESSION_LIST_UPDATE, json!({ "projectPath": project_path }))
             .await
     }
 
@@ -1152,7 +1152,7 @@ impl SocketClient {
             session_id: session_id.to_string(),
             project_path: project_path.to_string(),
         };
-        self.emit("daemon:sessionDetailUpdate", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::SESSION_DETAIL_UPDATE, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1166,7 +1166,7 @@ impl SocketClient {
             session_id: session_id.to_string(),
             project_path: project_path.to_string(),
         };
-        self.emit("daemon:sessionRestored", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::SESSION_RESTORED, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1180,7 +1180,7 @@ impl SocketClient {
             session_id: session_id.to_string(),
             project_path: project_path.to_string(),
         };
-        self.emit("daemon:sessionDeleted", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::SESSION_DELETED, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1204,7 +1204,7 @@ impl SocketClient {
             tool_use_id: tool_use_id.to_string(),
             description: description.to_string(),
         };
-        self.emit("daemon:approvalRequest", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::PERMISSION_REQUEST, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1220,7 +1220,7 @@ impl SocketClient {
             session_id: session_id.to_string(),
             client_id: client_id.to_string(),
         };
-        self.emit("daemon:approvalTimeout", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::PERMISSION_TIMEOUT, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1234,7 +1234,7 @@ impl SocketClient {
             request_id: request_id.to_string(),
             message: message.to_string(),
         };
-        self.emit("daemon:approvalExpired", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::PERMISSION_EXPIRED, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1254,7 +1254,7 @@ impl SocketClient {
                 message: message.to_string(),
             },
         };
-        self.emit("daemon:sdkError", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::SDK_ERROR, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1268,7 +1268,7 @@ impl SocketClient {
             session_id: session_id.to_string(),
             project_path: project_path.to_string(),
         };
-        self.emit("daemon:swiftActivity", serde_json::to_value(data).unwrap())
+        self.emit(daemon_events::SWIFT_ACTIVITY, serde_json::to_value(data).unwrap())
             .await
     }
 
@@ -1292,7 +1292,7 @@ impl SocketClient {
             "transcriptPath": transcript_path,
             "error": error,
         });
-        self.emit("daemon:sessionCreatedResult", data).await
+        self.emit(daemon_events::SESSION_CREATED_RESULT, data).await
     }
 
     /// 发送加载状态检查结果
@@ -1305,7 +1305,7 @@ impl SocketClient {
             "requestId": request_id,
             "loading": loading,
         });
-        self.emit("daemon:checkLoadingResult", data).await
+        self.emit(daemon_events::CHECK_LOADING_RESULT, data).await
     }
 
     /// 发送消息发送结果
@@ -1322,7 +1322,7 @@ impl SocketClient {
             "message": message,
             "via": via,
         });
-        self.emit("daemon:sendMessageResult", data).await
+        self.emit(daemon_events::SEND_MESSAGE_RESULT, data).await
     }
 }
 

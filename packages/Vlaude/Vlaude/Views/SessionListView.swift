@@ -8,16 +8,30 @@
 import SwiftUI
 
 struct SessionListView: View {
+    // MARK: - Properties
+
     let projectPath: String
     let projectName: String
 
-    @StateObject private var viewModel = SessionListViewModel()
+    @StateObject private var viewModel: SessionListViewModel
     @ObservedObject private var wsManager = WebSocketManager.shared
+
     @State private var showingCreateAlert = false
     @State private var newSessionPrompt = ""
     @State private var navigateToSession: String?
     @State private var showingEtermAlert = false
-    @State private var pendingRequestId: String?  // 等待中的 ETerm 会话创建请求ID
+    @State private var pendingRequestId: String?
+
+    // MARK: - Initialization
+
+    init(projectPath: String, projectName: String) {
+        self.projectPath = projectPath
+        self.projectName = projectName
+        // ViewModel 在初始化时就拥有 projectPath
+        _viewModel = StateObject(wrappedValue: SessionListViewModel(projectPath: projectPath))
+    }
+
+    // MARK: - Body
 
     var body: some View {
         ZStack {
@@ -31,13 +45,13 @@ struct SessionListView: View {
                         .foregroundColor(.secondary)
                     Button("重试") {
                         Task {
-                            await viewModel.loadSessions(projectPath: projectPath, reset: true)
+                            await viewModel.loadSessions(reset: true)
                         }
                     }
                     .buttonStyle(.bordered)
                 }
             }
-            // 空状态 - 使用 ScrollView 支持下拉刷新
+            // 空状态
             else if viewModel.sessions.isEmpty && !viewModel.isLoading {
                 ScrollView {
                     VStack(spacing: 16) {
@@ -54,27 +68,27 @@ struct SessionListView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .refreshable {
-                    await viewModel.loadSessions(projectPath: projectPath, reset: true)
+                    await viewModel.loadSessions(reset: true)
                 }
             }
-            // 列表 - 始终保持稳定
+            // 列表
             else {
                 List {
                     ForEach(viewModel.sessions) { session in
                         NavigationLink {
-                            SessionDetailView(sessionId: session.sessionId)
+                            SessionDetailView(sessionId: session.id, projectPath: projectPath)
                         } label: {
                             SessionRow(session: session)
                         }
                     }
 
-                    // 加载更多按钮
+                    // 加载更多
                     if viewModel.hasMore {
                         HStack {
                             Spacer()
                             Button {
                                 Task {
-                                    await viewModel.loadSessions(projectPath: projectPath, reset: false)
+                                    await viewModel.loadSessions(reset: false)
                                 }
                             } label: {
                                 if viewModel.isLoadingMore {
@@ -92,11 +106,11 @@ struct SessionListView: View {
                     }
                 }
                 .refreshable {
-                    await viewModel.loadSessions(projectPath: projectPath, reset: true)
+                    await viewModel.loadSessions(reset: true)
                 }
             }
 
-            // 首次加载的 loading 覆盖层
+            // 首次加载 loading
             if viewModel.isLoading && viewModel.sessions.isEmpty {
                 Color.black.opacity(0.1)
                     .ignoresSafeArea()
@@ -122,12 +136,10 @@ struct SessionListView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
                     if wsManager.isEtermOnline {
-                        // ETerm 在线：直接创建，不需要输入 prompt
                         Task {
                             await createEtermSession()
                         }
                     } else {
-                        // ETerm 离线：弹出输入框走 SDK 模式
                         showingCreateAlert = true
                     }
                 } label: {
@@ -156,29 +168,36 @@ struct SessionListView: View {
             Text("创建新的 Claude Code 对话\n留空则发送默认消息 \"Hi\"")
         }
         .task {
-            await viewModel.loadSessions(projectPath: projectPath, reset: true)
+            // ViewModel 统一管理数据加载和状态订阅
+            await viewModel.startListening()
+        }
+        .onDisappear {
+            viewModel.stopListening()
+        }
+        .onChange(of: wsManager.isConnected) { oldValue, newValue in
+            // WebSocket 重连成功后自动刷新会话列表
+            if !oldValue && newValue {
+                Task {
+                    await viewModel.startListening()
+                }
+            }
         }
         .navigationDestination(item: $navigateToSession) { sessionId in
-            SessionDetailView(sessionId: sessionId)
+            SessionDetailView(sessionId: sessionId, projectPath: projectPath)
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("EtermSessionCreated"))) { notification in
-            // 处理 ETerm 会话创建完成事件
             guard let userInfo = notification.userInfo,
                   let requestId = userInfo["requestId"] as? String,
                   let sessionId = userInfo["sessionId"] as? String else {
                 return
             }
 
-            // 检查是否是我们等待的请求
             if let pending = pendingRequestId, pending == requestId {
-                print("✅ [SessionListView] 匹配到创建的会话: \(sessionId)")
                 pendingRequestId = nil
                 showingEtermAlert = false
-                // 自动跳转到新创建的会话
                 navigateToSession = sessionId
-                // 刷新列表
                 Task {
-                    await viewModel.loadSessions(projectPath: projectPath, reset: true)
+                    await viewModel.loadSessions(reset: true)
                 }
             }
         }
@@ -207,43 +226,34 @@ struct SessionListView: View {
         }
     }
 
-    /// SDK 模式创建会话（带 prompt 输入框）
+    // MARK: - Actions
+
+    /// SDK 模式创建会话
     private func createNewSession() async {
         let prompt = newSessionPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let finalPrompt = prompt.isEmpty ? nil : prompt
-
-        // 清空输入框
         newSessionPrompt = ""
 
-        // 创建会话
-        if let result = await viewModel.createSession(projectPath: projectPath, prompt: finalPrompt) {
+        if let result = await viewModel.createSession(prompt: finalPrompt) {
             switch result {
             case .session(let session):
-                // SDK 模式，直接跳转到会话详情
                 navigateToSession = session.sessionId
-
             case .etermPending(_, let requestId):
-                // ETerm 模式，保存 requestId 等待 WebSocket 通知
                 pendingRequestId = requestId
                 showingEtermAlert = true
             }
         }
     }
 
-    /// ETerm 模式创建会话（直接创建，不需要输入）
+    /// ETerm 模式创建会话
     private func createEtermSession() async {
-        // 生成 requestId
         let requestId = UUID().uuidString
 
-        // ETerm 模式不需要 prompt，直接创建
-        if let result = await viewModel.createSession(projectPath: projectPath, prompt: nil, requestId: requestId) {
+        if let result = await viewModel.createSession(prompt: nil, requestId: requestId) {
             switch result {
             case .session:
-                // 理论上 ETerm 在线时不会返回 session
                 break
-
             case .etermPending(_, let returnedRequestId):
-                // ETerm 模式，保存 requestId 等待 WebSocket 通知
                 pendingRequestId = returnedRequestId
                 showingEtermAlert = true
             }
@@ -258,7 +268,7 @@ struct SessionRow: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 // Session ID
-                Text(session.sessionId)
+                Text(session.id)
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.primary)
                     .lineLimit(1)
@@ -272,15 +282,21 @@ struct SessionRow: View {
                 }
 
                 Spacer(minLength: 8)
-                // 创建时间
-                Text(formatDate(session.createdAt))
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                // 时间（优先用 lastModified，兼容 createdAt）
+                if let ts = session.lastModified {
+                    Text(formatTimestamp(ts))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else if let date = session.createdAt {
+                    Text(formatDate(date))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
             }
 
             HStack {
                 // 消息数量
-                Text("\(session.messageCount) 条消息")
+                Text("\(session.messageCount ?? 0) 条消息")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 Spacer()
@@ -330,6 +346,12 @@ struct SessionRow: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "MM-dd HH:mm"
         return formatter.string(from: date)
+    }
+
+    /// V4: 格式化时间戳（毫秒）
+    private func formatTimestamp(_ ts: Int64) -> String {
+        let date = Date(timeIntervalSince1970: Double(ts) / 1000.0)
+        return formatDate(date)
     }
 }
 

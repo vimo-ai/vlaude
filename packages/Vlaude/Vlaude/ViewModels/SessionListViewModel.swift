@@ -17,29 +17,88 @@ enum CreateSessionResultType {
 
 @MainActor
 class SessionListViewModel: ObservableObject {
+    // MARK: - Published State
+
     @Published var sessions: [Session] = []
     @Published var isLoading = false
     @Published var isLoadingMore = false
     @Published var errorMessage: String?
     @Published var isCreatingSession = false
     @Published var hasMore = false
-    @Published var etermMessage: String?  // ETerm 模式的提示消息
+    @Published var etermMessage: String?
 
+    // MARK: - Dependencies
+
+    private let projectPath: String
     private let client = VlaudeClient.shared
     private let wsManager = WebSocketManager.shared
+
+    // MARK: - Private State
+
     private var loadTask: Task<Void, Never>?
     private var currentOffset = 0
     private let pageSize = 20
-    private var currentProjectPath: String?
+    private var cancellables = Set<AnyCancellable>()
+    private var isListening = false
+    private var sessionListUpdatedToken: WebSocketManager.EventHandlerToken?
 
-    init() {
-        setupWebSocketListeners()
+    // MARK: - Initialization
+
+    init(projectPath: String) {
+        self.projectPath = projectPath
     }
 
-    func loadSessions(projectPath: String, reset: Bool = false) async {
-        // 保存当前项目路径（用于 WebSocket 过滤）
-        currentProjectPath = projectPath
+    deinit {
+        // 清理订阅（非 MainActor 上下文，不能直接调用 stopListening）
+        // Combine cancellables 会自动清理
+    }
 
+    // MARK: - Lifecycle
+
+    /// 开始监听 - View 出现时调用
+    /// 加载数据 + 订阅状态更新
+    func startListening() async {
+        guard !isListening else { return }
+        isListening = true
+
+
+        // 1. 设置 WebSocket 事件监听
+        setupWebSocketListeners()
+
+        // 2. 加载初始数据
+        await loadSessions(reset: true)
+
+        // 检查是否已被取消（视图可能已消失）
+        guard isListening else {
+            return
+        }
+
+        // 3. 订阅状态更新并应用初始状态
+        await subscribeAndApplyInitialState()
+    }
+
+    /// 停止监听 - View 消失时调用
+    func stopListening() {
+        guard isListening else { return }
+        isListening = false
+
+
+        // 清理 WebSocket 监听
+        cleanupEventHandler()
+        cancellables.removeAll()
+    }
+
+    /// 清理事件监听（按 token 移除，不影响其他模块）
+    private func cleanupEventHandler() {
+        if let token = sessionListUpdatedToken {
+            wsManager.off(token: token)
+            sessionListUpdatedToken = nil
+        }
+    }
+
+    // MARK: - Data Loading
+
+    func loadSessions(reset: Bool = false) async {
         // 防止重复加载
         if loadTask != nil {
             return
@@ -56,7 +115,6 @@ class SessionListViewModel: ObservableObject {
 
             errorMessage = nil
 
-            // 使用 defer 确保状态一定会被重置
             defer {
                 isLoading = false
                 isLoadingMore = false
@@ -64,7 +122,6 @@ class SessionListViewModel: ObservableObject {
             }
 
             do {
-                // 检查是否被取消
                 try Task.checkCancellation()
 
                 let result = try await client.getSessions(
@@ -73,7 +130,6 @@ class SessionListViewModel: ObservableObject {
                     offset: currentOffset
                 )
 
-                // 再次检查取消状态(请求完成后)
                 try Task.checkCancellation()
 
                 if reset {
@@ -85,10 +141,7 @@ class SessionListViewModel: ObservableObject {
                 hasMore = result.hasMore
                 currentOffset += result.sessions.count
 
-                print("📱 [SessionListViewModel] 加载完成: 当前\(sessions.count)个, hasMore=\(hasMore)")
             } catch is CancellationError {
-                // Task 被取消,静默处理
-                print("⚠️ [SessionListViewModel] 加载被取消")
             } catch {
                 errorMessage = error.localizedDescription
             }
@@ -97,13 +150,9 @@ class SessionListViewModel: ObservableObject {
         await loadTask?.value
     }
 
-    /// 创建新会话
-    /// - Parameters:
-    ///   - projectPath: 项目路径
-    ///   - prompt: 可选的初始提示词(默认 "Hi")
-    ///   - requestId: 可选的请求ID，用于跟踪 ETerm 会话创建
-    /// - Returns: 创建结果（SDK 模式返回 Session，ETerm 模式返回提示和 requestId）
-    func createSession(projectPath: String, prompt: String? = nil, requestId: String? = nil) async -> CreateSessionResultType? {
+    // MARK: - Session Creation
+
+    func createSession(prompt: String? = nil, requestId: String? = nil) async -> CreateSessionResultType? {
         isCreatingSession = true
         errorMessage = nil
         etermMessage = nil
@@ -113,94 +162,104 @@ class SessionListViewModel: ObservableObject {
         }
 
         do {
-            let result = try await client.createSession(projectPath: projectPath, prompt: prompt, requestId: requestId)
+            let result = try await client.createSession(
+                projectPath: projectPath,
+                prompt: prompt,
+                requestId: requestId
+            )
 
             switch result {
             case .session(let session):
-                print("✅ [SessionListViewModel] 会话创建成功 (SDK): \(session.sessionId)")
-                // 创建成功后刷新列表
-                await loadSessions(projectPath: projectPath, reset: true)
+                await loadSessions(reset: true)
                 return .session(session)
 
             case .eterm(let message, let returnedRequestId):
-                print("🖥️ [SessionListViewModel] ETerm 模式: \(message), requestId: \(returnedRequestId)")
                 etermMessage = message
-                // ETerm 模式下，会话会通过 WebSocket 通知创建，这里先刷新列表
-                await loadSessions(projectPath: projectPath, reset: true)
+                await loadSessions(reset: true)
                 return .etermPending(message, returnedRequestId)
             }
         } catch {
             errorMessage = error.localizedDescription
-            print("❌ [SessionListViewModel] 创建会话失败: \(errorMessage ?? "")")
             return nil
         }
     }
 
-    /// 清除 ETerm 提示消息
     func clearEtermMessage() {
         etermMessage = nil
     }
 
-    // MARK: - WebSocket 热更新
+    // MARK: - Status Subscription
 
-    /// 设置 WebSocket 监听器
-    private func setupWebSocketListeners() {
-        wsManager.on(.sessionUpdated) { [weak self] message in
-            guard let self = self else { return }
-
-            print("🔔 [SessionListViewModel] 收到会话更新事件")
-
-            // 异步刷新会话列表（简单策略：重新加载）
-            Task { @MainActor in
-                guard let projectPath = self.currentProjectPath else {
-                    print("⚠️ [SessionListViewModel] 当前项目路径为空，跳过刷新")
-                    return
-                }
-
-                await self.refreshSilently(projectPath: projectPath)
+    /// 订阅状态更新并应用初始状态
+    private func subscribeAndApplyInitialState() async {
+        // 1. 先订阅 Combine Publisher（确保不丢失任何推送）
+        wsManager.sessionsUpdatePublisher
+            .filter { [weak self] update in
+                update.projectPath == self?.projectPath
             }
-        }
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] update in
+                guard let self = self, self.isListening else { return }
+                self.updateSessionsOnlineStatus(onlineSessions: update.onlineSessions)
+            }
+            .store(in: &cancellables)
 
+        // 2. 再发起订阅请求（初始状态会通过 Publisher 推送）
+        do {
+            _ = try await wsManager.subscribeSessionsPage(projectPath: projectPath)
+        } catch {
+        }
+    }
+
+    // MARK: - WebSocket Event Handlers
+
+    private func setupWebSocketListeners() {
         // 监听 Session 列表更新（新 session 创建/删除）
-        wsManager.on(.sessionListUpdated) { [weak self] message in
+        sessionListUpdatedToken = wsManager.on(.sessionListUpdated) { [weak self] message in
             guard let self = self else { return }
 
-            print("🔔 [SessionListViewModel] 收到 session 列表更新事件")
 
             // 检查是否是当前项目的更新
-            if let projectPath = message.projectPath,
-               projectPath == self.currentProjectPath {
-                Task { @MainActor in
-                    await self.refreshSilently(projectPath: projectPath)
-                }
-            } else if self.currentProjectPath != nil {
-                // 如果没有 projectPath 或者不匹配，也刷新当前列表
-                Task { @MainActor in
-                    if let projectPath = self.currentProjectPath {
-                        await self.refreshSilently(projectPath: projectPath)
-                    }
-                }
+            if let msgProjectPath = message.projectPath {
+                guard msgProjectPath == self.projectPath else { return }
+            }
+
+            Task { @MainActor in
+                await self.refreshSilently()
             }
         }
     }
 
-    /// 静默刷新（后台更新，不显示 loading）
-    private func refreshSilently(projectPath: String) async {
+    // MARK: - State Updates
+
+    private func updateSessionsOnlineStatus(onlineSessions: [String]) {
+        var updated = false
+        for i in sessions.indices {
+            let sessionId = sessions[i].id
+            let isOnline = onlineSessions.contains(sessionId)
+
+            if sessions[i].inEterm != isOnline {
+                sessions[i] = sessions[i].withInEterm(isOnline)
+                updated = true
+            }
+        }
+
+        if updated {
+        }
+    }
+
+    private func refreshSilently() async {
         do {
             let result = try await client.getSessions(
                 projectPath: projectPath,
-                limit: currentOffset + pageSize,  // 加载当前已显示的所有数据
+                limit: currentOffset + pageSize,
                 offset: 0
             )
 
-            // 更新会话列表
             sessions = result.sessions
             hasMore = result.hasMore
 
-            print("✅ [SessionListViewModel] 静默刷新完成: \(sessions.count) 个会话")
         } catch {
-            print("⚠️ [SessionListViewModel] 静默刷新失败: \(error.localizedDescription)")
-            // 静默失败，不显示错误信息
         }
     }
 }

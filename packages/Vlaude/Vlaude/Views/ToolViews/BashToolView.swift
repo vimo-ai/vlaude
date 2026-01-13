@@ -10,6 +10,7 @@ import SwiftUI
 /// Bash 工具视图 - 终端风格
 struct BashToolView: View {
     let execution: ToolExecution
+    var onApprovalAction: ((String) -> Void)? = nil  // 审批回调
     @State private var isExpanded = false
 
     private var command: String {
@@ -51,11 +52,34 @@ struct BashToolView: View {
                     .font(.system(size: 13, design: .monospaced))
                     .foregroundColor(.white)
                     .lineLimit(isExpanded ? nil : 3)
+
+                Spacer()
+
+                // 审批状态标签
+                ApprovalStatusBadge(status: execution.approvalStatus)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.black.opacity(0.9))
+
+            // 审批按钮（如果需要）
+            if execution.approvalStatus == .awaitingPermission, let onApprove = onApprovalAction {
+                ApprovalButtonsView(status: execution.approvalStatus, onApprove: onApprove)
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.black.opacity(0.9))
+            }
+
+            // 等待状态提示
+            if execution.approvalStatus == .pendingAck || execution.approvalStatus == .executing {
+                ApprovalButtonsView(status: execution.approvalStatus, onApprove: { _ in })
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.black.opacity(0.9))
+            }
 
             // 输出结果
             if execution.result != nil {
@@ -78,11 +102,31 @@ struct BashToolView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(Color.black.opacity(0.85))
             }
+
+            // 被拒绝或超时状态
+            if execution.approvalStatus == .rejected || execution.approvalStatus == .timeout {
+                ApprovalButtonsView(status: execution.approvalStatus, onApprove: { _ in })
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.black.opacity(0.9))
+            }
         }
         .cornerRadius(8)
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(isError ? Color.red.opacity(0.5) : Color.green.opacity(0.3), lineWidth: 1)
+                .stroke(borderColor, lineWidth: 1)
         )
+    }
+
+    private var borderColor: Color {
+        switch execution.approvalStatus {
+        case .awaitingPermission:
+            return .orange.opacity(0.5)
+        case .rejected, .timeout:
+            return .red.opacity(0.5)
+        default:
+            return isError ? Color.red.opacity(0.5) : Color.green.opacity(0.3)
+        }
     }
 }

@@ -55,6 +55,18 @@ export {
   type ServiceEvent,
   type ServiceEventType,
   type ServiceInfo,
-  type SessionInfo,
-  type DaemonInfo,
+  type SessionInfo as RegistrySessionInfo,
+  type DaemonInfo as RegistryDaemonInfo,
 } from './registry/ServiceRegistry';
+
+// Status - 在线状态管理
+export {
+  type IStatusManager,
+  type DaemonInfo as StatusDaemonInfo,
+  type SessionInfo as StatusSessionInfo,
+  type StatusSnapshot,
+  type StatusManagerConfig,
+} from './status/IStatusManager';
+
+export { MemoryStatusManager } from './status/MemoryStatusManager';
+export { RedisStatusManager } from './status/RedisStatusManager';

@@ -350,12 +350,25 @@ struct Message: Identifiable, Codable {
     }
 }
 
+// 工具执行审批状态
+public enum ToolApprovalStatus: Equatable {
+    case none                      // 不需要审批或未知
+    case awaitingPermission        // 等待用户审批
+    case pendingAck                // 用户已审批，等待 ETerm 确认
+    case executing                 // ETerm 确认收到，正在执行
+    case completed                 // 执行完成（有 tool_result）
+    case rejected                  // 用户拒绝
+    case timeout                   // 审批超时
+}
+
 // 工具执行信息
 public struct ToolExecution: Identifiable {
-    public let id: String
+    public let id: String          // tool_use_id
     public let name: String
     public let input: [String: String]  // 简化的参数存储
     public var result: ToolResult?
+    public var approvalStatus: ToolApprovalStatus  // 审批状态
+    public var approvalRequestId: String?          // 关联的权限请求 ID
 
     public struct ToolResult {
         public let content: String
@@ -369,11 +382,13 @@ public struct ToolExecution: Identifiable {
         }
     }
 
-    public init(id: String, name: String, input: [String: String], result: ToolResult?) {
+    public init(id: String, name: String, input: [String: String], result: ToolResult?, approvalStatus: ToolApprovalStatus = .none, approvalRequestId: String? = nil) {
         self.id = id
         self.name = name
         self.input = input
         self.result = result
+        self.approvalStatus = approvalStatus
+        self.approvalRequestId = approvalRequestId
     }
 
     // 格式化显示工具输入参数

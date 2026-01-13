@@ -10,248 +10,219 @@ import MarkdownUI
 
 struct SessionDetailView: View {
     let sessionId: String
+    let projectPath: String
 
     @StateObject private var viewModel = SessionDetailViewModel()
     @State private var inputText = ""
     @State private var selectedMessageForDetail: DisplayMessage?
 
-    // 权限请求相关状态
-    @State private var showApprovalAlert = false
-    @State private var currentApprovalRequest: (requestId: String, toolName: String, description: String)?
+    // 权限请求错误状态（审批按钮已移至 ToolView 内嵌方式）
     @State private var showTimeoutError = false
     @State private var showExpiredError = false
     @State private var errorMessage = ""
 
     var body: some View {
-        VStack(spacing: 0) {
-            // 消息列表
-            if viewModel.isLoading {
-                Spacer()
-                ProgressView("加载中...")
-                Spacer()
-            } else if let error = viewModel.errorMessage {
-                Spacer()
-                VStack(spacing: 16) {
-                    Image(systemName: "exclamationmark.triangle")
-                        .font(.system(size: 48))
-                        .foregroundColor(.orange)
-                    Text(error)
-                        .foregroundColor(.secondary)
-                    Button("重试") {
-                        Task {
-                            await viewModel.loadSessionDetail(sessionId: sessionId)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                }
-                Spacer()
-            } else if viewModel.displayMessages.isEmpty {
-                Spacer()
-                VStack(spacing: 16) {
-                    Image(systemName: "message")
-                        .font(.system(size: 48))
-                        .foregroundColor(.gray)
-                    Text("暂无消息")
-                        .foregroundColor(.secondary)
-                }
-                Spacer()
-            } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(spacing: 16) {
-                            // 「加载更多」按钮在顶部
-                            if viewModel.hasMore {
-                                Button {
-                                    // 直接调用 ViewModel 方法,不在视图层创建 Task
-                                    Task {
-                                        await viewModel.loadMessages(sessionId: sessionId)
-                                    }
-                                } label: {
-                                    if viewModel.isLoadingMore {
-                                        ProgressView()
-                                    } else {
-                                        Text("加载更早消息")
-                                            .foregroundColor(.blue)
-                                    }
-                                }
-                                .disabled(viewModel.isLoadingMore)  // 加载中禁用按钮
-                                .padding()
-                                .id("loadMoreButton")
-                            }
-
-                            // 消息列表
-                            ForEach(viewModel.displayMessages) { message in
-                                DisplayMessageBubble(message: message, sessionId: sessionId)
-                                    .id(message.id)
-                                    .contentShape(Rectangle())
-                                    .onTapGesture(count: 2) {
-                                        selectedMessageForDetail = message
-                                    }
-                            }
-
-                            // 等待响应的 loading 指示器
-                            if viewModel.isWaitingForResponse {
-                                HStack(spacing: 8) {
-                                    ProgressView()
-                                        .scaleEffect(0.8)
-                                    Text("Claude 正在思考...")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-                                }
-                                .padding(.vertical, 8)
-                                .id("waitingIndicator")
-                            }
-                        }
-                        .padding()
-                    }
-                    .onAppear {
-                        // 首次加载后滚动到底部（不使用动画）
-                        if let lastMessage = viewModel.displayMessages.last {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onChange(of: viewModel.displayMessages.count) { oldCount, newCount in
-                        // 消息数量变化时，如果是首次加载，滚动到底部（不使用动画）
-                        if newCount > oldCount {
-                            if let lastMessage = viewModel.displayMessages.last {
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                    proxy.scrollTo(lastMessage.id, anchor: .bottom)
-                                }
-                            }
-                        }
-                    }
-                    .onChange(of: viewModel.isWaitingForResponse) { oldValue, newValue in
-                        // 显示 loading 时自动滚动到底部
-                        if newValue {
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                withAnimation {
-                                    proxy.scrollTo("waitingIndicator", anchor: .bottom)
-                                }
-                            }
-                        }
-                    }
-                }
+        mainContent
+            .navigationTitle(String(sessionId.prefix(8)))
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbarContent }
+            .task {
+                await viewModel.loadSessionDetail(sessionId: sessionId, projectPath: projectPath)
             }
+            .sheet(item: $selectedMessageForDetail) { message in
+                MessageDetailSheet(message: message)
+            }
+            .modifier(ApprovalErrorModifiers(
+                showTimeoutError: $showTimeoutError,
+                showExpiredError: $showExpiredError,
+                errorMessage: $errorMessage,
+                sessionId: sessionId,
+                viewModel: viewModel
+            ))
+    }
 
+    // MARK: - 主内容区域
+
+    @ViewBuilder
+    private var mainContent: some View {
+        VStack(spacing: 0) {
+            messageListContent
             Divider()
-
-            // 状态栏（放在输入框上方）
             SessionStatusBar(statusData: viewModel.statusData)
-
-            // 底部输入框
             MessageInputView(text: $inputText) {
                 sendMessage()
             }
         }
-        .navigationTitle(String(sessionId.prefix(8)))
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            // ETerm 状态指示器
-            ToolbarItem(placement: .principal) {
-                HStack(spacing: 6) {
-                    Text(String(sessionId.prefix(8)))
-                        .font(.headline)
-                    if viewModel.session?.inEterm == true {
-                        Image(systemName: "terminal.fill")
-                            .font(.system(size: 12))
-                            .foregroundColor(.green)
+    }
+
+    // MARK: - 消息列表内容
+
+    @ViewBuilder
+    private var messageListContent: some View {
+        if viewModel.isLoading {
+            loadingView
+        } else if let error = viewModel.errorMessage {
+            errorView(error)
+        } else if viewModel.displayMessages.isEmpty {
+            emptyView
+        } else {
+            messageScrollView
+        }
+    }
+
+    private var loadingView: some View {
+        VStack {
+            Spacer()
+            ProgressView("加载中...")
+            Spacer()
+        }
+    }
+
+    private func errorView(_ error: String) -> some View {
+        VStack {
+            Spacer()
+            VStack(spacing: 16) {
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.system(size: 48))
+                    .foregroundColor(.orange)
+                Text(error)
+                    .foregroundColor(.secondary)
+                Button("重试") {
+                    Task {
+                        await viewModel.loadSessionDetail(sessionId: sessionId, projectPath: projectPath)
                     }
+                }
+                .buttonStyle(.bordered)
+            }
+            Spacer()
+        }
+    }
+
+    private var emptyView: some View {
+        VStack {
+            Spacer()
+            VStack(spacing: 16) {
+                Image(systemName: "message")
+                    .font(.system(size: 48))
+                    .foregroundColor(.gray)
+                Text("暂无消息")
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+    }
+
+    private var messageScrollView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    loadMoreButton
+                    messageList
+                    waitingIndicator
+                }
+                .padding()
+            }
+            .onAppear {
+                scrollToLastMessage(proxy: proxy)
+            }
+            .onChange(of: viewModel.displayMessages.count) { oldCount, newCount in
+                if newCount > oldCount {
+                    scrollToLastMessage(proxy: proxy)
+                }
+            }
+            .onChange(of: viewModel.isWaitingForResponse) { oldValue, newValue in
+                if newValue {
+                    scrollToWaitingIndicator(proxy: proxy)
                 }
             }
         }
-        .task {
-            await viewModel.loadSessionDetail(sessionId: sessionId)
-        }
-        .sheet(item: $selectedMessageForDetail) { message in
-            MessageDetailSheet(message: message)
-        }
-        // 权限请求 Alert
-        .approvalAlert(
-            isPresented: $showApprovalAlert,
-            requestId: currentApprovalRequest?.requestId ?? "",
-            toolName: currentApprovalRequest?.toolName ?? "",
-            description: currentApprovalRequest?.description ?? ""
-        ) {
-            // 用户点击"允许"
-            if let requestId = currentApprovalRequest?.requestId {
-                WebSocketManager.shared.sendApprovalResponse(
-                    requestId: requestId,
-                    approved: true
-                )
+    }
+
+    @ViewBuilder
+    private var loadMoreButton: some View {
+        if viewModel.hasMore {
+            Button {
+                Task {
+                    await viewModel.loadMessages(sessionId: sessionId)
+                }
+            } label: {
+                if viewModel.isLoadingMore {
+                    ProgressView()
+                } else {
+                    Text("加载更早消息")
+                        .foregroundColor(.blue)
+                }
             }
-            showApprovalAlert = false
-        } onDeny: {
-            // 用户点击"拒绝"
-            if let requestId = currentApprovalRequest?.requestId {
-                WebSocketManager.shared.sendApprovalResponse(
-                    requestId: requestId,
-                    approved: false,
-                    reason: "用户拒绝"
-                )
-            }
-            showApprovalAlert = false
+            .disabled(viewModel.isLoadingMore)
+            .padding()
+            .id("loadMoreButton")
         }
-        // 监听权限请求通知
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ApprovalRequest"))) { notification in
-            print("🔐 [UI] 收到权限请求通知")
-            if let requestId = notification.userInfo?["requestId"] as? String,
-               let toolName = notification.userInfo?["toolName"] as? String,
-               let description = notification.userInfo?["description"] as? String {
-                print("🔐 [UI] 设置权限请求数据: \(toolName)")
-                currentApprovalRequest = (requestId, toolName, description)
-                showApprovalAlert = true
+    }
+
+    private var messageList: some View {
+        ForEach(viewModel.displayMessages) { message in
+            DisplayMessageBubble(
+                message: message,
+                sessionId: sessionId,
+                onApprovalAction: { toolUseId, action in
+                    viewModel.sendApprovalResponse(toolUseId: toolUseId, action: action)
+                }
+            )
+            .id(message.id)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) {
+                selectedMessageForDetail = message
             }
         }
-        // 监听权限超时通知
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ApprovalTimeout"))) { notification in
-            print("⏰ [UI] 收到权限超时通知")
-            if let message = notification.userInfo?["message"] as? String {
-                print("⏰ [UI] 关闭 Alert 并显示超时错误")
-                showApprovalAlert = false
-                currentApprovalRequest = nil
-                errorMessage = message
-                showTimeoutError = true
+    }
+
+    @ViewBuilder
+    private var waitingIndicator: some View {
+        if viewModel.isWaitingForResponse {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .scaleEffect(0.8)
+                Text("Claude 正在思考...")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 8)
+            .id("waitingIndicator")
+        }
+    }
+
+    // MARK: - Toolbar
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            HStack(spacing: 6) {
+                Text(String(sessionId.prefix(8)))
+                    .font(.headline)
+                if viewModel.session?.inEterm == true {
+                    Image(systemName: "terminal.fill")
+                        .font(.system(size: 12))
+                        .foregroundColor(.green)
+                }
             }
         }
-        // 监听延迟响应通知
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ApprovalExpired"))) { notification in
-            print("⚠️ [UI] 收到延迟响应通知")
-            if let message = notification.userInfo?["message"] as? String {
-                print("⚠️ [UI] 显示延迟响应错误")
-                errorMessage = message
-                showExpiredError = true
+    }
+
+    // MARK: - Helper Methods
+
+    private func scrollToLastMessage(proxy: ScrollViewProxy) {
+        if let lastMessage = viewModel.displayMessages.last {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                proxy.scrollTo(lastMessage.id, anchor: .bottom)
             }
         }
-        // 监听 SDK 错误通知
-        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SDKError"))) { notification in
-            print("❌ [UI] 收到 SDK 错误通知")
-            if let sessionIdFromError = notification.userInfo?["sessionId"] as? String,
-               sessionIdFromError == sessionId,
-               let errorType = notification.userInfo?["errorType"] as? String,
-               let errorMsg = notification.userInfo?["errorMessage"] as? String {
-                print("❌ [UI] 停止 loading 并显示错误")
-                viewModel.isWaitingForResponse = false
-                errorMessage = "处理失败: \(errorMsg)"
-                showExpiredError = true
+    }
+
+    private func scrollToWaitingIndicator(proxy: ScrollViewProxy) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            withAnimation {
+                proxy.scrollTo("waitingIndicator", anchor: .bottom)
             }
-        }
-        // 超时错误提示
-        .alert("权限请求超时", isPresented: $showTimeoutError) {
-            Button("确定", role: .cancel) {
-                showTimeoutError = false
-            }
-        } message: {
-            Text(errorMessage)
-        }
-        // 延迟响应错误提示
-        .alert("操作失败", isPresented: $showExpiredError) {
-            Button("确定", role: .cancel) {
-                showExpiredError = false
-            }
-        } message: {
-            Text(errorMessage)
         }
     }
 
@@ -265,10 +236,75 @@ struct SessionDetailView: View {
     }
 }
 
+// MARK: - Approval Error Modifiers
+
+/// 封装审批错误相关的修饰符（超时/过期/SDK错误）
+/// 审批按钮已移至 ToolView 内嵌方式，由 SessionDetailViewModel 管理
+private struct ApprovalErrorModifiers: ViewModifier {
+    @Binding var showTimeoutError: Bool
+    @Binding var showExpiredError: Bool
+    @Binding var errorMessage: String
+    let sessionId: String
+    let viewModel: SessionDetailViewModel
+
+    func body(content: Content) -> some View {
+        content
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ApprovalTimeout"))) { notification in
+                handleApprovalTimeout(notification)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("ApprovalExpired"))) { notification in
+                handleApprovalExpired(notification)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("SDKError"))) { notification in
+                handleSDKError(notification)
+            }
+            .alert("权限请求超时", isPresented: $showTimeoutError) {
+                Button("确定", role: .cancel) {
+                    showTimeoutError = false
+                }
+            } message: {
+                Text(errorMessage)
+            }
+            .alert("操作失败", isPresented: $showExpiredError) {
+                Button("确定", role: .cancel) {
+                    showExpiredError = false
+                }
+            } message: {
+                Text(errorMessage)
+            }
+    }
+
+    private func handleApprovalTimeout(_ notification: Notification) {
+        if let message = notification.userInfo?["message"] as? String {
+            errorMessage = message
+            showTimeoutError = true
+        }
+    }
+
+    private func handleApprovalExpired(_ notification: Notification) {
+        if let message = notification.userInfo?["message"] as? String {
+            errorMessage = message
+            showExpiredError = true
+        }
+    }
+
+    private func handleSDKError(_ notification: Notification) {
+        if let sessionIdFromError = notification.userInfo?["sessionId"] as? String,
+           sessionIdFromError == sessionId,
+           let _ = notification.userInfo?["errorType"] as? String,
+           let errorMsg = notification.userInfo?["errorMessage"] as? String {
+            viewModel.isWaitingForResponse = false
+            errorMessage = "处理失败: \(errorMsg)"
+            showExpiredError = true
+        }
+    }
+}
+
 // 新的 DisplayMessage 气泡组件
 struct DisplayMessageBubble: View {
     let message: DisplayMessage
     let sessionId: String
+    var onApprovalAction: ((String, String) -> Void)? = nil  // (toolUseId, action)
     @State private var isExpanded = false
 
     private var isUser: Bool {
@@ -345,7 +381,11 @@ struct DisplayMessageBubble: View {
                 // 如果有工具执行，使用工具执行组件
                 if hasToolExecutions {
                     ForEach(message.toolExecutions) { toolExecution in
-                        ToolExecutionBubble(execution: toolExecution, sessionId: sessionId)
+                        ToolExecutionBubble(
+                            execution: toolExecution,
+                            sessionId: sessionId,
+                            onApprovalAction: onApprovalAction
+                        )
                     }
                 }
 
@@ -430,11 +470,16 @@ struct DisplayMessageBubble: View {
 struct ToolExecutionBubble: View {
     let execution: ToolExecution
     let sessionId: String
+    var onApprovalAction: ((String, String) -> Void)? = nil  // (toolUseId, action)
 
     var body: some View {
+        let approvalHandler: ((String) -> Void)? = onApprovalAction.map { handler in
+            { action in handler(execution.id, action) }
+        }
+
         switch execution.name {
         case "Bash":
-            BashToolView(execution: execution)
+            BashToolView(execution: execution, onApprovalAction: approvalHandler)
         case "Read":
             ReadToolView(execution: execution)
         case "Grep":
@@ -683,8 +728,3 @@ struct InfoRow: View {
     }
 }
 
-#Preview {
-    NavigationStack {
-        SessionDetailView(sessionId: "test-session-id")
-    }
-}

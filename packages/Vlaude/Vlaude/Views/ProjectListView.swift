@@ -38,6 +38,14 @@ struct ProjectListView: View {
                             .foregroundColor(.gray)
                         Text("暂无项目")
                             .foregroundColor(.secondary)
+                        Button {
+                            Task {
+                                await viewModel.loadProjects(reset: true)
+                            }
+                        } label: {
+                            Label("刷新", systemImage: "arrow.clockwise")
+                        }
+                        .buttonStyle(.bordered)
                     }
                 }
                 // 列表 - 始终保持稳定
@@ -101,10 +109,23 @@ struct ProjectListView: View {
             .onAppear {
                 // 进入页面时开始监听项目更新
                 viewModel.startListening()
+
+                // Phase 3: 订阅 projects 页面状态更新
+                webSocketManager.subscribe(page: .projects)
             }
             .onDisappear {
                 // 离开页面时停止监听项目更新
                 viewModel.stopListening()
+            }
+            .onChange(of: webSocketManager.isConnected) { oldValue, newValue in
+                // WebSocket 重连成功后自动刷新项目列表
+                if !oldValue && newValue {
+                    Task {
+                        await viewModel.loadProjects(reset: true)
+                    }
+                    // 重新订阅 projects 页面状态
+                    webSocketManager.subscribe(page: .projects)
+                }
             }
         }
     }
