@@ -15,20 +15,18 @@ import { ConfigModule } from '@nestjs/config';
 import { DaemonGatewayModule } from './module/daemon-gateway/daemon-gateway.module';
 import { ProjectModule } from './module/project/project.module';
 import { SessionModule } from './module/session/session.module';
-// import { PrismaModule } from './shared/database/prisma.module'; // 已废弃，改用 SharedDbModule
 import { GatewayModule } from './gateway/gateway.module';
 import { AuthModule } from './auth/auth.module';
 import { DeviceModule } from './device/device.module';
 import { RegistryModule } from './module/registry/registry.module';
-import { SharedDbModule } from './shared-db/shared-db.module';
+import { StatusModule } from './module/status';
 // @feature:minio:start
 // import { MinioModule } from './module/minio/minio.module';
 // @feature:minio:end
 
 @Module({
   imports: [
-    SharedDbModule,
-    // PrismaModule.forRoot(), // 已废弃
+    // V4: 移除 SharedDbModule，数据源改为 Daemon 代理
     CacheModule.register({ isGlobal: true }),
     ConfigModule.forRoot({
       isGlobal: true,
@@ -42,6 +40,7 @@ import { SharedDbModule } from './shared-db/shared-db.module';
     AuthModule,
     DeviceModule,
     RegistryModule,
+    StatusModule.register(),
     // @feature:minio:start
     // MinioModule,
     // @feature:minio:end

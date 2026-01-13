@@ -23,3 +23,10 @@ ctrlc = "3"
 # Internal crates from vlaude-core
 daemon-logic = { path = "../vlaude-core/daemon-logic" }
 socket-client = { path = "../vlaude-core/socket-client" }
+
+# Patch git dependencies to use local paths
+[patch."https://github.com/vimo-ai/ai-cli-session-collector"]
+ai-cli-session-collector = { path = "../../../ai-cli-session-collector" }
+
+[patch."https://github.com/vimo-ai/ai-cli-session-db"]
+claude-session-db = { path = "../../../claude-session-db" }

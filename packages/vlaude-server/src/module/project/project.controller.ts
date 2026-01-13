@@ -1,10 +1,12 @@
 /**
  * @description Project Controller - 项目管理 API
  * @author Claude
- * @date 2025/11/16
- * @version v1.0.0
+ * @date 2025/01/09
+ * @version v4.0.0
  *
- * 江湖的业务千篇一律，复杂的代码好几百行。
+ * V4 架构改进:
+ * - 适配 ApiResponse 格式
+ * - 返回 status 字段区分离线和空数据
  */
 import {
   Controller,
@@ -51,11 +53,8 @@ export class ProjectController {
   }
 
   /**
-   * 获取项目列表 (V2: 从文件系统获取 + 增量更新 + 分页支持)
+   * 获取项目列表 (V4: 从 Daemon 代理获取)
    * GET /projects?limit=10&offset=0
-   *
-   * @see docs/DATA_STRUCTURE_SYNC.md - 数据结构同步文档
-   * @see Vlaude/Models/Project.swift - iOS 端 ProjectListResponse 定义
    */
   @Get()
   async getAllProjects(
@@ -65,43 +64,59 @@ export class ProjectController {
     const limitNum = limit ? parseInt(limit, 10) : 10;
     const offsetNum = offset ? parseInt(offset, 10) : 0;
     const result = await this.projectService.getAllProjects(limitNum, offsetNum);
+
+    // V4: 处理 ApiResponse 格式
+    if (result.status !== 'ok') {
+      return {
+        success: false,
+        status: result.status,
+        message: result.message,
+        data: [],
+        total: 0,
+        hasMore: false,
+        etermOnline: false,
+        etermSessions: [],
+      };
+    }
+
     return {
       success: true,
-      data: this.serializeProjects(result.projects),
-      total: result.total,
-      hasMore: result.hasMore,
-      // ETerm 在线状态（解决时序问题）
-      // 注意：现在从 Redis 读取状态
-      // @see docs/DATA_STRUCTURE_SYNC.md#1-projectlistresponse
+      status: 'ok',
+      data: this.serializeProjects(result.data!.projects),
+      total: result.data!.total,
+      hasMore: result.data!.hasMore,
       etermOnline: await this.daemonGateway.isEtermOnline(),
       etermSessions: await this.daemonGateway.getEtermSessions(),
     };
   }
 
   /**
-   * 根据 ID 获取项目详情
+   * 根据 ID 获取项目详情（已废弃）
    * GET /projects/:id
+   * @deprecated 请使用 /projects/by-path/search?path=xxx
    */
   @Get(':id')
   async getProjectById(@Param('id', ParseIntPipe) id: number) {
-    const project = await this.projectService.getProjectById(id);
+    const result = await this.projectService.getProjectById(id);
 
-    if (!project) {
+    if (result.status !== 'ok') {
       return {
         success: false,
-        message: '项目不存在',
+        status: result.status,
+        message: result.message || '项目不存在',
       };
     }
 
     return {
       success: true,
-      data: this.serializeProject(project),
+      status: 'ok',
+      data: this.serializeProject(result.data),
     };
   }
 
   /**
    * 根据路径获取项目
-   * GET /projects/by-path?path=/xxx
+   * GET /projects/by-path/search?path=/xxx
    */
   @Get('by-path/search')
   async getProjectByPath(@Query('path') path: string) {
@@ -112,23 +127,25 @@ export class ProjectController {
       };
     }
 
-    const project = await this.projectService.getProjectByPath(path);
+    const result = await this.projectService.getProjectByPath(path);
 
-    if (!project) {
+    if (result.status !== 'ok') {
       return {
         success: false,
-        message: '项目不存在',
+        status: result.status,
+        message: result.message || '项目不存在',
       };
     }
 
     return {
       success: true,
-      data: this.serializeProject(project),
+      status: 'ok',
+      data: this.serializeProject(result.data),
     };
   }
 
   /**
-   * 删除项目
+   * 删除项目（不支持）
    * DELETE /projects/:id
    */
   @Delete(':id')

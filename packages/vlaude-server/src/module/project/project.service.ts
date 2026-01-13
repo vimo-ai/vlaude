@@ -1,124 +1,86 @@
 /**
  * @description Project Service - 项目数据管理
  * @author Claude
- * @date 2025/12/31
- * @version v3.0.0
+ * @date 2025/01/09
+ * @version v4.0.0
  *
- * V3 架构改进:
- * - 唯一数据源: SharedDbService (ai-cli-session.db)
- * - 移除 Prisma (MySQL) 和 Daemon 依赖
- * - 简化架构，直接读取 SQLite
+ * V4 架构改进:
+ * - 纯代理模式: 所有请求透传到 Daemon
+ * - 移除 SharedDbService (SQLite) 依赖
+ * - Server 可部署到云端/NAS
+ * - 返回 status 字段区分离线和空数据
  */
-import { Injectable, Logger } from '@nestjs/common';
-import { SharedDbService, SharedProject } from '../../shared-db/shared-db.service';
+import { Injectable, Logger, Inject, forwardRef } from '@nestjs/common';
+import { DaemonGateway } from '../daemon-gateway/daemon.gateway';
+
+// API 响应类型
+interface ApiResponse<T> {
+  status: 'ok' | 'offline' | 'error';
+  data?: T;
+  message?: string;
+}
 
 @Injectable()
 export class ProjectService {
   private readonly logger = new Logger(ProjectService.name);
 
-  constructor(private readonly sharedDb: SharedDbService) {}
+  constructor(
+    @Inject(forwardRef(() => DaemonGateway))
+    private readonly daemonGateway: DaemonGateway,
+  ) {}
 
   /**
    * 获取项目列表（分页）
    */
-  async getAllProjects(limit: number = 10, offset: number = 0) {
+  async getAllProjects(limit: number = 50, offset: number = 0): Promise<ApiResponse<{
+    projects: any[];
+    total: number;
+    hasMore: boolean;
+  }>> {
     this.logger.log(`📋 获取项目列表，limit=${limit}, offset=${offset}`);
 
-    if (!this.sharedDb.isAvailable()) {
-      this.logger.warn('SharedDb 不可用');
-      return { projects: [], total: 0, hasMore: false };
-    }
+    const result = await this.daemonGateway.requestProjects(limit, offset);
 
-    const result = this.sharedDb.getAllProjects(limit, offset);
-    const hasMore = offset + result.projects.length < result.total;
+    if (!result) {
+      this.logger.warn('Daemon 离线，无法获取项目列表');
+      return { status: 'offline', message: 'Daemon not connected' };
+    }
 
     this.logger.log(`✅ 返回 ${result.projects.length} 个项目 (total=${result.total})`);
-
-    // 转换为 API 格式
-    const projects = result.projects.map(p => this.mapProject(p));
-
-    return { projects, total: result.total, hasMore };
-  }
-
-  /**
-   * 根据 ID 获取项目
-   */
-  async getProjectById(id: number) {
-    if (!this.sharedDb.isAvailable()) {
-      return null;
-    }
-
-    const project = this.sharedDb.getProjectById(id);
-    if (!project) {
-      return null;
-    }
-
-    // 获取会话列表
-    const sessions = this.sharedDb.getSessionsByProjectId(id);
-
-    return {
-      ...this.mapProject(project),
-      sessions: sessions.map(s => ({
-        id: s.id,
-        sessionId: s.session_id,
-        messageCount: s.message_count,
-        lastMessageAt: s.last_message_at ? new Date(s.last_message_at).toISOString() : null,
-        createdAt: new Date(s.created_at).toISOString(),
-        updatedAt: new Date(s.updated_at).toISOString(),
-      })),
-    };
+    return { status: 'ok', data: result };
   }
 
   /**
    * 根据路径获取项目
    */
-  async getProjectByPath(path: string) {
-    if (!this.sharedDb.isAvailable()) {
-      return null;
+  async getProjectByPath(path: string): Promise<ApiResponse<any>> {
+    this.logger.log(`📋 获取项目详情: ${path}`);
+
+    const result = await this.daemonGateway.requestProjectByPath(path);
+
+    if (result === null) {
+      // null 可能是 Daemon 离线，也可能是项目不存在
+      // 这里统一返回 offline，让前端重试
+      this.logger.warn('Daemon 离线或项目不存在');
+      return { status: 'offline', message: 'Daemon not connected or project not found' };
     }
 
-    const project = this.sharedDb.getProjectByPath(path);
-    if (!project) {
-      return null;
-    }
+    return { status: 'ok', data: result };
+  }
 
-    const sessions = this.sharedDb.getSessionsByProjectPath(path);
-
-    return {
-      ...this.mapProject(project),
-      sessions: sessions.map(s => ({
-        id: s.id,
-        sessionId: s.session_id,
-        messageCount: s.message_count,
-        lastMessageAt: s.last_message_at ? new Date(s.last_message_at).toISOString() : null,
-        createdAt: new Date(s.created_at).toISOString(),
-        updatedAt: new Date(s.updated_at).toISOString(),
-      })),
-    };
+  /**
+   * 根据 ID 获取项目（已废弃，V4 不再支持 numeric ID）
+   * @deprecated 请使用 getProjectByPath
+   */
+  async getProjectById(id: number): Promise<ApiResponse<any>> {
+    this.logger.warn(`⚠️ getProjectById(${id}) 已废弃，V4 不再支持 numeric ID`);
+    return { status: 'error', message: 'getProjectById is deprecated, use getProjectByPath instead' };
   }
 
   /**
    * 删除项目（不支持，只读数据源）
    */
   async deleteProject(id: number) {
-    throw new Error('SharedDb 是只读数据源，不支持删除操作');
-  }
-
-  /**
-   * 转换项目数据格式
-   * 兼容 iOS Vlaude Project 模型
-   */
-  private mapProject(p: SharedProject) {
-    return {
-      id: p.id,
-      name: p.name,
-      path: p.path,
-      source: p.source,
-      // iOS 期望的可选字段
-      encodedDirName: null,
-      lastAccessed: null,
-      createdAt: new Date(p.created_at).toISOString(),
-      updatedAt: new Date(p.updated_at).toISOString(),
-    };
+    throw new Error('Daemon 数据是只读的，不支持删除操作');
   }
 }

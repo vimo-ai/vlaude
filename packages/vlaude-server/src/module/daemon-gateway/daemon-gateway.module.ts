@@ -1,16 +1,14 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { DaemonGateway } from './daemon.gateway';
-import { ProjectModule } from '../project/project.module';
-import { SessionModule } from '../session/session.module';
 import { GatewayModule } from '../../gateway/gateway.module';
 import { RegistryModule } from '../registry/registry.module';
+import { StatusModule } from '../status';
 
 @Module({
   imports: [
-    ProjectModule,
-    forwardRef(() => SessionModule),
     forwardRef(() => GatewayModule),
     forwardRef(() => RegistryModule),
+    StatusModule.register(),
   ],
   providers: [DaemonGateway],
   exports: [DaemonGateway],

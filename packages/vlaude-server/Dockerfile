@@ -1,6 +1,11 @@
 # Vlaude Server Dockerfile
 # 构建命令: docker build --platform linux/amd64 -t vlaude-server .
 # 架构: amd64 (群晖 NAS x86_64)
+#
+# V4 架构: 纯代理模式
+# - 移除 SQLite/Prisma 依赖
+# - 数据源: Daemon (通过 WebSocket)
+# - Server 可部署到云端/NAS
 
 # ================================
 # Builder Stage
@@ -32,8 +37,7 @@ RUN pnpm install
 # 复制源码
 COPY . .
 
-# 生成 Prisma Client 并构建
-RUN pnpm prisma:generate
+# 构建 (V4: 移除 Prisma generate)
 RUN pnpm build
 
 # ================================
@@ -49,13 +53,10 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# 从 builder 复制构建产物
+# 从 builder 复制构建产物 (V4: 移除 Prisma 相关文件)
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
-COPY --from=builder /app/prisma ./prisma
-# 复制 Prisma 生成的客户端到 dist 目录
-COPY --from=builder /app/src/generated ./dist/generated
 
 # 创建必要的目录
 RUN mkdir -p /app/certs
@@ -64,12 +65,14 @@ RUN mkdir -p /app/certs
 EXPOSE 10005
 
 # 环境变量说明:
-# - DATABASE_URL: MySQL 连接字符串
 # - PORT: 服务端口 (默认 10005)
 # - NODE_ENV: 环境 (production)
 # - JWT_PUBLIC_KEY / JWT_PRIVATE_KEY: JWT 密钥
 # - IP_WHITELIST: IP 白名单
 # - ENABLE_MTLS: 是否启用 mTLS (可选)
+# - REDIS_HOST / REDIS_PORT: Redis 配置 (服务发现)
+#
+# V4 注意: 数据来自 Daemon，Server 不需要本地数据库
 
 # 设置默认环境变量
 ENV NODE_ENV=production

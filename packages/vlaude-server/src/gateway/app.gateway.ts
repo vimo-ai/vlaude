@@ -26,6 +26,9 @@ import { ConfigService } from '@nestjs/config';
 import { DeviceService } from '../device/device.service';
 import { DaemonGateway } from '../module/daemon-gateway/daemon.gateway';
 import { RegistryService } from '../module/registry/registry.service';
+import { StatusService } from '../module/status';
+import { StatusDaemonInfo, StatusSessionInfo } from '@vimo-ai/vlaude-shared-core';
+import { DaemonEvents, ServerEvents } from '../shared/events';
 import * as jwt from 'jsonwebtoken';
 import { readFileSync } from 'fs';
 import { join } from 'path';
@@ -82,6 +85,14 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   // Daemon 服务地址 (从环境变量读取)
   private readonly DAEMON_URL: string;
 
+  // 页面订阅管理（StatusManager 重构）
+  // clientId -> { page: 'projects' | 'sessions' | 'chat', projectPath?, sessionId? }
+  private pageSubscriptions = new Map<string, {
+    page: 'projects' | 'sessions' | 'chat';
+    projectPath?: string;
+    sessionId?: string;
+  }>();
+
   constructor(
     private readonly eventEmitter: EventEmitter2,
     private readonly httpService: HttpService,
@@ -91,6 +102,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     private readonly daemonGateway: DaemonGateway,
     @Inject(forwardRef(() => RegistryService))
     private readonly registryService: RegistryService,
+    private readonly statusService: StatusService,
   ) {
     // 初始化 Daemon URL
     const daemonHost = this.configService.get<string>('DAEMON_HOST', 'localhost');
@@ -295,7 +307,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const clientInfo = this.clients.get(client.id);
     if (!clientInfo || !clientInfo.projectPath) {
       this.logger.warn(`⚠️ 无法找到客户端信息或 projectPath: ${client.id}`);
-      client.emit('server:exitRemoteAllowed', { sessionId });
+      client.emit(ServerEvents.EXIT_REMOTE_ALLOWED, { sessionId });
       return { success: false, message: '无法找到项目路径' };
     }
 
@@ -315,21 +327,21 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       if (loading) {
         // 正在 loading，拒绝退出
         this.logger.log(`⏸️ [拒绝退出] Session ${sessionId} 正在 loading`);
-        client.emit('server:exitRemoteDenied', {
+        client.emit(ServerEvents.EXIT_REMOTE_DENIED, {
           sessionId,
           reason: 'loading',
         });
       } else {
         // 空闲，允许退出
         this.logger.log(`✅ [允许退出] Session ${sessionId} 空闲`);
-        client.emit('server:exitRemoteAllowed', { sessionId });
+        client.emit(ServerEvents.EXIT_REMOTE_ALLOWED, { sessionId });
       }
 
       return { success: true, loading };
     } catch (error) {
       this.logger.error(`❌ [检查Loading失败] ${error.message}`);
       // 出错时默认允许退出
-      client.emit('server:exitRemoteAllowed', { sessionId });
+      client.emit(ServerEvents.EXIT_REMOTE_ALLOWED, { sessionId });
       return { success: false, message: error.message };
     }
   }
@@ -873,6 +885,9 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         this.sessionSubscriptions.delete(sessionId);
       }
     });
+
+    // 清理页面订阅（新架构）
+    this.pageSubscriptions.delete(clientId);
   }
 
   /**
@@ -1047,7 +1062,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
         this.logger.log(`   CLI: ${clientId}`);
 
         // 通知 CLI sessionId 已确认
-        this.server.to(clientId).emit('server:sessionConfirmed', { sessionId });
+        this.server.to(clientId).emit(ServerEvents.SESSION_CONFIRMED, { sessionId });
 
         // 清理匹配状态
         this.uuidMatching.delete(projectPath);
@@ -1066,24 +1081,26 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
   /**
    * 监听来自 DaemonGateway 的权限请求事件
+   * 广播给所有连接的 iOS 客户端
    */
   @OnEvent('app.sendApprovalRequest')
   handleSendApprovalRequestEvent(data: {
     requestId: string;
     sessionId: string;
-    clientId: string;
+    terminalId?: number;
     toolName: string;
     input: any;
     toolUseID: string;
     description: string;
   }) {
-    this.logger.log(`🔐 [权限请求] 转发给 iOS 客户端`);
+    this.logger.log(`🔐 [权限请求] 广播给所有 iOS 客户端`);
     this.logger.log(`   RequestId: ${data.requestId}`);
-    this.logger.log(`   ClientId: ${data.clientId}`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
     this.logger.log(`   Tool: ${data.toolName}`);
+    this.logger.log(`   Description: ${data.description}`);
 
-    // 通过 WebSocket 发送给 iOS 客户端
-    this.server.to(data.clientId).emit('approval-request', {
+    // 广播给所有连接的客户端（iOS 会根据 sessionId 匹配）
+    this.server.emit('approval-request', {
       requestId: data.requestId,
       sessionId: data.sessionId,
       toolName: data.toolName,
@@ -1095,15 +1112,19 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
   /**
    * iOS 客户端发送权限响应
+   * action: y=允许一次, n=拒绝, a=始终允许, 或自定义输入如 "n: 理由"
+   * toolUseId: 工具调用 ID，用于 ETerm 返回 approval-ack
    */
   @SubscribeMessage('approval-response')
   handleApprovalResponse(
-    @MessageBody() data: { requestId: string; approved: boolean; reason?: string },
+    @MessageBody() data: { requestId: string; sessionId: string; action: string; toolUseId: string },
     @ConnectedSocket() client: Socket,
   ) {
     this.logger.log(`✅ [权限响应] 收到 iOS 响应`);
     this.logger.log(`   RequestId: ${data.requestId}`);
-    this.logger.log(`   Approved: ${data.approved}`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
+    this.logger.log(`   ToolUseId: ${data.toolUseId}`);
+    this.logger.log(`   Action: ${data.action}`);
     this.logger.log(`   ClientId: ${client.id}`);
 
     // 通过事件转发给 DaemonGateway
@@ -1146,6 +1167,31 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     // 广播给所有客户端（因为不知道是哪个客户端发送的延迟响应）
     this.server.emit('approval-expired', {
       requestId: data.requestId,
+      message: data.message,
+    });
+  }
+
+  /**
+   * 监听来自 DaemonGateway 的审批确认事件
+   * ETerm 收到 iOS 审批后发送确认，转发给 iOS 更新 UI 状态
+   */
+  @OnEvent('app.sendApprovalAck')
+  handleSendApprovalAckEvent(data: {
+    toolUseId: string;
+    sessionId: string;
+    success: boolean;
+    message?: string;
+  }) {
+    this.logger.log(`✅ [审批确认] 转发给 iOS 客户端`);
+    this.logger.log(`   ToolUseId: ${data.toolUseId}`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
+    this.logger.log(`   Success: ${data.success}`);
+
+    // 广播给所有客户端（iOS 会根据 sessionId/toolUseId 匹配）
+    this.server.emit('approval-ack', {
+      toolUseId: data.toolUseId,
+      sessionId: data.sessionId,
+      success: data.success,
       message: data.message,
     });
   }
@@ -1215,7 +1261,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const daemonInfo = await this.registryService.getDaemon(data.deviceId);
 
     // 广播给所有连接的客户端
-    this.server.emit('daemon:online', {
+    this.server.emit(DaemonEvents.ONLINE, {
       deviceId: data.deviceId,
       deviceName: daemonInfo?.deviceName,
       platform: daemonInfo?.platform,
@@ -1232,7 +1278,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     this.logger.log(`🔴 [Daemon 下线] deviceId: ${data.deviceId}`);
 
     // 广播给所有连接的客户端
-    this.server.emit('daemon:offline', {
+    this.server.emit(DaemonEvents.OFFLINE, {
       deviceId: data.deviceId,
       timestamp: data.timestamp,
     });
@@ -1249,7 +1295,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const daemonInfo = await this.registryService.getDaemon(data.deviceId);
 
     // 广播给所有连接的客户端
-    this.server.emit('daemon:sessionUpdate', {
+    this.server.emit(DaemonEvents.SESSION_UPDATE, {
       deviceId: data.deviceId,
       sessions: daemonInfo?.sessions || [],
       timestamp: data.timestamp,
@@ -1279,6 +1325,210 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       })),
       timestamp: Date.now(),
     };
+  }
+
+  // =================== StatusManager 事件处理（新架构）===================
+
+  /**
+   * iOS 订阅页面（新架构）
+   * 客户端根据当前页面订阅不同粒度的状态更新
+   * 返回当前页面所需的初始状态快照
+   */
+  @SubscribeMessage('app:subscribe')
+  async handlePageSubscribe(
+    @MessageBody() data: {
+      page: 'projects' | 'sessions' | 'chat';
+      projectPath?: string;
+      sessionId?: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`📱 [页面订阅] ${client.id} 订阅 ${data.page}`);
+    if (data.projectPath) this.logger.log(`   projectPath: ${data.projectPath}`);
+    if (data.sessionId) this.logger.log(`   sessionId: ${data.sessionId}`);
+
+    this.pageSubscriptions.set(client.id, data);
+
+    // 根据页面类型返回初始状态
+    if (data.page === 'projects') {
+      const isEtermOnline = await this.statusService.isEtermOnline();
+      const sessionCounts = await this.statusService.getSessionCountsByProject();
+      return {
+        success: true,
+        isEtermOnline,
+        sessionCounts,
+      };
+    } else if (data.page === 'sessions' && data.projectPath) {
+      const sessions = await this.statusService.getSessionsByDevice('eterm');
+      this.logger.log(`   📊 getSessionsByDevice('eterm') 返回 ${sessions.length} 个 session`);
+      if (sessions.length > 0) {
+        this.logger.log(`   📊 sessions: ${sessions.map(s => s.sessionId.substring(0, 8)).join(', ')}`);
+      }
+      const onlineSessions = sessions
+        .filter((s) => s.projectPath === data.projectPath)
+        .map((s) => s.sessionId);
+      this.logger.log(`   📊 过滤后 onlineSessions: ${onlineSessions.length} 个`);
+      return {
+        success: true,
+        onlineSessions,
+      };
+    } else if (data.page === 'chat' && data.sessionId) {
+      const sessions = await this.statusService.getSessionsByDevice('eterm');
+      const inEterm = sessions.some((s) => s.sessionId === data.sessionId);
+      return {
+        success: true,
+        inEterm,
+      };
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * iOS 获取状态快照（新架构）
+   * 用于首屏加载，获取完整状态后再接收增量推送
+   */
+  @SubscribeMessage('app:getSnapshot')
+  async handleGetSnapshot(@ConnectedSocket() client: Socket) {
+    this.logger.log(`📱 [状态快照] ${client.id} 请求快照`);
+
+    const snapshot = await this.statusService.getSnapshot();
+
+    return snapshot;
+  }
+
+  /**
+   * 监听 Daemon 上线事件（来自 StatusService）
+   */
+  @OnEvent('status.daemonOnline')
+  handleStatusDaemonOnline(data: {
+    deviceId: string;
+    info: StatusDaemonInfo;
+    isReconnect: boolean;
+  }) {
+    this.logger.log(`🟢 [Status] Daemon 上线推送: ${data.deviceId}`);
+
+    // Bug #6 修复：Daemon 上线是全局事件，应推送给所有订阅的客户端
+    for (const [clientId, sub] of this.pageSubscriptions) {
+      this.server.to(clientId).emit('status:daemonOnline', {
+        deviceId: data.deviceId,
+        info: data.info,
+        isReconnect: data.isReconnect,
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  /**
+   * 监听 Daemon 下线事件（来自 StatusService）
+   */
+  @OnEvent('status.daemonOffline')
+  async handleStatusDaemonOffline(data: {
+    deviceId: string;
+    affectedProjects: string[];
+  }) {
+    this.logger.log(`🔴 [Status] Daemon 下线推送: ${data.deviceId}`);
+
+    // 获取最新的 session counts
+    const sessionCounts = await this.statusService.getSessionCountsByProject();
+
+    // Bug #6 修复：Daemon 下线是全局事件，应推送给所有订阅的客户端
+    // 不只是 projects 页面，sessions/chat 页面也需要知道 ETerm 下线了
+    for (const [clientId, sub] of this.pageSubscriptions) {
+      this.server.to(clientId).emit('status:daemonOffline', {
+        deviceId: data.deviceId,
+        affectedProjects: data.affectedProjects,
+        sessionCounts,
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  /**
+   * 监听 Session 上线事件（来自 StatusService）
+   */
+  @OnEvent('status.sessionOnline')
+  async handleStatusSessionOnline(data: {
+    deviceId: string;
+    session: StatusSessionInfo;
+  }) {
+    this.logger.log(`📝 [Status] Session 上线推送: ${data.session.sessionId}`);
+
+    // 获取最新的 session counts
+    const sessionCounts = await this.statusService.getSessionCountsByProject();
+
+    // 推送给订阅了 projects 页面的客户端（更新计数）
+    for (const [clientId, sub] of this.pageSubscriptions) {
+      if (sub.page === 'projects') {
+        this.server.to(clientId).emit('status:projectsUpdate', {
+          sessionCounts,
+          timestamp: Date.now(),
+        });
+      } else if (sub.page === 'sessions' && sub.projectPath === data.session.projectPath) {
+        // 推送给订阅了该项目 sessions 页面的客户端
+        const sessions = await this.statusService.getSessionsByDevice(data.deviceId);
+        const onlineSessions = sessions
+          .filter((s) => s.projectPath === sub.projectPath)
+          .map((s) => s.sessionId);
+
+        this.server.to(clientId).emit('status:sessionsUpdate', {
+          projectPath: sub.projectPath,
+          onlineSessions,
+          timestamp: Date.now(),
+        });
+      } else if (sub.page === 'chat' && sub.sessionId === data.session.sessionId) {
+        // 推送给订阅了该 session 的客户端
+        this.server.to(clientId).emit('status:sessionUpdate', {
+          sessionId: sub.sessionId,
+          inEterm: data.deviceId === 'eterm',
+          timestamp: Date.now(),
+        });
+      }
+    }
+  }
+
+  /**
+   * 监听 Session 下线事件（来自 StatusService）
+   */
+  @OnEvent('status.sessionOffline')
+  async handleStatusSessionOffline(data: {
+    deviceId: string;
+    sessionId: string;
+    projectPath?: string;
+  }) {
+    this.logger.log(`🗑️ [Status] Session 下线推送: ${data.sessionId}`);
+
+    // 获取最新的 session counts
+    const sessionCounts = await this.statusService.getSessionCountsByProject();
+
+    // 推送给订阅了 projects 页面的客户端（更新计数）
+    for (const [clientId, sub] of this.pageSubscriptions) {
+      if (sub.page === 'projects') {
+        this.server.to(clientId).emit('status:projectsUpdate', {
+          sessionCounts,
+          timestamp: Date.now(),
+        });
+      } else if (sub.page === 'sessions' && data.projectPath && sub.projectPath === data.projectPath) {
+        // 推送给订阅了该项目 sessions 页面的客户端
+        const sessions = await this.statusService.getSessionsByDevice(data.deviceId);
+        const onlineSessions = sessions
+          .filter((s) => s.projectPath === sub.projectPath)
+          .map((s) => s.sessionId);
+
+        this.server.to(clientId).emit('status:sessionsUpdate', {
+          projectPath: sub.projectPath,
+          onlineSessions,
+          timestamp: Date.now(),
+        });
+      } else if (sub.page === 'chat' && sub.sessionId === data.sessionId) {
+        // 推送给订阅了该 session 的客户端
+        this.server.to(clientId).emit('status:sessionUpdate', {
+          sessionId: sub.sessionId,
+          inEterm: false,
+          timestamp: Date.now(),
+        });
+      }
+    }
   }
 
   /**
@@ -1314,6 +1564,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       this.clients.clear();
       this.sessionClients.clear();
       this.uuidMatching.clear();
+      this.pageSubscriptions.clear();
 
       // 5. 关闭 Socket.IO Server
       await new Promise<void>((resolve, reject) => {

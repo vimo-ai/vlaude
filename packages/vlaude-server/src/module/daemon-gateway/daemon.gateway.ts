@@ -11,9 +11,10 @@ import {
 import { Server, Socket } from 'socket.io';
 import { Logger, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
-import { ProjectService } from '../project/project.service';
-import { SessionService } from '../session/session.service';
 import { RegistryService } from '../registry/registry.service';
+import { StatusService } from '../status';
+import { StatusDaemonInfo, StatusSessionInfo } from '@vimo-ai/vlaude-shared-core';
+import { DaemonEvents, ServerEvents } from '../../shared/events';
 
 
 /**
@@ -36,15 +37,20 @@ export class DaemonGateway
   private readonly logger = new Logger(DaemonGateway.name);
   private connectedDaemons = new Map<string, { socket: Socket; info: any }>();
 
+  // V4: 请求-响应模式的 pending requests
+  // Key: requestId, Value: { resolve, timer }
+  private pendingProjectRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout }>();
+  private pendingSessionRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout }>();
+  private pendingMessageRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout }>();
+
   // ETerm 状态已迁移到 Redis，通过 RegistryService 读取
   // 详见 PLAN_REDIS_STATE_SYNC.md
 
   constructor(
-    private readonly projectService: ProjectService,
-    private readonly sessionService: SessionService,
     private readonly eventEmitter: EventEmitter2,
     @Inject(forwardRef(() => RegistryService))
     private readonly registryService: RegistryService,
+    private readonly statusService: StatusService,
   ) {}
 
   afterInit(server: Server) {
@@ -63,7 +69,7 @@ export class DaemonGateway
   /**
    * Daemon 注册
    */
-  @SubscribeMessage('daemon:register')
+  @SubscribeMessage(DaemonEvents.REGISTER)
   async handleDaemonRegister(
     @MessageBody() data: { hostname: string; platform: string; version: string },
     @ConnectedSocket() client: Socket,
@@ -75,31 +81,84 @@ export class DaemonGateway
       info: data,
     });
 
-    return { event: 'daemon:registered', data: { success: true } };
+    return { event: DaemonEvents.REGISTERED, data: { success: true } };
   }
 
   /**
-   * 接收 daemon 发送的项目数据（已废弃，数据源改为 SharedDb）
+   * V4: 接收 daemon 发送的项目数据（请求-响应模式）
+   * 根据 requestId 找到对应的 pending Promise 并 resolve
    */
-  @SubscribeMessage('daemon:projectData')
+  @SubscribeMessage(DaemonEvents.PROJECT_DATA)
   async handleProjectData(
-    @MessageBody() data: { projects: any[] },
+    @MessageBody() data: { projects: any[]; requestId?: string },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`[废弃] Received ${data.projects.length} projects from daemon ${client.id}, 数据源已改为 SharedDb`);
-    return { success: true, deprecated: true };
+    const requestId = data.requestId;
+    this.logger.log(`📥 Received ${data.projects.length} projects from daemon ${client.id}, requestId=${requestId || 'N/A'}`);
+
+    if (requestId && this.pendingProjectRequests.has(requestId)) {
+      const { resolve, timer } = this.pendingProjectRequests.get(requestId)!;
+      clearTimeout(timer);
+      this.pendingProjectRequests.delete(requestId);
+      resolve(data.projects);
+    }
+
+    return { success: true };
   }
 
   /**
-   * 接收 daemon 发送的会话元数据（已废弃，数据源改为 SharedDb）
+   * V4: 接收 daemon 发送的会话元数据（请求-响应模式）
+   * 根据 requestId 找到对应的 pending Promise 并 resolve
    */
-  @SubscribeMessage('daemon:sessionMetadata')
+  @SubscribeMessage(DaemonEvents.SESSION_METADATA)
   async handleSessionMetadata(
-    @MessageBody() data: { projectPath: string; sessions: any[] },
+    @MessageBody() data: { projectPath?: string; sessions: any[]; requestId?: string },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`[废弃] Received session metadata from daemon ${client.id}, 数据源已改为 SharedDb`);
-    return { success: true, deprecated: true };
+    const requestId = data.requestId;
+    this.logger.log(`📥 Received ${data.sessions.length} sessions from daemon ${client.id}, requestId=${requestId || 'N/A'}`);
+
+    if (requestId && this.pendingSessionRequests.has(requestId)) {
+      const { resolve, timer } = this.pendingSessionRequests.get(requestId)!;
+      clearTimeout(timer);
+      this.pendingSessionRequests.delete(requestId);
+      resolve(data.sessions);
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * V4: 接收 daemon 发送的会话消息（请求-响应模式）
+   * 根据 requestId 找到对应的 pending Promise 并 resolve
+   */
+  @SubscribeMessage(DaemonEvents.SESSION_MESSAGES)
+  async handleSessionMessages(
+    @MessageBody() data: {
+      sessionId: string;
+      projectPath: string;
+      messages: any[];
+      total: number;
+      hasMore: boolean;
+      requestId?: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const requestId = data.requestId;
+    this.logger.log(`📥 Received ${data.messages.length} messages from daemon ${client.id}, requestId=${requestId || 'N/A'}`);
+
+    if (requestId && this.pendingMessageRequests.has(requestId)) {
+      const { resolve, timer } = this.pendingMessageRequests.get(requestId)!;
+      clearTimeout(timer);
+      this.pendingMessageRequests.delete(requestId);
+      resolve({
+        messages: data.messages,
+        total: data.total,
+        hasMore: data.hasMore,
+      });
+    }
+
+    return { success: true };
   }
 
   /**
@@ -108,7 +167,7 @@ export class DaemonGateway
   sendCommandToDaemon(daemonId: string, command: string, data: any) {
     const daemon = this.connectedDaemons.get(daemonId);
     if (daemon) {
-      daemon.socket.emit('server:command', { command, data });
+      daemon.socket.emit(ServerEvents.COMMAND, { command, data });
       this.logger.log(`Sent command ${command} to daemon ${daemonId}`);
     }
   }
@@ -117,7 +176,7 @@ export class DaemonGateway
    * 广播指令到所有 daemon
    */
   broadcastCommand(command: string, data: any) {
-    this.server.emit('server:command', { command, data });
+    this.server.emit(ServerEvents.COMMAND, { command, data });
     this.logger.log(`Broadcasted command ${command} to all daemons`);
   }
 
@@ -131,14 +190,130 @@ export class DaemonGateway
     }));
   }
 
+  // =================== V4: 代理请求方法（请求-响应事件模式） ===================
+
   /**
-   * 请求 daemon 读取会话消息
-   * @param sessionId 会话ID
-   * @param projectPath 项目路径
-   * @param limit 每页条数
-   * @param offset 偏移量
-   * @param order 排序方式：'asc' 正序（旧到新），'desc' 倒序（新到旧）
-   * @returns Promise<{ messages: any[]; total: number; hasMore: boolean } | null>
+   * 生成唯一的 requestId
+   */
+  private generateRequestId(): string {
+    return `req_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  }
+
+  /**
+   * V4: 请求 daemon 获取项目列表（使用 server:requestProjectData 事件）
+   * Rust Daemon 会响应 daemon:projectData 事件
+   */
+  async requestProjects(limit: number = 50, offset: number = 0): Promise<{
+    projects: any[];
+    total: number;
+    hasMore: boolean;
+  } | null> {
+    const daemons = Array.from(this.connectedDaemons.values());
+    if (daemons.length === 0) {
+      this.logger.warn('No daemon connected, cannot request projects');
+      return null;
+    }
+
+    const daemon = daemons[0];
+    const requestId = this.generateRequestId();
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingProjectRequests.delete(requestId);
+        this.logger.error(`Request projects timeout (requestId=${requestId})`);
+        resolve(null);
+      }, 10000);
+
+      this.pendingProjectRequests.set(requestId, {
+        resolve: (projects: any[]) => {
+          // Rust 返回全量，在这里做分页
+          const sliced = projects.slice(offset, offset + limit);
+          resolve({
+            projects: sliced,
+            total: projects.length,
+            hasMore: offset + sliced.length < projects.length,
+          });
+        },
+        timer,
+      });
+
+      // 发送请求事件（复用 Rust 已有的 server:requestProjectData）
+      daemon.socket.emit(ServerEvents.REQUEST_PROJECT_DATA, { limit, requestId });
+      this.logger.log(`📤 Sent server:requestProjectData (requestId=${requestId})`);
+    });
+  }
+
+  /**
+   * V4: 请求 daemon 根据路径获取项目
+   * 先获取全量项目，然后在本地筛选
+   */
+  async requestProjectByPath(path: string): Promise<any | null> {
+    const result = await this.requestProjects(1000, 0);
+    if (!result) return null;
+
+    const project = result.projects.find((p: any) => p.path === path);
+    return project || null;
+  }
+
+  /**
+   * V4: 请求 daemon 获取会话列表（使用 server:requestSessionMetadata 事件）
+   * Rust Daemon 会响应 daemon:sessionMetadata 事件
+   */
+  async requestSessions(projectPath: string, limit: number = 50, offset: number = 0): Promise<{
+    sessions: any[];
+    total: number;
+    hasMore: boolean;
+  } | null> {
+    const daemons = Array.from(this.connectedDaemons.values());
+    if (daemons.length === 0) {
+      this.logger.warn('No daemon connected, cannot request sessions');
+      return null;
+    }
+
+    const daemon = daemons[0];
+    const requestId = this.generateRequestId();
+
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.pendingSessionRequests.delete(requestId);
+        this.logger.error(`Request sessions timeout for ${projectPath} (requestId=${requestId})`);
+        resolve(null);
+      }, 10000);
+
+      this.pendingSessionRequests.set(requestId, {
+        resolve: (sessions: any[]) => {
+          // Rust 返回全量，在这里做分页
+          const sliced = sessions.slice(offset, offset + limit);
+          resolve({
+            sessions: sliced,
+            total: sessions.length,
+            hasMore: offset + sliced.length < sessions.length,
+          });
+        },
+        timer,
+      });
+
+      // 发送请求事件（复用 Rust 已有的 server:requestSessionMetadata）
+      daemon.socket.emit(ServerEvents.REQUEST_SESSION_METADATA, { projectPath, requestId });
+      this.logger.log(`📤 Sent server:requestSessionMetadata (projectPath=${projectPath}, requestId=${requestId})`);
+    });
+  }
+
+  /**
+   * V4: 请求 daemon 根据 sessionId 获取会话详情
+   * 先获取全量会话，然后在本地筛选
+   */
+  async requestSessionBySessionId(sessionId: string, projectPath: string): Promise<any | null> {
+    const result = await this.requestSessions(projectPath, 1000, 0);
+    if (!result) return null;
+
+    const session = result.sessions.find((s: any) => s.sessionId === sessionId);
+    return session || null;
+  }
+
+  /**
+   * V4: 请求 daemon 读取会话消息（使用 server:requestSessionMessages 事件）
+   * Rust Daemon 会响应 daemon:sessionMessages 事件
    */
   async requestSessionMessages(
     sessionId: string,
@@ -147,52 +322,41 @@ export class DaemonGateway
     offset: number = 0,
     order: 'asc' | 'desc' = 'asc',
   ): Promise<{ messages: any[]; total: number; hasMore: boolean } | null> {
-    // 获取第一个连接的 daemon（后续可以优化为根据项目路径选择特定 daemon）
     const daemons = Array.from(this.connectedDaemons.values());
-
     if (daemons.length === 0) {
       this.logger.warn('No daemon connected, cannot request session messages');
       return null;
     }
 
-    const daemon = daemons[0]; // 使用第一个连接的 daemon
+    const daemon = daemons[0];
+    const requestId = this.generateRequestId();
 
-    // V2: 只传递 projectPath，Daemon 内部查表
     return new Promise((resolve) => {
-      // 设置超时（10秒）
-      const timeout = setTimeout(() => {
-        this.logger.error(`Request session messages timeout for ${sessionId}`);
+      const timer = setTimeout(() => {
+        this.pendingMessageRequests.delete(requestId);
+        this.logger.error(`Request session messages timeout for ${sessionId} (requestId=${requestId})`);
         resolve(null);
       }, 10000);
 
-      daemon.socket.emit(
-        'server:requestSessionMessages',
-        { sessionId, projectPath, limit, offset, order },
-        (response: { success: boolean; messages?: any[]; total?: number; hasMore?: boolean; error?: string }) => {
-          clearTimeout(timeout);
+      this.pendingMessageRequests.set(requestId, { resolve, timer });
 
-          if (response.success && response.messages) {
-            this.logger.log(
-              `Received ${response.messages.length} messages for session ${sessionId} (total: ${response.total})`,
-            );
-            resolve({
-              messages: response.messages,
-              total: response.total || 0,
-              hasMore: response.hasMore || false,
-            });
-          } else {
-            this.logger.error(`Failed to get session messages: ${response.error || 'Unknown error'}`);
-            resolve(null);
-          }
-        },
-      );
+      // 发送请求事件（复用 Rust 已有的 server:requestSessionMessages）
+      daemon.socket.emit(ServerEvents.REQUEST_SESSION_MESSAGES, {
+        sessionId,
+        projectPath,
+        limit,
+        offset,
+        order,
+        requestId,
+      });
+      this.logger.log(`📤 Sent server:requestSessionMessages (sessionId=${sessionId}, requestId=${requestId})`);
     });
   }
 
   /**
    * Daemon 推送新消息（转发给 AppGateway）
    */
-  @SubscribeMessage('daemon:newMessage')
+  @SubscribeMessage(DaemonEvents.NEW_MESSAGE)
   handleNewMessage(
     @MessageBody() data: { sessionId: string; message: any },
     @ConnectedSocket() client: Socket,
@@ -204,35 +368,9 @@ export class DaemonGateway
   }
 
   /**
-   * Daemon 推送 Metrics 更新（转发给 AppGateway）
-   */
-  @SubscribeMessage('daemon:metricsUpdate')
-  handleMetricsUpdate(
-    @MessageBody() data: { sessionId: string; metrics: any },
-    @ConnectedSocket() client: Socket,
-  ) {
-    // 通过事件转发给 AppGateway，推送到订阅了该会话的 Swift 客户端
-    this.eventEmitter.emit('app.notifyMetricsUpdate', data);
-  }
-
-  /**
-   * Daemon 推送项目更新（转发给 AppGateway）
-   */
-  @SubscribeMessage('daemon:projectUpdate')
-  handleProjectUpdate(
-    @MessageBody() data: { projectPath: string; metadata?: any },
-    @ConnectedSocket() client: Socket,
-  ) {
-    this.logger.log(`Received project update for ${data.projectPath} from daemon ${client.id}`);
-
-    // 通过事件转发给 AppGateway，广播给所有 Swift 客户端
-    this.eventEmitter.emit('app.notifyProjectUpdate', data);
-  }
-
-  /**
    * Daemon 推送会话更新（转发给 AppGateway）
    */
-  @SubscribeMessage('daemon:sessionUpdate')
+  @SubscribeMessage(DaemonEvents.SESSION_UPDATE)
   handleSessionUpdate(
     @MessageBody() data: { sessionId: string; metadata: any },
     @ConnectedSocket() client: Socket,
@@ -246,7 +384,7 @@ export class DaemonGateway
   /**
    * Daemon 推送会话列表更新（转发给 AppGateway）
    */
-  @SubscribeMessage('daemon:sessionListUpdate')
+  @SubscribeMessage(DaemonEvents.SESSION_LIST_UPDATE)
   handleSessionListUpdate(
     @MessageBody() data: { projectPath: string },
     @ConnectedSocket() client: Socket,
@@ -275,7 +413,7 @@ export class DaemonGateway
     this.logger.log(`   项目路径: ${projectPath}`);
 
     // V2: 只传递 projectPath，Daemon 内部查表
-    daemon.socket.emit('server:startWatching', {
+    daemon.socket.emit(ServerEvents.START_WATCHING, {
       sessionId,
       projectPath,
     });
@@ -296,7 +434,7 @@ export class DaemonGateway
 
     this.logger.log(`🔕 [请求停止] 通知 Daemon 停止监听: ${sessionId}`);
 
-    daemon.socket.emit('server:stopWatching', {
+    daemon.socket.emit(ServerEvents.STOP_WATCHING, {
       sessionId,
       projectPath,
     });
@@ -334,7 +472,7 @@ export class DaemonGateway
     }
 
     const daemon = daemons[0];
-    daemon.socket.emit('server:resumeLocal', data);
+    daemon.socket.emit(ServerEvents.RESUME_LOCAL, data);
   }
 
   /**
@@ -353,7 +491,7 @@ export class DaemonGateway
     }
 
     const daemon = daemons[0];
-    daemon.socket.emit('server:findNewSession', {
+    daemon.socket.emit(ServerEvents.FIND_NEW_SESSION, {
       clientId: data.clientId,
       projectPath: data.projectPath,
     });
@@ -377,7 +515,7 @@ export class DaemonGateway
     }
 
     const daemon = daemons[0];
-    daemon.socket.emit('server:watchNewSession', {
+    daemon.socket.emit(ServerEvents.WATCH_NEW_SESSION, {
       clientId: data.clientId,
       projectPath: data.projectPath,
     });
@@ -403,13 +541,13 @@ export class DaemonGateway
     this.logger.log(`   项目路径: ${data.projectPath}`);
 
     // 通知 Daemon 刷新项目路径映射
-    daemon.socket.emit('server:sessionDiscovered', data);
+    daemon.socket.emit(ServerEvents.SESSION_DISCOVERED, data);
   }
 
   /**
    * 接收 Daemon 推送的新 session 查找结果
    */
-  @SubscribeMessage('daemon:newSessionFound')
+  @SubscribeMessage(DaemonEvents.NEW_SESSION_FOUND)
   handleNewSessionFound(
     @MessageBody() data: { clientId: string; sessionId: string; projectPath: string; encodedDirName: string },
     @ConnectedSocket() client: Socket,
@@ -428,7 +566,7 @@ export class DaemonGateway
   /**
    * 接收 Daemon 推送的未找到 session 通知
    */
-  @SubscribeMessage('daemon:newSessionNotFound')
+  @SubscribeMessage(DaemonEvents.NEW_SESSION_NOT_FOUND)
   handleNewSessionNotFound(
     @MessageBody() data: { clientId: string; projectPath: string },
     @ConnectedSocket() client: Socket,
@@ -446,7 +584,7 @@ export class DaemonGateway
   /**
    * 接收 Daemon 推送的监听器启动通知
    */
-  @SubscribeMessage('daemon:watchStarted')
+  @SubscribeMessage(DaemonEvents.WATCH_STARTED)
   handleWatchStarted(
     @MessageBody() data: { clientId: string; projectPath: string },
     @ConnectedSocket() client: Socket,
@@ -464,7 +602,7 @@ export class DaemonGateway
   /**
    * 接收 Daemon 推送的新 session 创建通知
    */
-  @SubscribeMessage('daemon:newSessionCreated')
+  @SubscribeMessage(DaemonEvents.NEW_SESSION_CREATED)
   handleNewSessionCreated(
     @MessageBody() data: { clientId: string; sessionId: string; projectPath: string },
     @ConnectedSocket() client: Socket,
@@ -483,7 +621,7 @@ export class DaemonGateway
   /**
    * 接收 Daemon 的权限请求（转发给 AppGateway）
    */
-  @SubscribeMessage('daemon:approvalRequest')
+  @SubscribeMessage(DaemonEvents.PERMISSION_REQUEST)
   handleApprovalRequest(
     @MessageBody() data: {
       requestId: string;
@@ -509,10 +647,12 @@ export class DaemonGateway
    * 监听来自 AppGateway 的权限响应事件
    */
   @OnEvent('daemon.sendApprovalResponse')
-  handleSendApprovalResponse(data: { requestId: string; approved: boolean; reason?: string }) {
+  handleSendApprovalResponse(data: { requestId: string; sessionId: string; action: string; toolUseId: string }) {
     this.logger.log(`✅ [权限响应] 转发给 Daemon`);
     this.logger.log(`   RequestId: ${data.requestId}`);
-    this.logger.log(`   Approved: ${data.approved}`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
+    this.logger.log(`   ToolUseId: ${data.toolUseId}`);
+    this.logger.log(`   Action: ${data.action}`);
 
     const daemons = Array.from(this.connectedDaemons.values());
     if (daemons.length === 0) {
@@ -521,13 +661,13 @@ export class DaemonGateway
     }
 
     const daemon = daemons[0];
-    daemon.socket.emit('server:approvalResponse', data);
+    daemon.socket.emit(ServerEvents.PERMISSION_RESPONSE, data);
   }
 
   /**
    * 接收 Daemon 的权限超时通知（转发给 AppGateway）
    */
-  @SubscribeMessage('daemon:approvalTimeout')
+  @SubscribeMessage(DaemonEvents.PERMISSION_TIMEOUT)
   handleApprovalTimeout(
     @MessageBody() data: {
       requestId: string;
@@ -547,7 +687,7 @@ export class DaemonGateway
   /**
    * 接收 Daemon 的延迟响应通知（转发给 AppGateway）
    */
-  @SubscribeMessage('daemon:approvalExpired')
+  @SubscribeMessage(DaemonEvents.PERMISSION_EXPIRED)
   handleApprovalExpired(
     @MessageBody() data: {
       requestId: string;
@@ -564,9 +704,31 @@ export class DaemonGateway
   }
 
   /**
+   * 接收 ETerm 的审批确认（转发给 AppGateway → iOS）
+   */
+  @SubscribeMessage(DaemonEvents.APPROVAL_ACK)
+  handleApprovalAck(
+    @MessageBody() data: {
+      toolUseId: string;
+      sessionId: string;
+      success: boolean;
+      message?: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`✅ [审批确认] 收到 ETerm 的 approval-ack`);
+    this.logger.log(`   ToolUseId: ${data.toolUseId}`);
+    this.logger.log(`   SessionId: ${data.sessionId}`);
+    this.logger.log(`   Success: ${data.success}`);
+
+    // 通过事件转发给 AppGateway，让它通知 iOS 客户端
+    this.eventEmitter.emit('app.sendApprovalAck', data);
+  }
+
+  /**
    * 接收 Daemon 的 SDK 错误通知（转发给 AppGateway）
    */
-  @SubscribeMessage('daemon:sdkError')
+  @SubscribeMessage(DaemonEvents.SDK_ERROR)
   handleSDKError(
     @MessageBody() data: {
       sessionId: string;
@@ -588,7 +750,7 @@ export class DaemonGateway
    * 接收 Daemon 的 Swift 活动通知
    * 检查该 session 的 CLI 是否在 local mode，如果是则重新触发 remote-connect
    */
-  @SubscribeMessage('daemon:swiftActivity')
+  @SubscribeMessage(DaemonEvents.SWIFT_ACTIVITY)
   handleSwiftActivity(
     @MessageBody() data: { sessionId: string; projectPath: string },
     @ConnectedSocket() client: Socket,
@@ -605,7 +767,7 @@ export class DaemonGateway
    * 接收 Daemon 通知：ETerm 已上线
    * 注意：ETerm 状态由 Redis 维护，此处只转发事件
    */
-  @SubscribeMessage('daemon:etermOnline')
+  @SubscribeMessage(DaemonEvents.ETERM_ONLINE)
   handleEtermOnline(
     @MessageBody() data: { timestamp: string },
     @ConnectedSocket() client: Socket,
@@ -626,7 +788,7 @@ export class DaemonGateway
    * 接收 Daemon 通知：ETerm 已离线
    * 注意：ETerm 状态由 Redis 维护（TTL 过期），此处只转发事件
    */
-  @SubscribeMessage('daemon:etermOffline')
+  @SubscribeMessage(DaemonEvents.ETERM_OFFLINE)
   handleEtermOffline(
     @MessageBody() data: { timestamp: string },
     @ConnectedSocket() client: Socket,
@@ -643,134 +805,140 @@ export class DaemonGateway
     return { success: true };
   }
 
-  /**
-   * 接收 Daemon 通知：某个 session 在 ETerm 中可用
-   * 注意：Session 状态由 VlaudeKit 直接写入 Redis，此处只转发事件
-   */
-  @SubscribeMessage('daemon:etermSessionAvailable')
-  handleEtermSessionAvailable(
-    @MessageBody() data: { sessionId: string; projectPath: string; timestamp: string },
-    @ConnectedSocket() client: Socket,
-  ) {
-    this.logger.log(`🖥️ [ETerm] Session 可用: ${data.sessionId}`);
-    this.logger.log(`   ProjectPath: ${data.projectPath}`);
-    // Session 状态由 VlaudeKit 直接写入 Redis
-
-    // 通过事件通知 AppGateway（包含 projectPath）
-    this.eventEmitter.emit('app.etermSessionAvailable', {
-      sessionId: data.sessionId,
-      projectPath: data.projectPath,
-      timestamp: data.timestamp,
-    });
-
-    return { success: true };
-  }
+  // =================== ETerm 状态查询方法（从 StatusService 读取）===================
 
   /**
-   * 接收 Daemon 通知：某个 session 不再在 ETerm 中可用
-   * 注意：Session 状态由 VlaudeKit 直接从 Redis 移除，此处只转发事件
-   */
-  @SubscribeMessage('daemon:etermSessionUnavailable')
-  handleEtermSessionUnavailable(
-    @MessageBody() data: { sessionId: string; projectPath?: string; timestamp: string },
-    @ConnectedSocket() client: Socket,
-  ) {
-    this.logger.log(`🖥️ [ETerm] Session 不可用: ${data.sessionId}`);
-    // Session 状态由 VlaudeKit 直接从 Redis 移除
-
-    // 通过事件通知 AppGateway（projectPath 从 Daemon 传入）
-    this.eventEmitter.emit('app.etermSessionUnavailable', {
-      sessionId: data.sessionId,
-      projectPath: data.projectPath,
-      timestamp: data.timestamp,
-    });
-
-    return { success: true };
-  }
-
-  /**
-   * 接收 Daemon 通知：ETerm 会话创建完成（带 requestId）
-   * 注意：Session 状态由 VlaudeKit 直接写入 Redis，此处只转发事件
-   */
-  @SubscribeMessage('daemon:etermSessionCreated')
-  handleEtermSessionCreated(
-    @MessageBody() data: { requestId: string; sessionId: string; projectPath: string; timestamp: string },
-    @ConnectedSocket() client: Socket,
-  ) {
-    this.logger.log(`🖥️ [ETerm] 会话创建完成:`);
-    this.logger.log(`   RequestId: ${data.requestId}`);
-    this.logger.log(`   SessionId: ${data.sessionId}`);
-    this.logger.log(`   ProjectPath: ${data.projectPath}`);
-    // Session 状态由 VlaudeKit 直接写入 Redis
-
-    // 通过事件通知 AppGateway，让它推送给 iOS 客户端
-    this.eventEmitter.emit('app.etermSessionCreated', {
-      requestId: data.requestId,
-      sessionId: data.sessionId,
-      projectPath: data.projectPath,
-      timestamp: data.timestamp,
-    });
-
-    return { success: true };
-  }
-
-  // =================== ETerm 状态查询方法（从 Redis 读取）===================
-
-  /**
-   * 检查 ETerm 是否在线（从 Redis 读取）
+   * 检查 ETerm 是否在线
    * ETerm 设备 ID 固定为 "eterm"
    */
   async isEtermOnline(): Promise<boolean> {
-    const daemons = await this.registryService.getDaemons();
-    // ETerm 的 deviceId 固定为 "eterm"（或以 "eterm" 开头）
-    return daemons.some(d => d.deviceId === 'eterm' || d.deviceId.startsWith('eterm-'));
+    return this.statusService.isEtermOnline();
   }
 
   /**
-   * 检查指定 session 是否在 ETerm 中可用（从 Redis 读取）
+   * 检查指定 session 是否在 ETerm 中可用
    */
   async isSessionInEterm(sessionId: string): Promise<boolean> {
-    const daemons = await this.registryService.getDaemons();
-    // 查找 ETerm daemon 的 sessions
-    for (const daemon of daemons) {
-      if (daemon.deviceId === 'eterm' || daemon.deviceId.startsWith('eterm-')) {
-        if (daemon.sessions.some(s => s.sessionId === sessionId)) {
-          return true;
-        }
-      }
-    }
-    return false;
+    return this.statusService.isSessionInEterm(sessionId);
   }
 
   /**
-   * 获取所有在 ETerm 中的 session（返回 sessionId 数组，从 Redis 读取）
+   * 获取所有在 ETerm 中的 session（返回 sessionId 数组）
    */
   async getEtermSessions(): Promise<string[]> {
-    const daemons = await this.registryService.getDaemons();
-    const sessions: string[] = [];
-    for (const daemon of daemons) {
-      if (daemon.deviceId === 'eterm' || daemon.deviceId.startsWith('eterm-')) {
-        sessions.push(...daemon.sessions.map(s => s.sessionId));
-      }
-    }
-    return sessions;
+    return this.statusService.getEtermSessions();
   }
 
   /**
-   * 获取每个项目的在线会话数（用于 iOS 项目列表显示，从 Redis 读取）
+   * 获取每个项目的在线会话数（用于 iOS 项目列表显示）
    * @returns { [projectPath: string]: number }
    */
   async getEtermSessionCounts(): Promise<Record<string, number>> {
-    const daemons = await this.registryService.getDaemons();
-    const counts: Record<string, number> = {};
-    for (const daemon of daemons) {
-      if (daemon.deviceId === 'eterm' || daemon.deviceId.startsWith('eterm-')) {
-        for (const session of daemon.sessions) {
-          counts[session.projectPath] = (counts[session.projectPath] || 0) + 1;
-        }
-      }
-    }
-    return counts;
+    return this.statusService.getSessionCountsByProject();
+  }
+
+  // =================== 新版状态事件处理（StatusManager）===================
+
+  /**
+   * 接收 ETerm 上线事件
+   * 重构后：ETerm 只发事件，Server 通过 StatusService 管理状态
+   */
+  @SubscribeMessage(DaemonEvents.ONLINE)
+  async handleDaemonOnline(
+    @MessageBody() data: {
+      deviceId: string;
+      deviceName: string;
+      platform: string;
+      version: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🟢 [Status] 收到 daemon:online 事件`);
+    this.logger.log(`   deviceId: ${data.deviceId}`);
+    this.logger.log(`   deviceName: ${data.deviceName}`);
+    this.logger.log(`   platform: ${data.platform}`);
+
+    const daemonInfo: StatusDaemonInfo = {
+      deviceId: data.deviceId,
+      deviceName: data.deviceName,
+      platform: data.platform,
+      version: data.version,
+      connectedAt: new Date(),
+    };
+
+    await this.statusService.handleDaemonOnline(data.deviceId, daemonInfo);
+
+    return { success: true };
+  }
+
+  /**
+   * 接收 ETerm 下线事件
+   */
+  @SubscribeMessage(DaemonEvents.OFFLINE)
+  async handleDaemonOffline(
+    @MessageBody() data: { deviceId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🔴 [Status] Daemon 下线: ${data.deviceId}`);
+
+    await this.statusService.handleDaemonOffline(data.deviceId);
+
+    return { success: true };
+  }
+
+  /**
+   * 接收 Session 开始事件
+   */
+  @SubscribeMessage(DaemonEvents.SESSION_START)
+  async handleDaemonSessionStart(
+    @MessageBody() data: {
+      deviceId: string;
+      sessionId: string;
+      projectPath: string;
+      terminalId?: number;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`📝 [Status] Session 开始: ${data.sessionId} (device: ${data.deviceId})`);
+
+    const sessionInfo: StatusSessionInfo = {
+      sessionId: data.sessionId,
+      projectPath: data.projectPath,
+      terminalId: data.terminalId,
+      startedAt: new Date(),
+    };
+
+    await this.statusService.handleSessionStart(data.deviceId, sessionInfo);
+
+    return { success: true };
+  }
+
+  /**
+   * 接收 Session 结束事件
+   */
+  @SubscribeMessage(DaemonEvents.SESSION_END)
+  async handleDaemonSessionEnd(
+    @MessageBody() data: { deviceId: string; sessionId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🗑️ [Status] Session 结束: ${data.sessionId}`);
+
+    await this.statusService.handleSessionEnd(data.deviceId, data.sessionId);
+
+    return { success: true };
+  }
+
+  /**
+   * 接收心跳事件
+   */
+  @SubscribeMessage(DaemonEvents.HEARTBEAT)
+  async handleDaemonHeartbeat(
+    @MessageBody() data: { deviceId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    await this.statusService.handleHeartbeat(data.deviceId);
+
+    return { success: true };
   }
 
   /**
@@ -800,7 +968,7 @@ export class DaemonGateway
     // 广播给所有连接的 daemon，让拥有 sessionId 的 daemon 处理
     // VlaudeKit 和 vlaude-daemon-rs 都连接到 /daemon namespace
     // 只有实际拥有该 sessionId 的 daemon 会处理这个事件
-    this.server.emit('server:injectToEterm', {
+    this.server.emit(ServerEvents.INJECT_TO_ETERM, {
       sessionId,
       text,
       clientMessageId,  // 透传 clientMessageId，用于消息去重
@@ -826,7 +994,7 @@ export class DaemonGateway
     }
 
     // 广播给所有 daemon，VlaudeKit 会处理
-    this.server.emit('server:createSessionInEterm', {
+    this.server.emit(ServerEvents.CREATE_SESSION_IN_ETERM, {
       projectPath,
       prompt,
       requestId,  // 透传 requestId
@@ -847,7 +1015,7 @@ export class DaemonGateway
     }
 
     // 广播给所有 daemon，VlaudeKit 会处理
-    this.server.emit('server:mobileViewing', {
+    this.server.emit(ServerEvents.MOBILE_VIEWING, {
       sessionId,
       isViewing,
     });
@@ -868,7 +1036,7 @@ export class DaemonGateway
       }
 
       // 1. 通知所有 Daemon 客户端服务器即将关闭
-      this.server.emit('server-shutdown', {
+      this.server.emit(ServerEvents.SERVER_SHUTDOWN, {
         message: 'Server is shutting down',
         timestamp: Date.now(),
       });

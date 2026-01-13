@@ -11,6 +11,7 @@ import { AppGateway } from './app.gateway';
 import { DaemonGatewayModule } from '../module/daemon-gateway/daemon-gateway.module';
 import { DeviceModule } from '../device/device.module';
 import { RegistryModule } from '../module/registry/registry.module';
+import { StatusModule } from '../module/status';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { RegistryModule } from '../module/registry/registry.module';
     DeviceModule,
     forwardRef(() => DaemonGatewayModule),
     forwardRef(() => RegistryModule),
+    StatusModule.register(),
   ],
   providers: [AppGateway],
   exports: [AppGateway],

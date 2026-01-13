@@ -1,13 +1,25 @@
-# vlaude-daemon (NestJS)
+# ⛔️ DEPRECATED - DO NOT MODIFY ⛔️
 
-> **DEPRECATED**: This package is deprecated. Please use `../vlaude-daemon-rs` (Rust version) instead.
->
-> The Rust version provides:
-> - Redis service discovery
-> - Shared core logic with VlaudeKit (via FFI)
-> - Better performance
+```
+╔══════════════════════════════════════════════════════════════════════════════╗
+║                                                                              ║
+║   ⚠️  THIS PACKAGE IS DEPRECATED AND SHOULD NOT BE MODIFIED  ⚠️              ║
+║                                                                              ║
+║   Please use ../vlaude-daemon-rs (Rust version) instead.                     ║
+║                                                                              ║
+║   The Rust daemon (vlaude-core) is shared with VlaudeKit via FFI.            ║
+║   Any daemon logic changes should be made in:                                ║
+║     - vlaude-core/socket-client/    (Socket 连接)                            ║
+║     - vlaude-core/daemon-logic/     (业务逻辑)                               ║
+║                                                                              ║
+║   This TypeScript daemon is kept only for reference.                         ║
+║                                                                              ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+```
 
 ---
+
+## vlaude-daemon (NestJS) - ARCHIVED
 
 **Original description**: Vlaude daemon service - local MAC service
 
