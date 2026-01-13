@@ -44,6 +44,65 @@
 
 ---
 
+## 部署场景
+
+### 场景 A: Server 在本地 Mac
+
+```
+Mac:
+├── ~/.claude/projects/**/*.jsonl  (Claude Code)
+├── ~/.vimo/db/claude-session.db   (SharedDb)
+├── Daemon/VlaudeKit               (写入 SharedDb)
+└── vlaude-server                  (直接读 SharedDb)
+```
+
+### 场景 B: Server 在远程 (NAS) - 代理模式
+
+```
+Mac:                               NAS:
+├── JSONL 文件                     └── vlaude-server (WebSocket 代理)
+├── SharedDb                              ↑
+└── Daemon/VlaudeKit ──────────────────────┘
+```
+
+Server 通过 WebSocket 向 Daemon 请求数据，Daemon 读取本地 JSONL 返回。
+
+---
+
+## WebSocket 事件（代理模式）
+
+### Server → Daemon/VlaudeKit (请求)
+
+| 事件 | 用途 |
+|------|------|
+| `server:requestProjectData` | 请求项目列表 |
+| `server:requestSessionMetadata` | 请求会话列表 |
+| `server:requestSessionMessages` | 请求会话消息 |
+| `server:requestSearch` | 全文搜索 |
+
+### Daemon/VlaudeKit → Server (响应)
+
+| 事件 | 用途 |
+|------|------|
+| `daemon:projectData` | 推送项目数据 |
+| `daemon:sessionMetadata` | 推送会话元数据 |
+| `daemon:sessionMessages` | 推送会话消息 |
+| `daemon:searchResults` | 推送搜索结果 |
+
+---
+
+## 路径配置
+
+| 组件 | 路径配置位置 |
+|------|--------------|
+| ETerm (Swift) | `ETermPaths.claudeSessionDatabase` |
+| VlaudeKit | 使用 ETermPaths |
+| Daemon (Rust) | `daemon-logic/src/shared_db.rs` |
+
+统一路径：`~/.vimo/db/claude-session.db`
+
+---
+
 ## 数据优先级
 
 ### 项目（Project）的最后修改时间

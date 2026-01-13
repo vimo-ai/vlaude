@@ -44,6 +44,55 @@
 | `isMeta` | 0.4% | 元数据消息 | ⚠️ 建议：灰色背景或折叠 |
 | `agentId` | 1.8% | Agent ID（Agent 任务的用户输入） | 🤖 建议：添加 Agent 标识 |
 
+### User 消息 17 种场景分类
+
+> 基于 50,147 条 user 消息分析
+
+#### ✅ 应该显示的场景（17.77%）
+
+| # | 场景 | 占比 | 特征 | 处理方案 |
+|---|------|------|------|----------|
+| 1 | 用户消息+思考元数据 | 13.29% | `thinkingMetadata + content:string` | 正常显示，可选💭图标 |
+| 2 | 用户中断请求 | 2.41% | `content:array[text]` 含 "interrupted" | 显示为 "⏸️ 用户中断了请求" |
+| 3 | 普通文本消息 | 1.15% | `content:string` | 标准用户消息 |
+| 4 | 思考+文本数组 | 0.72% | `thinkingMetadata + content:array[text]` | 解析数组显示 |
+| 5 | 思考+图片 | 0.14% | `thinkingMetadata + content:array[image, text]` | 显示图片+文本 |
+| 6 | 纯图片消息 | 0.04% | `content:array[image]` | 只显示图片 |
+| 7-9 | 多图片消息 | 0.01% | 多个 image 元素 | 显示多图+文本 |
+
+#### ❌ 不应该显示的场景（82.23%）
+
+| # | 场景 | 占比 | 特征 | 处理方案 |
+|---|------|------|------|----------|
+| 1 | **工具执行结果** | 80.96% | `toolUseResult + content:array[tool_result]` | 合并到 Assistant 工具调用 |
+| 2 | 压缩摘要 | 0.80% | `isVisibleInTranscriptOnly + isCompactSummary` | 完全不显示 |
+| 3 | 元数据消息(string) | 0.32% | `isMeta + content:string` | 不显示 |
+| 4 | 元数据消息(array) | 0.09% | `isMeta + content:array[text]` | 不显示 |
+| 5 | 压缩摘要(array) | 0.04% | `isCompactSummary + content:array[text]` | 不显示 |
+| 6 | 仅 Transcript 可见 | 0.01% | `isVisibleInTranscriptOnly` | 不显示 |
+| 7 | 工具结果(无 toolUseResult) | 0.01% | `content:array[tool_result]` | 合并到 Assistant |
+
+#### 过滤规则代码
+
+```swift
+func shouldDisplayUserMessage(_ msg: Message) -> Bool {
+    // 1. 工具执行结果 - 不显示（合并到 Assistant）
+    if msg.toolUseResult != nil { return false }
+    if hasToolResultInContent(msg) { return false }
+
+    // 2. 仅 Transcript 可见 - 不显示
+    if msg.isVisibleInTranscriptOnly == true { return false }
+
+    // 3. 压缩摘要 - 不显示
+    if msg.isCompactSummary == true { return false }
+
+    // 4. 元数据消息 - 不显示
+    if msg.isMeta == true { return false }
+
+    return true  // 其他情况显示
+}
+```
+
 ### 当前渲染逻辑
 ```swift
 // SessionDetailView.swift:131-133
