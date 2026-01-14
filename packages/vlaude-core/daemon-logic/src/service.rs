@@ -11,9 +11,11 @@ use socket_client::{
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::{oneshot, RwLock};
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
+use socket_client::vlaude_log_info;
 
 /// 验证路径组件是否安全（防止路径穿越）
 fn validate_path_component(s: &str, name: &str) -> Result<()> {
@@ -43,6 +45,41 @@ pub type SessionDiscoveredCallback = Arc<dyn Fn(&str, &str) + Send + Sync>;
 
 /// 服务器命令回调类型
 pub type ServerCommandCallback = Arc<dyn Fn(&str, Option<serde_json::Value>) + Send + Sync>;
+
+// ==================== ETerm 操作回调类型 ====================
+
+/// 创建会话回调结果
+#[derive(Debug, Clone, Default)]
+pub struct CreateSessionResult {
+    pub success: bool,
+    pub session_id: Option<String>,
+    pub project_path: Option<String>,
+    pub encoded_dir_name: Option<String>,
+    pub error: Option<String>,
+}
+
+/// 发送消息回调结果
+#[derive(Debug, Clone, Default)]
+pub struct SendMessageResult {
+    pub success: bool,
+    pub error: Option<String>,
+    pub message_id: Option<String>,
+}
+
+/// 创建会话回调类型
+/// 参数: (project_path, prompt, request_id)
+/// 返回: CreateSessionResult
+pub type CreateSessionCallback = Arc<dyn Fn(&str, Option<&str>, &str) -> CreateSessionResult + Send + Sync>;
+
+/// 发送消息回调类型
+/// 参数: (session_id, text, request_id)
+/// 返回: SendMessageResult
+pub type SendMessageCallback = Arc<dyn Fn(&str, &str, &str) -> SendMessageResult + Send + Sync>;
+
+/// 检查加载状态回调类型
+/// 参数: (session_id, request_id)
+/// 返回: is_loading (bool)
+pub type CheckLoadingCallback = Arc<dyn Fn(&str, &str) -> bool + Send + Sync>;
 
 /// 权限审批结果
 #[derive(Debug, Clone)]
@@ -84,6 +121,12 @@ pub struct DaemonService {
     session_discovered_callback: Arc<RwLock<Option<SessionDiscoveredCallback>>>,
     /// 服务器命令回调
     server_command_callback: Arc<RwLock<Option<ServerCommandCallback>>>,
+    /// 创建会话回调 (ETerm)
+    create_session_callback: Arc<RwLock<Option<CreateSessionCallback>>>,
+    /// 发送消息回调 (ETerm)
+    send_message_callback: Arc<RwLock<Option<SendMessageCallback>>>,
+    /// 检查加载状态回调 (ETerm)
+    check_loading_callback: Arc<RwLock<Option<CheckLoadingCallback>>>,
     /// 等待中的权限请求
     pending_approvals: Arc<RwLock<HashMap<String, PendingApproval>>>,
     /// 会话监听器
@@ -132,6 +175,9 @@ impl DaemonService {
             find_new_session_callback: Arc::new(RwLock::new(None)),
             session_discovered_callback: Arc::new(RwLock::new(None)),
             server_command_callback: Arc::new(RwLock::new(None)),
+            create_session_callback: Arc::new(RwLock::new(None)),
+            send_message_callback: Arc::new(RwLock::new(None)),
+            check_loading_callback: Arc::new(RwLock::new(None)),
             pending_approvals: Arc::new(RwLock::new(HashMap::new())),
             session_watcher: Arc::new(SessionWatcher::new()),
             shared_db,
@@ -202,6 +248,9 @@ impl DaemonService {
             find_new_session_callback: Arc::new(RwLock::new(None)),
             session_discovered_callback: Arc::new(RwLock::new(None)),
             server_command_callback: Arc::new(RwLock::new(None)),
+            create_session_callback: Arc::new(RwLock::new(None)),
+            send_message_callback: Arc::new(RwLock::new(None)),
+            check_loading_callback: Arc::new(RwLock::new(None)),
             pending_approvals: Arc::new(RwLock::new(HashMap::new())),
             session_watcher: Arc::new(SessionWatcher::new()),
             shared_db,
@@ -236,6 +285,21 @@ impl DaemonService {
     /// 设置服务器命令回调
     pub async fn set_server_command_callback(&self, callback: ServerCommandCallback) {
         *self.server_command_callback.write().await = Some(callback);
+    }
+
+    /// 设置创建会话回调 (ETerm)
+    pub async fn set_create_session_callback(&self, callback: CreateSessionCallback) {
+        *self.create_session_callback.write().await = Some(callback);
+    }
+
+    /// 设置发送消息回调 (ETerm)
+    pub async fn set_send_message_callback(&self, callback: SendMessageCallback) {
+        *self.send_message_callback.write().await = Some(callback);
+    }
+
+    /// 设置检查加载状态回调 (ETerm)
+    pub async fn set_check_loading_callback(&self, callback: CheckLoadingCallback) {
+        *self.check_loading_callback.write().await = Some(callback);
     }
 
     /// 启动服务
@@ -281,42 +345,39 @@ impl DaemonService {
     async fn push_initial_data(&self) -> Result<()> {
         info!("Pushing initial data to server...");
 
-        // 1. 推送项目列表
-        let projects = self.reader.write().await.list_projects(Some(20))?;
+        // 从 DB 读取（禁止降级）
+        let db = self.shared_db.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("SharedDB not initialized"))?;
+
+        // 1. 推送项目列表（从 DB）
+        let projects = db.list_projects_with_stats(20, 0).await?;
         let projects_json: Vec<serde_json::Value> = projects
             .into_iter()
             .map(|p| serde_json::to_value(p).unwrap())
             .collect();
 
         info!("Pushing {} projects to server", projects_json.len());
-        self.socket.read().await.report_project_data(projects_json, None).await?;
+        self.socket.read().await.report_project_data(projects_json.clone(), None).await?;
 
-        // 2. 推送每个项目的会话列表（限制每个项目最多 50 个会话，避免消息过大）
-        let all_sessions = self.reader.write().await.list_sessions(None, false)?;
-        if !all_sessions.is_empty() {
-            // 按 projectPath 分组
-            let mut sessions_by_project: std::collections::HashMap<String, Vec<serde_json::Value>> =
-                std::collections::HashMap::new();
+        // 2. 推送每个项目的会话列表（从 DB，每个项目最多 50 个）
+        for project_json in &projects_json {
+            if let Some(project_path) = project_json.get("projectPath").and_then(|v| v.as_str()) {
+                let sessions = db.list_sessions_by_project_path(project_path, 50, 0).await?;
+                if !sessions.is_empty() {
+                    let sessions_json: Vec<serde_json::Value> = sessions
+                        .into_iter()
+                        .map(|s| serde_json::to_value(s).unwrap())
+                        .collect();
 
-            for session in all_sessions {
-                let project_path = session.project_path.clone();
-                let session_json = serde_json::to_value(&session).unwrap();
-                let sessions = sessions_by_project.entry(project_path).or_default();
-                // 限制每个项目最多 50 个会话
-                if sessions.len() < 50 {
-                    sessions.push(session_json);
+                    info!(
+                        "Pushing {} sessions for project {} to server",
+                        sessions_json.len(),
+                        project_path
+                    );
+                    self.socket.read().await
+                        .report_session_metadata(sessions_json, Some(project_path.to_string()), None)
+                        .await?;
                 }
-            }
-
-            for (project_path, sessions) in sessions_by_project {
-                info!(
-                    "Pushing {} sessions for project {} to server",
-                    sessions.len(),
-                    project_path
-                );
-                self.socket.read().await
-                    .report_session_metadata(sessions, Some(project_path), None)
-                    .await?;
             }
         }
 
@@ -529,52 +590,98 @@ impl DaemonService {
     // ==================== 事件处理器 ====================
 
     async fn handle_request_project_data(&self, data: serde_json::Value) -> Result<()> {
-        let limit = data.get("limit").and_then(|v| v.as_u64()).map(|v| v as usize);
+        let total_start = Instant::now();
+
+        let limit = data.get("limit").and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
+        let offset = data.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
         let request_id = data
             .get("requestId")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let projects = self.reader.write().await.list_projects(limit)?;
+        // 从 DB 读取（禁止降级）
+        let db = self.shared_db.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("SharedDB not initialized"))?;
 
+        let db_start = Instant::now();
+        let projects = db.list_projects_with_stats(limit, offset).await?;
+        let db_elapsed = db_start.elapsed();
+
+        let project_count = projects.len();
+
+        let serialize_start = Instant::now();
         let projects_json: Vec<serde_json::Value> = projects
             .into_iter()
             .map(|p| serde_json::to_value(p).unwrap())
             .collect();
+        let serialize_elapsed = serialize_start.elapsed();
 
+        let socket_start = Instant::now();
         self.socket.read().await
             .report_project_data(projects_json, request_id)
             .await?;
+        let socket_elapsed = socket_start.elapsed();
+
+        let total_elapsed = total_start.elapsed();
+        vlaude_log_info!(
+            "[Perf] request_project_data: total={:?}, db={:?}, serialize={:?}, socket={:?}, count={}",
+            total_elapsed, db_elapsed, serialize_elapsed, socket_elapsed, project_count
+        );
 
         Ok(())
     }
 
     async fn handle_request_session_metadata(&self, data: serde_json::Value) -> Result<()> {
-        let project_path = data.get("projectPath").and_then(|v| v.as_str());
+        let total_start = Instant::now();
+
+        let project_path = data.get("projectPath").and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("projectPath is required"))?;
+        let limit = data.get("limit").and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
+        let offset = data.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
         let request_id = data
             .get("requestId")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let sessions = self.reader.write().await.list_sessions(project_path, false)?;
+        // 从 DB 读取（禁止降级）
+        let db = self.shared_db.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("SharedDB not initialized"))?;
 
+        let db_start = Instant::now();
+        // agent-* 过滤已在 DB 层 SQL 统一处理
+        let sessions = db.list_sessions_by_project_path(project_path, limit, offset).await?;
+        let db_elapsed = db_start.elapsed();
+        let session_count = sessions.len();
+
+        let serialize_start = Instant::now();
         let sessions_json: Vec<serde_json::Value> = sessions
             .into_iter()
             .map(|s| serde_json::to_value(s).unwrap())
             .collect();
+        let serialize_elapsed = serialize_start.elapsed();
 
+        let socket_start = Instant::now();
         self.socket.read().await
             .report_session_metadata(
                 sessions_json,
-                project_path.map(|s| s.to_string()),
+                Some(project_path.to_string()),
                 request_id,
             )
             .await?;
+        let socket_elapsed = socket_start.elapsed();
+
+        let total_elapsed = total_start.elapsed();
+        vlaude_log_info!(
+            "[Perf] request_session_metadata: total={:?}, db={:?}, serialize={:?}, socket={:?}, count={}, project={}",
+            total_elapsed, db_elapsed, serialize_elapsed, socket_elapsed, session_count, project_path
+        );
 
         Ok(())
     }
 
     async fn handle_request_session_messages(&self, data: serde_json::Value) -> Result<()> {
+        let total_start = Instant::now();
+
         let session_id = data
             .get("sessionId")
             .and_then(|v| v.as_str())
@@ -594,39 +701,132 @@ impl DaemonService {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let order = if order_str == "desc" {
-            session_reader::Order::Desc
-        } else {
-            session_reader::Order::Asc
-        };
+        let desc = order_str == "desc";
 
-        // 获取会话文件路径
-        let mut reader = self.reader.write().await;
-        let session_path = reader
-            .get_session_path(session_id)
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", session_id))?;
+        // 从 DB 读取（禁止降级）
+        let db = self.shared_db.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("SharedDB not initialized"))?;
 
-        // 使用 read_messages_raw 返回原始 JSONL 格式，不做转换
-        let result = reader.read_messages_raw(&session_path, limit, offset, order)?;
+        // 1. 从 DB 读取消息
+        let db_start = Instant::now();
+        let db_messages = db.get_messages_ordered(session_id, limit, offset, desc).await?;
+        let total = db.get_message_count(session_id).await? as usize;
+        let db_elapsed = db_start.elapsed();
 
-        let message_count = result.messages.len();
+        let has_more = offset + db_messages.len() < total;
 
+        // 2. 把 DB Message 的 raw 字段解析成 serde_json::Value
+        let parse_start = Instant::now();
+        let mut messages: Vec<serde_json::Value> = db_messages
+            .into_iter()
+            .filter_map(|msg| {
+                msg.raw.as_ref().and_then(|raw| serde_json::from_str(raw).ok())
+            })
+            .collect();
+
+        // 解析 contentBlocks 并添加到消息中
+        crate::content_blocks::enrich_messages_with_content_blocks(&mut messages);
+        let parse_elapsed = parse_start.elapsed();
+
+        let message_count = messages.len();
+
+        // 3. 发送响应
+        let socket_start = Instant::now();
         self.socket.read().await
             .report_session_messages(
                 session_id.to_string(),
                 project_path.to_string(),
-                result.messages,
-                result.total,
-                result.has_more,
-                request_id,
+                messages,
+                total,
+                has_more,
+                request_id.clone(),
             )
             .await?;
+        let socket_elapsed = socket_start.elapsed();
 
-        debug!(
-            "Sent {} messages for session {}",
-            message_count,
-            session_id
+        let total_elapsed = total_start.elapsed();
+        vlaude_log_info!(
+            "[Perf] request_session_messages: total={:?}, db={:?}, parse={:?}, socket={:?}, count={}, session={}",
+            total_elapsed, db_elapsed, parse_elapsed, socket_elapsed, message_count, session_id
         );
+
+        // 4. 异步触发 JSONL 采集（问题 11：保鲜机制）
+        self.trigger_session_sync(session_id, project_path).await;
+
+        Ok(())
+    }
+
+    /// 异步触发 JSONL 采集（保鲜机制）
+    /// 采集完成后，如果有新数据会通过 socket 增量推送
+    async fn trigger_session_sync(&self, session_id: &str, project_path: &str) {
+        let session_id = session_id.to_string();
+        let project_path = project_path.to_string();
+        let reader = self.reader.clone();
+        let shared_db = self.shared_db.clone();
+        let socket = self.socket.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) = Self::do_session_sync(&session_id, &project_path, reader, shared_db, socket).await {
+                warn!("[SessionSync] Failed to sync session {}: {}", session_id, e);
+            }
+        });
+    }
+
+    /// 执行 JSONL → DB 同步，发现增量则推送
+    async fn do_session_sync(
+        session_id: &str,
+        _project_path: &str,
+        reader: Arc<RwLock<ClaudeReader>>,
+        shared_db: Option<Arc<SharedDbAdapter>>,
+        socket: Arc<RwLock<SocketClient>>,
+    ) -> Result<()> {
+        let db = shared_db.ok_or_else(|| anyhow::anyhow!("SharedDB not initialized"))?;
+
+        // 获取 DB 中该 session 当前的消息数
+        let db_count_before = db.get_message_count(session_id).await? as usize;
+
+        // 从 JSONL 读取新增消息（从 DB 已有数量的位置开始）
+        let mut reader_guard = reader.write().await;
+        let session_path = match reader_guard.get_session_path(session_id) {
+            Some(p) => p,
+            None => return Ok(()), // session 不存在，跳过
+        };
+
+        // 先读取一条来获取 total 数量
+        let jsonl_result = reader_guard.read_messages_raw(&session_path, 1, 0, session_reader::Order::Asc)?;
+        let jsonl_count = jsonl_result.total;
+
+        // 如果 JSONL 有更多消息，说明有增量
+        if jsonl_count > db_count_before {
+            debug!(
+                "[SessionSync] Found {} new messages for session {} (DB: {}, JSONL: {})",
+                jsonl_count - db_count_before, session_id, db_count_before, jsonl_count
+            );
+
+            // 从 DB 已有数量的位置开始读取新增消息
+            let new_count = jsonl_count - db_count_before;
+            let new_result = reader_guard.read_messages_raw(
+                &session_path,
+                new_count,           // 只读取新增的数量
+                db_count_before,     // 从 DB 已有数量的位置开始
+                session_reader::Order::Asc
+            )?;
+            drop(reader_guard);
+
+            let new_messages: Vec<serde_json::Value> = new_result.messages;
+
+            // 推送新消息给客户端
+            for msg in new_messages {
+                if let Err(e) = socket.read().await.notify_new_message(session_id, msg).await {
+                    warn!("[SessionSync] Failed to push new message: {}", e);
+                }
+            }
+
+            // 注意：消息写入 DB 是通过 watcher 的 handle_watch_event 完成的
+            // 这里只负责推送，不重复写入
+        } else {
+            drop(reader_guard);
+        }
 
         Ok(())
     }
@@ -810,7 +1010,7 @@ impl DaemonService {
     // ==================== V3: 写操作处理方法 ====================
 
     /// 处理创建会话请求
-    /// 注意：Daemon 本身不创建会话，需要通过 ETerm 或 CLI 创建
+    /// 通过 ETerm 回调创建会话
     async fn handle_create_session(&self, data: serde_json::Value) -> Result<()> {
         let request_id = data
             .get("requestId")
@@ -827,18 +1027,28 @@ impl DaemonService {
             request_id, project_path
         );
 
-        // TODO: 实际的会话创建需要通过 ETerm 或启动 Claude CLI
-        // 目前先返回失败，等待 ETerm 集成完成
+        // 尝试通过 ETerm 回调创建会话
+        let result = if let Some(callback) = self.create_session_callback.read().await.as_ref() {
+            callback(project_path, prompt, request_id)
+        } else {
+            // 没有注册回调，返回失败
+            CreateSessionResult {
+                success: false,
+                error: Some("No ETerm callback registered. Please use ETerm to create sessions.".to_string()),
+                ..Default::default()
+            }
+        };
+
         self.socket
             .read()
             .await
             .send_session_created_result(
                 request_id,
-                false,
-                None,
-                None,
-                None,
-                Some("Daemon does not support session creation directly. Please use ETerm."),
+                result.success,
+                result.session_id.as_deref(),
+                result.project_path.as_deref(),
+                result.encoded_dir_name.as_deref(),
+                result.error.as_deref(),
             )
             .await?;
 
@@ -846,6 +1056,7 @@ impl DaemonService {
     }
 
     /// 处理检查加载状态请求
+    /// 通过 ETerm 回调检查加载状态
     async fn handle_check_loading(&self, data: serde_json::Value) -> Result<()> {
         let request_id = data
             .get("requestId")
@@ -861,19 +1072,25 @@ impl DaemonService {
             request_id, session_id
         );
 
-        // 目前返回 false（未加载），因为 Daemon 不跟踪加载状态
-        // 实际的加载状态需要通过 SDK 或 ETerm 来获取
+        // 尝试通过 ETerm 回调检查加载状态
+        let is_loading = if let Some(callback) = self.check_loading_callback.read().await.as_ref() {
+            callback(session_id, request_id)
+        } else {
+            // 没有注册回调，默认返回 false
+            false
+        };
+
         self.socket
             .read()
             .await
-            .send_check_loading_result(request_id, false)
+            .send_check_loading_result(request_id, is_loading)
             .await?;
 
         Ok(())
     }
 
     /// 处理发送消息请求
-    /// 注意：Daemon 本身不发送消息，需要通过 ETerm 或 SDK 发送
+    /// 通过 ETerm 回调发送消息
     async fn handle_send_message(&self, data: serde_json::Value) -> Result<()> {
         let request_id = data
             .get("requestId")
@@ -892,16 +1109,26 @@ impl DaemonService {
             text.len()
         );
 
-        // TODO: 实际的消息发送需要通过 ETerm 或 SDK
-        // 目前先返回失败，等待集成完成
+        // 尝试通过 ETerm 回调发送消息
+        let result = if let Some(callback) = self.send_message_callback.read().await.as_ref() {
+            callback(session_id, text, request_id)
+        } else {
+            // 没有注册回调，返回失败
+            SendMessageResult {
+                success: false,
+                error: Some("No ETerm callback registered. Please use ETerm to send messages.".to_string()),
+                ..Default::default()
+            }
+        };
+
         self.socket
             .read()
             .await
             .send_message_result(
                 request_id,
-                false,
-                Some("Daemon does not support message sending directly. Please use ETerm."),
-                None,
+                result.success,
+                result.error.as_deref(),
+                result.message_id.as_deref(),
             )
             .await?;
 
@@ -1238,6 +1465,8 @@ impl DaemonService {
             tool_name: None,
             tool_args: None,
             raw,
+            approval_status: None,
+            approval_resolved_at: None,
         };
 
         let inserted = db.insert_messages(session_id, &[msg_input]).await?;

@@ -11,7 +11,7 @@ use tracing::{debug, info, warn};
 use claude_session_db::{
     coordination::{Role, WriterHealth, WriterType},
     db::MessageInput,
-    DbConfig, Message, Project, SearchResult, Session, SessionDB,
+    DbConfig, Message, Project, ProjectWithStats, SearchResult, Session, SessionDB, SessionWithProject,
 };
 
 /// 共享数据库适配器（Vlaude 版本）
@@ -204,16 +204,46 @@ impl SharedDbAdapter {
         Ok(db.list_messages(session_id, limit, offset)?)
     }
 
-    /// 列出项目
-    pub async fn list_projects(&self) -> anyhow::Result<Vec<Project>> {
+    /// 按会话 ID 获取消息（支持排序）
+    pub async fn get_messages_ordered(
+        &self,
+        session_id: &str,
+        limit: usize,
+        offset: usize,
+        desc: bool,
+    ) -> anyhow::Result<Vec<Message>> {
         let db = self.db.read().await;
-        Ok(db.list_projects()?)
+        Ok(db.list_messages_ordered(session_id, limit, offset, desc)?)
+    }
+
+    /// 获取会话消息总数
+    pub async fn get_message_count(&self, session_id: &str) -> anyhow::Result<i64> {
+        let db = self.db.read().await;
+        Ok(db.get_session_message_count(session_id)?)
+    }
+
+    /// 列出项目（带统计信息，支持分页）
+    pub async fn list_projects_with_stats(&self, limit: usize, offset: usize) -> anyhow::Result<Vec<ProjectWithStats>> {
+        let db = self.db.read().await;
+        Ok(db.list_projects_with_stats(limit, offset)?)
     }
 
     /// 列出会话
     pub async fn list_sessions(&self, project_id: i64) -> anyhow::Result<Vec<Session>> {
         let db = self.db.read().await;
         Ok(db.list_sessions(project_id)?)
+    }
+
+    /// 根据路径获取项目
+    pub async fn get_project_by_path(&self, path: &str) -> anyhow::Result<Option<Project>> {
+        let db = self.db.read().await;
+        Ok(db.get_project_by_path(path)?)
+    }
+
+    /// 根据项目路径列出会话（带项目信息，支持分页）
+    pub async fn list_sessions_by_project_path(&self, project_path: &str, limit: usize, offset: usize) -> anyhow::Result<Vec<SessionWithProject>> {
+        let db = self.db.read().await;
+        Ok(db.list_sessions_by_project_path(project_path, limit, offset)?)
     }
 
     /// FTS 搜索
