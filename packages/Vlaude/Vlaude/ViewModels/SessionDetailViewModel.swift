@@ -69,12 +69,15 @@ class SessionDetailViewModel: ObservableObject {
         currentProjectPath = projectPath
 
         do {
-            session = try await client.getSessionDetail(sessionId: sessionId)
+            print("🔍 [loadSessionDetail] 请求 sessionId=\(sessionId), projectPath=\(projectPath)")
+            session = try await client.getSessionDetail(sessionId: sessionId, projectPath: projectPath)
+            print("🔍 [loadSessionDetail] 返回 session=\(session?.id ?? "nil")")
             await loadMessages(sessionId: sessionId, reset: true)
 
             // 订阅 WebSocket 实时消息
             subscribeToSession(sessionId)
         } catch {
+            print("❌ [loadSessionDetail] 错误: \(error)")
             errorMessage = error.localizedDescription
         }
 
@@ -389,6 +392,7 @@ class SessionDetailViewModel: ObservableObject {
 
     /// 应用缓存的 pending approvals 到新到达的 ToolExecutions
     /// 处理时序问题：permission_request 可能先于 tool_use 消息到达
+    /// Phase 4: 也处理 MessageTransformer 已设置状态但缺少 requestId 的情况
     private func applyPendingApprovals() {
         guard !pendingApprovals.isEmpty else { return }
 
@@ -399,11 +403,21 @@ class SessionDetailViewModel: ObservableObject {
             for i in 0..<displayMessages.count {
                 for j in 0..<displayMessages[i].toolExecutions.count {
                     if displayMessages[i].toolExecutions[j].id == toolUseId {
-                        // 只有当状态是 none 时才更新（避免覆盖已有状态）
-                        if displayMessages[i].toolExecutions[j].approvalStatus == .none {
+                        let currentStatus = displayMessages[i].toolExecutions[j].approvalStatus
+                        let currentRequestId = displayMessages[i].toolExecutions[j].approvalRequestId
+
+                        // 更新条件：
+                        // 1. 状态是 none（需要设置状态和 requestId）
+                        // 2. 状态是 awaitingPermission 但缺少 requestId（来自 Messages，需要补充 requestId）
+                        let needsStatusUpdate = currentStatus == .none
+                        let needsRequestIdUpdate = currentStatus == .awaitingPermission && currentRequestId == nil
+
+                        if needsStatusUpdate || needsRequestIdUpdate {
                             // 创建更新后的 toolExecution
                             var updatedExecution = displayMessages[i].toolExecutions[j]
-                            updatedExecution.approvalStatus = .awaitingPermission
+                            if needsStatusUpdate {
+                                updatedExecution.approvalStatus = .awaitingPermission
+                            }
                             updatedExecution.approvalRequestId = approval.requestId
 
                             // 创建更新后的 toolExecutions 数组
@@ -417,7 +431,6 @@ class SessionDetailViewModel: ObservableObject {
                             // 替换整个 displayMessage 以触发 SwiftUI 更新
                             displayMessages[i] = updatedMessage
                             hasUpdates = true
-
                         }
                     }
                 }
@@ -476,14 +489,15 @@ class SessionDetailViewModel: ObservableObject {
     // MARK: - 发送消息
 
     func sendMessage(_ text: String) {
+        print("📤 [ViewModel.sendMessage] 被调用, text=\(text.prefix(20))...")
+        print("📤 [ViewModel.sendMessage] currentSessionId=\(currentSessionId ?? "nil")")
+
         guard let sessionId = currentSessionId else {
+            print("❌ [ViewModel.sendMessage] currentSessionId 为 nil，提前返回")
             return
         }
 
-        guard let session = session else {
-            return
-        }
-
+        // 注意：不再依赖 session 对象，只需要 sessionId 和 projectPath
         let projectPath = currentProjectPath
 
         // 生成 clientMessageId 用于去重
@@ -539,6 +553,9 @@ class SessionDetailViewModel: ObservableObject {
             snapshot: nil,
             isSnapshotUpdate: nil,
             clientMessageId: clientMessageId,  // 携带 clientMessageId
+            toolCallId: nil,
+            approvalStatus: nil,
+            approvalResolvedAt: nil as Int64?,
             mergedToolExecutions: []
         )
 

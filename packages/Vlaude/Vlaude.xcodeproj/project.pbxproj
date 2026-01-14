@@ -629,8 +629,8 @@
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/vimo-ai/CoreNetworkKit";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.0.1;
+				branch = main;
+				kind = branch;
 			};
 		};
 /* End XCRemoteSwiftPackageReference section */

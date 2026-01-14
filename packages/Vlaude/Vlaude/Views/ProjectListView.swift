@@ -53,11 +53,11 @@ struct ProjectListView: View {
                     List {
                         ForEach(viewModel.projects) { project in
                             NavigationLink {
-                                SessionListView(projectPath: project.path, projectName: project.name)
+                                SessionListView(projectPath: project.projectPath, projectName: project.name)
                             } label: {
                                 ProjectRow(
                                     project: project,
-                                    etermSessionCount: webSocketManager.etermSessionCounts[project.path] ?? 0
+                                    etermSessionCount: webSocketManager.etermSessionCounts[project.projectPath] ?? 0
                                 )
                             }
                         }
@@ -178,13 +178,13 @@ struct ProjectRow: View {
                 }
             }
 
-            Text(project.path)
+            Text(project.projectPath)
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
 
-            if let lastAccessed = project.lastAccessed {
-                Text("最后访问: \(lastAccessed, style: .relative)")
+            if let lastActive = project.lastActive {
+                Text("最后活跃: \(Date(timeIntervalSince1970: Double(lastActive) / 1000), style: .relative)")
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }

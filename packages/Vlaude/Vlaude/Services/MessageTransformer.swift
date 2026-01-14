@@ -105,11 +105,21 @@ class MessageTransformer {
     /// 上次转换的消息 ID 列表（用于检测删除）
     private var lastMessageIds: Set<String> = []
 
+    /// 审批状态缓存 (toolCallId -> ApprovalInfo)（Phase 4）
+    private var approvalCache: [String: ApprovalInfo] = [:]
+
+    /// 审批信息（Phase 4）
+    struct ApprovalInfo {
+        let status: ToolApprovalStatus
+        let resolvedAt: Int64?
+    }
+
     /// 清空缓存
     func clearCache() {
         cache.removeAll()
         toolCache.removeAll()
         lastMessageIds.removeAll()
+        approvalCache.removeAll()
     }
 
     // MARK: - 核心转换逻辑
@@ -126,6 +136,9 @@ class MessageTransformer {
             cache.removeValue(forKey: deletedId)
         }
         lastMessageIds = currentMessageIds
+
+        // Phase 4: 构建审批状态缓存（从 Server 返回的 Message 数据）
+        updateApprovalCache(from: messages)
 
         // 第一遍：提取所有工具结果，更新工具缓存
         updateToolCache(from: messages)
@@ -177,6 +190,52 @@ class MessageTransformer {
         return false
     }
 
+    // MARK: - Phase 4: 审批状态管理
+
+    /// 更新审批状态缓存（从 Server 返回的 Message 数据构建）
+    private func updateApprovalCache(from messages: [Message]) {
+        for msg in messages {
+            // 只处理有 toolCallId 的消息
+            guard let toolCallId = msg.toolCallId,
+                  let statusString = msg.approvalStatus else { continue }
+
+            let status = parseApprovalStatus(statusString)
+            approvalCache[toolCallId] = ApprovalInfo(
+                status: status,
+                resolvedAt: msg.approvalResolvedAt
+            )
+        }
+    }
+
+    /// 将字符串状态转换为枚举
+    /// Server 状态 -> iOS 状态映射:
+    /// - "pending" -> awaitingPermission: 等待用户审批
+    /// - "approved" -> executing: 用户已批准，正在执行（tool_result 到达后由 UI 显示完成状态）
+    /// - "rejected" -> rejected: 用户已拒绝
+    /// - "timeout" -> timeout: 审批超时
+    private func parseApprovalStatus(_ status: String) -> ToolApprovalStatus {
+        switch status.lowercased() {
+        case "pending":
+            return .awaitingPermission
+        case "approved":
+            // 用户已批准，映射为 executing（正在执行）
+            // 注：如果已有 tool_result，result 字段会非空，UI 会显示结果
+            return .executing
+        case "rejected":
+            return .rejected
+        case "timeout":
+            return .timeout
+        default:
+            print("⚠️ [MessageTransformer] Unknown approval status from server: \(status)")
+            return .none
+        }
+    }
+
+    /// 获取工具的审批状态（供 ToolExecution 创建时使用）
+    func getApprovalStatus(for toolUseId: String) -> ToolApprovalStatus {
+        return approvalCache[toolUseId]?.status ?? .none
+    }
+
     /// 更新工具缓存
     private func updateToolCache(from messages: [Message]) {
         for msg in messages {
@@ -196,7 +255,8 @@ class MessageTransformer {
                             id: toolId,
                             name: extractToolName(from: msg, toolId: toolId),
                             input: [:],
-                            result: result
+                            result: result,
+                            approvalStatus: getApprovalStatus(for: toolId)
                         )
                     }
                 }
@@ -258,7 +318,8 @@ class MessageTransformer {
                             content: resultBlock.content,
                             isError: resultBlock.isError,
                             timestamp: parseTimestamp(msg.timestamp)
-                        )
+                        ),
+                        approvalStatus: getApprovalStatus(for: resultBlock.toolUseId)
                     )
                     executions.append(execution)
                 }
@@ -303,7 +364,8 @@ class MessageTransformer {
                         content: content,
                         isError: isError,
                         timestamp: parseTimestamp(msg.timestamp)
-                    )
+                    ),
+                    approvalStatus: getApprovalStatus(for: toolUseId)
                 )
                 executions.append(execution)
             }
@@ -362,7 +424,8 @@ class MessageTransformer {
                         id: toolBlock.id,
                         name: toolBlock.name,
                         input: input,
-                        result: result
+                        result: result,
+                        approvalStatus: getApprovalStatus(for: toolBlock.id)
                     )
                     executions.append(execution)
                     toolCache[execution.id] = execution
@@ -650,7 +713,8 @@ class MessageTransformer {
             id: toolId,
             name: toolName,
             input: input,
-            result: result
+            result: result,
+            approvalStatus: getApprovalStatus(for: toolId)
         )
     }
 

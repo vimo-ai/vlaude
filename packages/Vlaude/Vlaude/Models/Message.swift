@@ -193,6 +193,13 @@ struct Message: Identifiable, Codable {
     // ========================================
     let clientMessageId: String?  // 客户端生成的消息 ID，用于乐观更新去重
 
+    // ========================================
+    // Server DB 同步字段（Phase 4）
+    // ========================================
+    let toolCallId: String?         // tool_use block 的 ID（Server sync 模式返回）
+    let approvalStatus: String?     // pending, approved, rejected, timeout
+    let approvalResolvedAt: Int64?  // 审批完成时间戳（毫秒），使用 Int64 确保不溢出
+
     // 用于显示的合并后的工具执行结果（在 ViewModel 中填充）
     var mergedToolExecutions: [ToolExecution] = []
 
@@ -347,6 +354,9 @@ struct Message: Identifiable, Codable {
 
         // clientMessageId 去重字段
         case clientMessageId
+
+        // Server DB 同步字段（Phase 4）
+        case toolCallId, approvalStatus, approvalResolvedAt
     }
 }
 

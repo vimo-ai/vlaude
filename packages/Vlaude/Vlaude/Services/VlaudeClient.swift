@@ -44,9 +44,11 @@ final class VlaudeClient {
         return (response.data, response.total, response.hasMore)
     }
 
-    func getSessionDetail(sessionId: String) async throws -> Session? {
-        let request = GetSessionDetailRequest(sessionId: sessionId)
+    func getSessionDetail(sessionId: String, projectPath: String) async throws -> Session? {
+        print("🌐 [VlaudeClient.getSessionDetail] sessionId=\(sessionId), projectPath=\(projectPath)")
+        let request = GetSessionDetailRequest(sessionId: sessionId, projectPath: projectPath)
         let response = try await client.send(request)
+        print("🌐 [VlaudeClient.getSessionDetail] response.success=\(response.success), data=\(response.data?.id ?? "nil"), message=\(response.message ?? "nil")")
         return response.data
     }
 

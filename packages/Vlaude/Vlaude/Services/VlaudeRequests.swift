@@ -52,10 +52,15 @@ struct GetSessionDetailRequest: Request {
     typealias Response = SessionDetailResponse
 
     let sessionId: String
+    let projectPath: String
 
     var baseURL: URL { VlaudeAPI.baseURL }
     var path: String { "/sessions/by-session-id/\(sessionId)" }
     var method: HTTPMethod { .get }
+
+    var query: [String: Any]? {
+        ["projectPath": projectPath]
+    }
 }
 
 struct GetSessionMessagesRequest: Request {

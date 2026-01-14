@@ -1,13 +1,22 @@
 {
-  "originHash" : "4009de58f96b06fc459b70db8b1e77b1bde4b2ee40a44185a814bc1c106b4d76",
+  "originHash" : "7f254db82fc44f3c91d4ad103dd4a4e401272a930ffb13ba969911d8b163e0d7",
   "pins" : [
+    {
+      "identity" : "alamofire",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Alamofire/Alamofire.git",
+      "state" : {
+        "revision" : "7be73f6c2b5cd90e40798b06ebd5da8f9f79cf88",
+        "version" : "5.11.0"
+      }
+    },
     {
       "identity" : "corenetworkkit",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/vimo-ai/CoreNetworkKit",
       "state" : {
-        "revision" : "95db102b7d5470185a6b66549d5941a69bec61eb",
-        "version" : "0.0.1"
+        "branch" : "main",
+        "revision" : "53d5f759d615f3990e5316b6d4ad4115d4b996c2"
       }
     },
     {

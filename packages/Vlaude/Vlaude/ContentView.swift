@@ -16,13 +16,13 @@ struct ContentView: View {
         ZStack {
             ProjectListView()
 
-            // 首次连接中 - 显示 loading
-            if !webSocket.isConnected && !hasConnectedOnce {
+            // 首次连接中 - 显示 loading（仅当未失败时）
+            if !webSocket.isConnected && !hasConnectedOnce && !webSocket.connectionFailed {
                 InitialConnectingView()
             }
 
-            // 断连覆盖层 - 只在曾经连接成功后断开才显示
-            if !webSocket.isConnected && hasConnectedOnce {
+            // 断连覆盖层 - 曾经连接成功后断开 或 首次连接失败
+            if !webSocket.isConnected && (hasConnectedOnce || webSocket.connectionFailed) {
                 DisconnectedOverlayView(
                     isReconnecting: $isReconnecting,
                     onReconnect: reconnect

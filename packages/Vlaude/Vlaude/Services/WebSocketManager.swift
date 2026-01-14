@@ -111,9 +111,14 @@ class WebSocketManager: ObservableObject {
     // MARK: - Published State
 
     @Published var isConnected = false
+    @Published var connectionFailed = false  // 连接失败（所有重试都失败）
     @Published var lastError: Error?
     @Published var isEtermOnline = false
     @Published var etermSessionCounts: [String: Int] = [:]
+
+    // 重连计数
+    private var reconnectAttemptCount = 0
+    private let maxReconnectAttempts = 5
 
     // MARK: - Combine Publishers（状态推送）
 
@@ -194,6 +199,8 @@ class WebSocketManager: ObservableObject {
         socket.on(clientEvent: .connect) { [weak self] data, ack in
             DispatchQueue.main.async {
                 self?.isConnected = true
+                self?.connectionFailed = false  // 重置连接失败状态
+                self?.reconnectAttemptCount = 0  // 重置重连计数
             }
 
             // Phase 3: 重试待订阅的页面
@@ -235,7 +242,18 @@ class WebSocketManager: ObservableObject {
         }
 
         // 重连尝试
-        socket.on(clientEvent: .reconnectAttempt) { data, ack in
+        socket.on(clientEvent: .reconnectAttempt) { [weak self] data, ack in
+            guard let self = self else { return }
+            self.reconnectAttemptCount += 1
+            print("🔄 [WebSocket] 重连尝试 \(self.reconnectAttemptCount)/\(self.maxReconnectAttempts)")
+
+            // 达到最大重试次数，标记连接失败
+            if self.reconnectAttemptCount >= self.maxReconnectAttempts {
+                DispatchQueue.main.async {
+                    self.connectionFailed = true
+                    print("❌ [WebSocket] 连接失败：已达最大重试次数")
+                }
+            }
         }
 
         // 监听业务事件
@@ -521,6 +539,11 @@ class WebSocketManager: ObservableObject {
             return
         }
 
+        // 重置连接状态
+        reconnectAttemptCount = 0
+        DispatchQueue.main.async { [weak self] in
+            self?.connectionFailed = false
+        }
 
         // 断开旧连接
         if socket != nil {
@@ -802,7 +825,10 @@ class WebSocketManager: ObservableObject {
     // MARK: - 发送消息
 
     func sendMessage(_ text: String, sessionId: String, clientMessageId: String? = nil) {
+        print("📤 [WS] sendMessage called, isConnected=\(isConnected), socket=\(socket != nil ? "OK" : "NIL")")
+
         guard isConnected else {
+            print("❌ [WS] Not connected, message dropped")
             return
         }
 
@@ -815,8 +841,9 @@ class WebSocketManager: ObservableObject {
             payload["clientMessageId"] = clientMsgId
         }
 
+        print("📤 [WS] Emitting message:send, sessionId=\(sessionId)")
         socket.emit("message:send", payload)
-
+        print("📤 [WS] Emit done")
     }
 
     // MARK: - 事件监听
