@@ -5,6 +5,7 @@
 mod client;
 mod error;
 mod events;
+pub mod logging;
 mod registry;
 
 pub use client::{DaemonRegistration, SocketClient, SocketConfig, TlsConfig};

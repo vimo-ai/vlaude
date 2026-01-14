@@ -1153,3 +1153,35 @@ pub unsafe extern "C" fn socket_client_update_sessions(
         Err(_) => SocketClientError::Unknown,
     }
 }
+
+// ==================== 日志桥接 ====================
+
+/// 日志级别（与 Swift LogLevel 对应）
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VlaudeLogLevel {
+    Debug = 0,
+    Info = 1,
+    Warn = 2,
+    Error = 3,
+}
+
+/// 日志回调函数类型
+pub type VlaudeLogCallback = extern "C" fn(level: VlaudeLogLevel, message: *const c_char);
+
+/// 设置日志回调
+///
+/// Swift 端应该在初始化时调用此函数设置回调
+#[no_mangle]
+pub extern "C" fn vlaude_set_log_callback(callback: VlaudeLogCallback) {
+    // 两个 VlaudeLogLevel 枚举值相同，可以安全转换
+    let internal_callback: socket_client::logging::VlaudeLogCallback =
+        unsafe { std::mem::transmute(callback) };
+    socket_client::logging::set_log_callback(internal_callback);
+}
+
+/// 清除日志回调
+#[no_mangle]
+pub extern "C" fn vlaude_clear_log_callback() {
+    socket_client::logging::clear_log_callback();
+}
