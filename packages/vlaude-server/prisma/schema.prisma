@@ -59,18 +59,28 @@ model Session {
 model Message {
   id        Int      @id @default(autoincrement())
   sessionId Int
+  uuid      String?  @db.VarChar(255)  // 消息唯一标识（Claude JSONL 中的 uuid）
   role      String   @db.VarChar(20)
   content   String   @db.Text
   metadata  Json?
   sequence  Int
   timestamp DateTime
+
+  // 权限审批相关字段（Phase 3）
+  toolCallId         String?   @db.VarChar(255)  // tool_use block 的 ID
+  approvalStatus     String?   @db.VarChar(20)   // pending, approved, rejected, timeout
+  approvalResolvedAt BigInt?   // 审批完成时间戳（毫秒）
+
   createdAt DateTime @default(now())
 
   session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@unique([sessionId, sequence], name: "sessionId_sequence")
+  @@unique([uuid], name: "message_uuid")  // uuid 唯一约束（用于去重）
   @@index([sessionId])
   @@index([sequence])
+  @@index([toolCallId])
+  @@index([approvalStatus])
   @@map("claude_message")
 }
 

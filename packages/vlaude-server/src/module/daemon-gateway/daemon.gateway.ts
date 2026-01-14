@@ -13,6 +13,7 @@ import { Logger, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { RegistryService } from '../registry/registry.service';
 import { StatusService } from '../status';
+import { DataSyncService, DaemonMessage } from '../data-sync';
 import { StatusDaemonInfo, StatusSessionInfo } from '@vimo-ai/vlaude-shared-core';
 import { DaemonEvents, ServerEvents } from '../../shared/events';
 
@@ -38,10 +39,10 @@ export class DaemonGateway
   private connectedDaemons = new Map<string, { socket: Socket; info: any }>();
 
   // V4: 请求-响应模式的 pending requests
-  // Key: requestId, Value: { resolve, timer }
-  private pendingProjectRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout }>();
-  private pendingSessionRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout }>();
-  private pendingMessageRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout }>();
+  // Key: requestId, Value: { resolve, timer, startTime }
+  private pendingProjectRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout; startTime: number }>();
+  private pendingSessionRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout; startTime: number }>();
+  private pendingMessageRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout; startTime: number }>();
 
   // ETerm 状态已迁移到 Redis，通过 RegistryService 读取
   // 详见 PLAN_REDIS_STATE_SYNC.md
@@ -51,6 +52,7 @@ export class DaemonGateway
     @Inject(forwardRef(() => RegistryService))
     private readonly registryService: RegistryService,
     private readonly statusService: StatusService,
+    private readonly dataSyncService: DataSyncService,
   ) {}
 
   afterInit(server: Server) {
@@ -94,12 +96,15 @@ export class DaemonGateway
     @ConnectedSocket() client: Socket,
   ) {
     const requestId = data.requestId;
+    const receiveTime = Date.now();
     this.logger.log(`📥 Received ${data.projects.length} projects from daemon ${client.id}, requestId=${requestId || 'N/A'}`);
 
     if (requestId && this.pendingProjectRequests.has(requestId)) {
-      const { resolve, timer } = this.pendingProjectRequests.get(requestId)!;
+      const { resolve, timer, startTime } = this.pendingProjectRequests.get(requestId)!;
       clearTimeout(timer);
       this.pendingProjectRequests.delete(requestId);
+      const roundTrip = receiveTime - startTime;
+      this.logger.log(`[Perf] project_data received: roundTrip=${roundTrip}ms, count=${data.projects.length}, requestId=${requestId}`);
       resolve(data.projects);
     }
 
@@ -116,12 +121,15 @@ export class DaemonGateway
     @ConnectedSocket() client: Socket,
   ) {
     const requestId = data.requestId;
+    const receiveTime = Date.now();
     this.logger.log(`📥 Received ${data.sessions.length} sessions from daemon ${client.id}, requestId=${requestId || 'N/A'}`);
 
     if (requestId && this.pendingSessionRequests.has(requestId)) {
-      const { resolve, timer } = this.pendingSessionRequests.get(requestId)!;
+      const { resolve, timer, startTime } = this.pendingSessionRequests.get(requestId)!;
       clearTimeout(timer);
       this.pendingSessionRequests.delete(requestId);
+      const roundTrip = receiveTime - startTime;
+      this.logger.log(`[Perf] session_metadata received: roundTrip=${roundTrip}ms, count=${data.sessions.length}, requestId=${requestId}`);
       resolve(data.sessions);
     }
 
@@ -145,12 +153,15 @@ export class DaemonGateway
     @ConnectedSocket() client: Socket,
   ) {
     const requestId = data.requestId;
+    const receiveTime = Date.now();
     this.logger.log(`📥 Received ${data.messages.length} messages from daemon ${client.id}, requestId=${requestId || 'N/A'}`);
 
     if (requestId && this.pendingMessageRequests.has(requestId)) {
-      const { resolve, timer } = this.pendingMessageRequests.get(requestId)!;
+      const { resolve, timer, startTime } = this.pendingMessageRequests.get(requestId)!;
       clearTimeout(timer);
       this.pendingMessageRequests.delete(requestId);
+      const roundTrip = receiveTime - startTime;
+      this.logger.log(`[Perf] session_messages received: roundTrip=${roundTrip}ms, count=${data.messages.length}, requestId=${requestId}`);
       resolve({
         messages: data.messages,
         total: data.total,
@@ -208,6 +219,7 @@ export class DaemonGateway
     total: number;
     hasMore: boolean;
   } | null> {
+    const totalStart = Date.now();
     const daemons = Array.from(this.connectedDaemons.values());
     if (daemons.length === 0) {
       this.logger.warn('No daemon connected, cannot request projects');
@@ -216,6 +228,7 @@ export class DaemonGateway
 
     const daemon = daemons[0];
     const requestId = this.generateRequestId();
+    const startTime = Date.now();
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -227,7 +240,11 @@ export class DaemonGateway
       this.pendingProjectRequests.set(requestId, {
         resolve: (projects: any[]) => {
           // Rust 返回全量，在这里做分页
+          const sliceStart = Date.now();
           const sliced = projects.slice(offset, offset + limit);
+          const sliceTime = Date.now() - sliceStart;
+          const totalTime = Date.now() - totalStart;
+          this.logger.log(`[Perf] requestProjects completed: total=${totalTime}ms, slice=${sliceTime}ms, rawCount=${projects.length}, returnCount=${sliced.length}`);
           resolve({
             projects: sliced,
             total: projects.length,
@@ -235,6 +252,7 @@ export class DaemonGateway
           });
         },
         timer,
+        startTime,
       });
 
       // 发送请求事件（复用 Rust 已有的 server:requestProjectData）
@@ -264,6 +282,7 @@ export class DaemonGateway
     total: number;
     hasMore: boolean;
   } | null> {
+    const totalStart = Date.now();
     const daemons = Array.from(this.connectedDaemons.values());
     if (daemons.length === 0) {
       this.logger.warn('No daemon connected, cannot request sessions');
@@ -272,6 +291,7 @@ export class DaemonGateway
 
     const daemon = daemons[0];
     const requestId = this.generateRequestId();
+    const startTime = Date.now();
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -283,7 +303,11 @@ export class DaemonGateway
       this.pendingSessionRequests.set(requestId, {
         resolve: (sessions: any[]) => {
           // Rust 返回全量，在这里做分页
+          const sliceStart = Date.now();
           const sliced = sessions.slice(offset, offset + limit);
+          const sliceTime = Date.now() - sliceStart;
+          const totalTime = Date.now() - totalStart;
+          this.logger.log(`[Perf] requestSessions completed: total=${totalTime}ms, slice=${sliceTime}ms, rawCount=${sessions.length}, returnCount=${sliced.length}, project=${projectPath}`);
           resolve({
             sessions: sliced,
             total: sessions.length,
@@ -291,6 +315,7 @@ export class DaemonGateway
           });
         },
         timer,
+        startTime,
       });
 
       // 发送请求事件（复用 Rust 已有的 server:requestSessionMetadata）
@@ -307,7 +332,8 @@ export class DaemonGateway
     const result = await this.requestSessions(projectPath, 1000, 0);
     if (!result) return null;
 
-    const session = result.sessions.find((s: any) => s.sessionId === sessionId);
+    // Rust SessionMeta 使用 `id`，兼容旧格式的 `sessionId`
+    const session = result.sessions.find((s: any) => (s.sessionId || s.id) === sessionId);
     return session || null;
   }
 
@@ -322,6 +348,7 @@ export class DaemonGateway
     offset: number = 0,
     order: 'asc' | 'desc' = 'asc',
   ): Promise<{ messages: any[]; total: number; hasMore: boolean } | null> {
+    const totalStart = Date.now();
     const daemons = Array.from(this.connectedDaemons.values());
     if (daemons.length === 0) {
       this.logger.warn('No daemon connected, cannot request session messages');
@@ -330,6 +357,7 @@ export class DaemonGateway
 
     const daemon = daemons[0];
     const requestId = this.generateRequestId();
+    const startTime = Date.now();
 
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
@@ -338,7 +366,15 @@ export class DaemonGateway
         resolve(null);
       }, 10000);
 
-      this.pendingMessageRequests.set(requestId, { resolve, timer });
+      this.pendingMessageRequests.set(requestId, {
+        resolve: (result: { messages: any[]; total: number; hasMore: boolean }) => {
+          const totalTime = Date.now() - totalStart;
+          this.logger.log(`[Perf] requestSessionMessages completed: total=${totalTime}ms, count=${result.messages.length}, session=${sessionId}`);
+          resolve(result);
+        },
+        timer,
+        startTime,
+      });
 
       // 发送请求事件（复用 Rust 已有的 server:requestSessionMessages）
       daemon.socket.emit(ServerEvents.REQUEST_SESSION_MESSAGES, {
@@ -355,13 +391,46 @@ export class DaemonGateway
 
   /**
    * Daemon 推送新消息（转发给 AppGateway）
+   *
+   * V5 (Phase 3):
+   * - sync 模式下同时写入 Server DB
+   * - 然后转发给 iOS 客户端
    */
   @SubscribeMessage(DaemonEvents.NEW_MESSAGE)
-  handleNewMessage(
-    @MessageBody() data: { sessionId: string; message: any },
+  async handleNewMessage(
+    @MessageBody() data: { sessionId: string; projectPath?: string; message: any },
     @ConnectedSocket() client: Socket,
   ) {
     this.logger.log(`Received new message for session ${data.sessionId} from daemon ${client.id}`);
+
+    // sync 模式下写入 DB
+    if (this.dataSyncService.isSyncMode() && data.projectPath) {
+      try {
+        // 确保 Project 和 Session 存在
+        const projectId = await this.dataSyncService.ensureProject(data.projectPath);
+        const sessionDbId = await this.dataSyncService.ensureSession(data.sessionId, projectId, data.projectPath);
+
+        // 写入消息
+        const msg = data.message;
+        const daemonMessage: DaemonMessage = {
+          uuid: msg.uuid || `${data.sessionId}-${msg.sequence}`,
+          role: msg.role,
+          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+          metadata: msg.metadata,
+          sequence: msg.sequence,
+          timestamp: msg.timestamp,
+          toolCallId: msg.toolCallId,
+          approvalStatus: msg.approvalStatus,
+          approvalResolvedAt: msg.approvalResolvedAt,
+        };
+
+        await this.dataSyncService.writeMessage(sessionDbId, daemonMessage);
+        this.logger.log(`📝 [Sync] 消息已写入 Server DB: ${daemonMessage.uuid}`);
+      } catch (error) {
+        this.logger.error(`❌ [Sync] 写入消息失败: ${error.message}`);
+        // 写入失败不影响转发
+      }
+    }
 
     // 通过事件转发给 AppGateway，推送到订阅了该会话的 Swift 客户端
     this.eventEmitter.emit('app.notifyNewMessage', data);
@@ -899,7 +968,10 @@ export class DaemonGateway
     },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`📝 [Status] Session 开始: ${data.sessionId} (device: ${data.deviceId})`);
+    // 调试：打印注册的 sessionId 详细信息
+    this.logger.log(`📝 [Status] Session 开始: "${data.sessionId}" (device: ${data.deviceId})`);
+    this.logger.log(`🔍 [调试] 注册 sessionId 长度: ${data.sessionId.length}`);
+    this.logger.log(`🔍 [调试] 注册 sessionId hex: ${Buffer.from(data.sessionId).toString('hex')}`);
 
     const sessionInfo: StatusSessionInfo = {
       sessionId: data.sessionId,

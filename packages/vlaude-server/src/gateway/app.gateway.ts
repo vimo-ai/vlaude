@@ -140,6 +140,13 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    * 初始化 WebSocket 中间件（JWT 认证）
    */
   afterInit(server: Server) {
+    // 调试：监听所有进来的事件
+    server.on('connection', (socket) => {
+      socket.onAny((event, ...args) => {
+        this.logger.log(`🔔 [DEBUG] 收到事件: ${event}, 参数数量: ${args.length}`);
+      });
+    });
+
     // 如果没有配置 JWT，跳过认证
     if (!this.jwtPublicKey) {
       this.logger.warn('⚠️ JWT 认证未启用');
@@ -607,7 +614,13 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     this.logger.log(`   ClientMessageId: ${clientMessageId || 'N/A'}`);
 
     // 优先检查 ETerm 路径（只需要 sessionId + text + clientMessageId）
+    // 调试日志：打印 sessionId 的详细信息
+    this.logger.log(`🔍 [调试] sessionId 长度: ${sessionId.length}, 原始值: "${sessionId}"`);
+    this.logger.log(`🔍 [调试] sessionId hex: ${Buffer.from(sessionId).toString('hex')}`);
+
     const inEterm = await this.daemonGateway.isSessionInEterm(sessionId);
+    this.logger.log(`🔍 [调试] isSessionInEterm 结果: ${inEterm}`);
+
     if (inEterm) {
       this.logger.log(`🖥️ [ETerm 注入] Session ${sessionId} 在 ETerm 中，使用注入方式`);
 
