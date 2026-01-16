@@ -51,7 +51,7 @@
 ```
 Mac:
 ├── ~/.claude/projects/**/*.jsonl  (Claude Code)
-├── ~/.vimo/db/claude-session.db   (SharedDb)
+├── ~/.vimo/db/ai-cli-session.db   (SharedDb)
 ├── Daemon/VlaudeKit               (写入 SharedDb)
 └── vlaude-server                  (直接读 SharedDb)
 ```
@@ -99,7 +99,7 @@ Server 通过 WebSocket 向 Daemon 请求数据，Daemon 读取本地 JSONL 返�
 | VlaudeKit | 使用 ETermPaths |
 | Daemon (Rust) | `daemon-logic/src/shared_db.rs` |
 
-统一路径：`~/.vimo/db/claude-session.db`
+统一路径：`~/.vimo/db/ai-cli-session.db`
 
 ---
 
