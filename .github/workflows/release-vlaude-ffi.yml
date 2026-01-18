@@ -1,0 +1,120 @@
+# Vlaude FFI Release CI
+#
+# Triggered on tag push (vlaude-ffi-v*)
+# Builds libvlaude_ffi.dylib for macOS arm64
+# Uploads to GitHub Release with sha256 checksum
+
+name: Release Vlaude FFI
+
+on:
+  push:
+    tags:
+      - 'vlaude-ffi-v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-macos:
+    runs-on: macos-14  # Apple Silicon runner
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout ai-cli-session-db (as claude-session-db)
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/ai-cli-session-db
+          path: deps/ai-cli-session-db
+
+      - name: Checkout ai-cli-session-collector
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/ai-cli-session-collector
+          path: deps/ai-cli-session-collector
+
+      - name: Create symlinks for dependencies
+        run: |
+          # Create symlinks at the expected paths (local dir name != repo name)
+          ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-db $GITHUB_WORKSPACE/../claude-session-db
+          ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-collector $GITHUB_WORKSPACE/../ai-cli-session-collector
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build vlaude-ffi
+        working-directory: packages/vlaude-core
+        run: |
+          cargo build --release -p vlaude-ffi
+
+      - name: Get dylib info
+        id: dylib
+        run: |
+          DYLIB_PATH="packages/vlaude-core/target/release/libvlaude_ffi.dylib"
+          HEADER_PATH="packages/vlaude-core/vlaude-ffi/vlaude_ffi.h"
+
+          # Get size
+          SIZE=$(stat -f%z "$DYLIB_PATH")
+          SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
+
+          # Get sha256
+          SHA256=$(shasum -a 256 "$DYLIB_PATH" | cut -d' ' -f1)
+
+          # Get version from tag (strip vlaude-ffi-v prefix)
+          VERSION=${GITHUB_REF#refs/tags/vlaude-ffi-v}
+
+          echo "path=$DYLIB_PATH" >> $GITHUB_OUTPUT
+          echo "header=$HEADER_PATH" >> $GITHUB_OUTPUT
+          echo "size=$SIZE" >> $GITHUB_OUTPUT
+          echo "size_mb=$SIZE_MB" >> $GITHUB_OUTPUT
+          echo "sha256=$SHA256" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          echo "### Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Version**: $VERSION" >> $GITHUB_STEP_SUMMARY
+          echo "- **Size**: ${SIZE_MB}MB" >> $GITHUB_STEP_SUMMARY
+          echo "- **SHA256**: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
+
+      - name: Create checksum file
+        run: |
+          cd packages/vlaude-core/target/release
+          shasum -a 256 libvlaude_ffi.dylib > libvlaude_ffi.dylib.sha256
+
+      - name: Sign dylib (ad-hoc)
+        run: |
+          codesign -f -s - packages/vlaude-core/target/release/libvlaude_ffi.dylib
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            packages/vlaude-core/target/release/libvlaude_ffi.dylib
+            packages/vlaude-core/target/release/libvlaude_ffi.dylib.sha256
+            packages/vlaude-core/vlaude-ffi/vlaude_ffi.h
+          body: |
+            ## libvlaude_ffi.dylib v${{ steps.dylib.outputs.version }}
+
+            macOS arm64 动态库 - Vlaude FFI for VlaudeKit
+
+            ### 安装
+
+            ```bash
+            mkdir -p ~/.vimo/lib
+            curl -L -o ~/.vimo/lib/libvlaude_ffi.dylib \
+              https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/libvlaude_ffi.dylib
+            ```
+
+            ### 校验
+
+            ```
+            SHA256: ${{ steps.dylib.outputs.sha256 }}
+            Size: ${{ steps.dylib.outputs.size_mb }}MB
+            ```
+          draft: false
+          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'test') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
