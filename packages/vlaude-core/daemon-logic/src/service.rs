@@ -94,6 +94,7 @@ struct PendingApproval {
 }
 
 /// Daemon 服务
+#[allow(dead_code)]
 pub struct DaemonService {
     /// Socket 客户端
     socket: Arc<RwLock<SocketClient>>,
@@ -163,7 +164,7 @@ impl DaemonService {
 
         Ok(Self {
             socket: Arc::new(RwLock::new(SocketClient::new(config))),
-            reader: Arc::new(RwLock::new(ClaudeReader::default()?)),
+            reader: Arc::new(RwLock::new(ClaudeReader::with_default_path()?)),
             watching_sessions: Arc::new(RwLock::new(HashSet::new())),
             hostname: hostname.to_string(),
             tls_config: tls,
@@ -236,7 +237,7 @@ impl DaemonService {
 
         Ok(Self {
             socket: Arc::new(RwLock::new(SocketClient::new(config))),
-            reader: Arc::new(RwLock::new(ClaudeReader::default()?)),
+            reader: Arc::new(RwLock::new(ClaudeReader::with_default_path()?)),
             watching_sessions: Arc::new(RwLock::new(HashSet::new())),
             hostname: hostname.to_string(),
             tls_config: tls,
@@ -1389,8 +1390,7 @@ impl DaemonService {
         // 提取项目名（路径最后一段）
         let project_name = project_path
             .split('/')
-            .filter(|s| !s.is_empty())
-            .last()
+            .rfind(|s| !s.is_empty())
             .unwrap_or(project_path);
 
         // 获取或创建项目

@@ -14,6 +14,7 @@ use serde_json::Value;
 // @event-registry-start
 
 /// Daemon → Server 上行事件常量
+#[allow(dead_code)]
 pub mod daemon_events {
     // 连接生命周期
     /// @payload { hostname: String, platform: String, version: String }
@@ -109,6 +110,7 @@ pub mod daemon_events {
 }
 
 /// Server → Daemon 下行事件常量
+#[allow(dead_code)]
 pub mod server_events {
     // 数据请求
     /// @payload { limit: Option<usize>, requestId: Option<String> }

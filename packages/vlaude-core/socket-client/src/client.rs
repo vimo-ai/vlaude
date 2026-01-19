@@ -133,9 +133,10 @@ impl SocketClient {
 
     /// 使用默认配置创建
     pub fn with_url(url: &str) -> Self {
-        let mut config = SocketConfig::default();
-        config.url = url.to_string();
-        Self::new(config)
+        Self::new(SocketConfig {
+            url: url.to_string(),
+            ..SocketConfig::default()
+        })
     }
 
     // ==================== Redis 服务发现 ====================
@@ -302,11 +303,7 @@ impl SocketClient {
             // 获取 registry 的事件接收器
             let rx = {
                 let reg_guard = registry.read().await;
-                if let Some(ref reg) = *reg_guard {
-                    Some(reg.subscribe())
-                } else {
-                    None
-                }
+                (*reg_guard).as_ref().map(|reg| reg.subscribe())
             };
 
             if let Some(mut rx) = rx {
@@ -913,10 +910,7 @@ impl SocketClient {
     /// 接收事件（带超时）
     pub async fn recv_event_timeout(&self, timeout: std::time::Duration) -> Option<(String, Value)> {
         let mut rx = self.event_rx.write().await;
-        match tokio::time::timeout(timeout, rx.recv()).await {
-            Ok(result) => result,
-            Err(_) => None, // 超时
-        }
+        tokio::time::timeout(timeout, rx.recv()).await.ok().flatten()
     }
 
     /// 尝试接收事件（非阻塞）
@@ -1185,6 +1179,7 @@ impl SocketClient {
     }
 
     /// 发送权限请求
+    #[allow(clippy::too_many_arguments)]
     pub async fn send_approval_request(
         &self,
         request_id: &str,

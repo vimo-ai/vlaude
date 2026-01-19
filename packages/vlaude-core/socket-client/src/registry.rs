@@ -360,11 +360,9 @@ impl ServiceRegistry {
 
         let mut daemons = Vec::new();
         for key in keys {
-            if let Ok(value) = conn.get::<_, Option<String>>(&key).await {
-                if let Some(value) = value {
-                    if let Ok(info) = serde_json::from_str::<DaemonInfo>(&value) {
-                        daemons.push(info);
-                    }
+            if let Ok(Some(value)) = conn.get::<_, Option<String>>(&key).await {
+                if let Ok(info) = serde_json::from_str::<DaemonInfo>(&value) {
+                    daemons.push(info);
                 }
             }
         }
@@ -417,11 +415,9 @@ impl ServiceRegistry {
 
         let mut addresses = Vec::new();
         for key in keys {
-            if let Ok(value) = conn.get::<_, Option<String>>(&key).await {
-                if let Some(value) = value {
-                    if let Ok(info) = serde_json::from_str::<ServiceInfo>(&value) {
-                        addresses.push(info.address);
-                    }
+            if let Ok(Some(value)) = conn.get::<_, Option<String>>(&key).await {
+                if let Ok(info) = serde_json::from_str::<ServiceInfo>(&value) {
+                    addresses.push(info.address);
                 }
             }
         }
@@ -501,7 +497,7 @@ impl ServiceRegistry {
     /// 1. localhost:* 最高
     /// 2. 192.168.*:* 次之
     /// 3. 域名最低
-    fn sort_by_priority(&self, addresses: &mut Vec<String>) {
+    fn sort_by_priority(&self, addresses: &mut [String]) {
         addresses.sort_by(|a, b| {
             let priority_a = self.get_priority(a);
             let priority_b = self.get_priority(b);

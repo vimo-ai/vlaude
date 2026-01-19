@@ -28,7 +28,7 @@ impl ClaudeReader {
     }
 
     /// 使用默认路径创建读取器
-    pub fn default() -> anyhow::Result<Self> {
+    pub fn with_default_path() -> anyhow::Result<Self> {
         let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("无法获取 HOME 环境变量"))?;
         let projects_path = PathBuf::from(home).join(".claude/projects");
         Ok(Self::new(projects_path))
