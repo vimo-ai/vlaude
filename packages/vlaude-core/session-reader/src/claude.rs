@@ -1,11 +1,11 @@
 //! Claude Code 数据读取器
 //!
-//! 薄封装 claude-session-db::SessionReader，提供 vlaude-core 专用的接口。
-//! 所有业务逻辑在 claude-session-db 中实现，这里只做委托。
+//! 薄封装 ai-cli-session-db::SessionReader，提供 vlaude-core 专用的接口。
+//! 所有业务逻辑在 ai-cli-session-db 中实现，这里只做委托。
 
 use std::path::PathBuf;
 
-use claude_session_db::{
+use ai_cli_session_db::{
     IndexableSession, ParseResult, SessionMeta,
     SessionReader as DbSessionReader,
 };
@@ -14,7 +14,7 @@ use crate::types::*;
 
 /// Claude Code 数据读取器
 ///
-/// 封装 claude-session-db::SessionReader，提供 vlaude-core 专用的接口。
+/// 封装 ai-cli-session-db::SessionReader，提供 vlaude-core 专用的接口。
 pub struct ClaudeReader {
     inner: DbSessionReader,
 }
@@ -99,8 +99,8 @@ impl ClaudeReader {
         order: Order,
     ) -> anyhow::Result<MessagesResult> {
         let db_order = match order {
-            Order::Asc => claude_session_db::Order::Asc,
-            Order::Desc => claude_session_db::Order::Desc,
+            Order::Asc => ai_cli_session_db::Order::Asc,
+            Order::Desc => ai_cli_session_db::Order::Desc,
         };
 
         self.inner
@@ -122,8 +122,8 @@ impl ClaudeReader {
         order: Order,
     ) -> anyhow::Result<RawMessagesResult> {
         let db_order = match order {
-            Order::Asc => claude_session_db::Order::Asc,
-            Order::Desc => claude_session_db::Order::Desc,
+            Order::Asc => ai_cli_session_db::Order::Asc,
+            Order::Desc => ai_cli_session_db::Order::Desc,
         };
 
         self.inner

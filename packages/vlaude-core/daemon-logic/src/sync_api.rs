@@ -5,7 +5,7 @@
 
 use crate::SharedDbAdapter;
 use anyhow::Result;
-use claude_session_db::{Message, ProjectWithStats, SearchResult, SessionWithProject, Stats};
+use ai_cli_session_db::{Message, ProjectWithStats, SearchResult, SessionWithProject, Stats};
 use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 

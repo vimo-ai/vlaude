@@ -34,6 +34,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai-cli-session-db"
+version = "0.1.0"
+dependencies = [
+ "ai-cli-session-collector",
+ "anyhow",
+ "cbindgen 0.27.0",
+ "chrono",
+ "dirs",
+ "parking_lot",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.17",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
 name = "android_system_properties"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -345,25 +364,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a1d728cc89cf3aee9ff92b05e62b19ee65a02b5702cff7d5a377e32c6ae29d8d"
 
 [[package]]
-name = "claude-session-db"
-version = "0.1.0"
-dependencies = [
- "ai-cli-session-collector",
- "anyhow",
- "cbindgen 0.27.0",
- "chrono",
- "dirs",
- "parking_lot",
- "rusqlite",
- "serde",
- "serde_json",
- "thiserror 2.0.17",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "colorchoice"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -437,9 +437,9 @@ dependencies = [
 name = "daemon-logic"
 version = "0.1.0"
 dependencies = [
+ "ai-cli-session-db",
  "anyhow",
  "chrono",
- "claude-session-db",
  "futures",
  "serde",
  "serde_json",
@@ -1849,9 +1849,9 @@ dependencies = [
 name = "session-reader"
 version = "0.1.0"
 dependencies = [
+ "ai-cli-session-db",
  "anyhow",
  "chrono",
- "claude-session-db",
  "notify",
  "notify-debouncer-mini",
  "serde",

@@ -15,5 +15,5 @@ uuid.workspace = true
 notify.workspace = true
 notify-debouncer-mini.workspace = true
 
-# 从 claude-session-db 获取 ai-cli-session-collector 的类型（避免重复依赖）
-claude-session-db = { path = "../../../../claude-session-db", default-features = false }
+# 从 ai-cli-session-db 获取 ai-cli-session-collector 的类型（避免重复依赖）
+ai-cli-session-db = { path = "../../../../ai-cli-session-db", default-features = false }

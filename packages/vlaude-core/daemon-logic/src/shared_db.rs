@@ -1,6 +1,6 @@
 //! 共享数据库集成
 //!
-//! 可选集成 claude-session-db，实现与 Memex/ETerm 数据共享
+//! 可选集成 ai-cli-session-db，实现与 Memex/ETerm 数据共享
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{debug, info, warn};
 
-use claude_session_db::{
+use ai_cli_session_db::{
     coordination::{Role, WriterHealth, WriterType},
     db::MessageInput,
     DbConfig, Message, Project, ProjectWithStats, SearchResult, Session, SessionDB, SessionWithProject,
@@ -253,7 +253,7 @@ impl SharedDbAdapter {
     }
 
     /// 获取统计信息
-    pub async fn get_stats(&self) -> anyhow::Result<claude_session_db::Stats> {
+    pub async fn get_stats(&self) -> anyhow::Result<ai_cli_session_db::Stats> {
         let db = self.db.read().await;
         Ok(db.get_stats()?)
     }

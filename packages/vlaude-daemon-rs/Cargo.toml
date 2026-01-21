@@ -29,4 +29,4 @@ socket-client = { path = "../vlaude-core/socket-client" }
 ai-cli-session-collector = { path = "../../../ai-cli-session-collector" }
 
 [patch."https://github.com/vimo-ai/ai-cli-session-db"]
-claude-session-db = { path = "../../../claude-session-db" }
+ai-cli-session-db = { path = "../../../ai-cli-session-db" }

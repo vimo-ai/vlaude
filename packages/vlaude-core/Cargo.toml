@@ -64,8 +64,8 @@ session-reader = { path = "session-reader" }
 socket-client = { path = "socket-client" }
 daemon-logic = { path = "daemon-logic" }
 
-# External crates - 通过 claude-session-db 统一依赖 ai-cli-session-collector
-claude-session-db = { path = "../../../claude-session-db" }
+# External crates - 通过 ai-cli-session-db 统一依赖 ai-cli-session-collector
+ai-cli-session-db = { path = "../../../ai-cli-session-db" }
 
 # FFI safety utilities
 vimo-ffi = { git = "https://github.com/vimo-ai/vimo-rust" }

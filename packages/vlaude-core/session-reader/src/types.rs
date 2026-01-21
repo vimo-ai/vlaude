@@ -1,12 +1,12 @@
 //! 领域类型定义
 //!
 //! session-reader 专用的类型。
-//! 大部分类型从 claude-session-db 重导出。
+//! 大部分类型从 ai-cli-session-db 重导出。
 
 use serde::Serialize;
 
-// Re-export core types from claude-session-db
-pub use claude_session_db::{
+// Re-export core types from ai-cli-session-db
+pub use ai_cli_session_db::{
     IndexableMessage, IndexableSession, MessageType, ParsedMessage, ParseResult, SessionMeta,
     Source,
 };

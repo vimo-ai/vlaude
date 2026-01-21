@@ -1,0 +1,129 @@
+# Vlaude CI
+#
+# Triggered on PR to main and manual dispatch
+# Runs clippy, tests, and preview release build for both FFI libraries
+
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Check & Test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout ai-cli-session-db
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/ai-cli-session-db
+          path: deps/ai-cli-session-db
+
+      - name: Checkout ai-cli-session-collector
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/ai-cli-session-collector
+          path: deps/ai-cli-session-collector
+
+      - name: Checkout vimo-rust
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/vimo-rust
+          path: deps/vimo-rust
+
+      - name: Create symlinks for dependencies
+        run: |
+          ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-db $GITHUB_WORKSPACE/../ai-cli-session-db
+          ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-collector $GITHUB_WORKSPACE/../ai-cli-session-collector
+          ln -s $GITHUB_WORKSPACE/deps/vimo-rust $GITHUB_WORKSPACE/../vimo-rust
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Clippy (vlaude-core)
+        working-directory: packages/vlaude-core
+        run: cargo clippy --all-features -- -D warnings
+
+      - name: Test (vlaude-core)
+        working-directory: packages/vlaude-core
+        run: cargo test --all-features
+
+  preview-release:
+    name: Preview Release Build
+    runs-on: macos-14
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout ai-cli-session-db
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/ai-cli-session-db
+          path: deps/ai-cli-session-db
+
+      - name: Checkout ai-cli-session-collector
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/ai-cli-session-collector
+          path: deps/ai-cli-session-collector
+
+      - name: Checkout vimo-rust
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/vimo-rust
+          path: deps/vimo-rust
+
+      - name: Create symlinks for dependencies
+        run: |
+          ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-db $GITHUB_WORKSPACE/../ai-cli-session-db
+          ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-collector $GITHUB_WORKSPACE/../ai-cli-session-collector
+          ln -s $GITHUB_WORKSPACE/deps/vimo-rust $GITHUB_WORKSPACE/../vimo-rust
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Build socket-client-ffi
+        working-directory: packages/vlaude-core
+        run: cargo build --release -p socket-client-ffi
+
+      - name: Build vlaude-ffi
+        working-directory: packages/vlaude-core
+        run: cargo build --release -p vlaude-ffi
+
+      - name: Get dylib info
+        run: |
+          echo "### Preview Build Summary" >> $GITHUB_STEP_SUMMARY
+
+          for lib in libsocket_client_ffi libvlaude_ffi; do
+            DYLIB="packages/vlaude-core/target/release/${lib}.dylib"
+            SIZE=$(stat -f%z "$DYLIB")
+            SIZE_MB=$(echo "scale=2; $SIZE / 1048576" | bc)
+            SHA256=$(shasum -a 256 "$DYLIB" | cut -d' ' -f1)
+            echo "- **${lib}**: ${SIZE_MB}MB, SHA256: \`$SHA256\`" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Sign dylibs (ad-hoc)
+        run: |
+          codesign -f -s - packages/vlaude-core/target/release/libsocket_client_ffi.dylib
+          codesign -f -s - packages/vlaude-core/target/release/libvlaude_ffi.dylib
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: vlaude-ffi-preview
+          path: |
+            packages/vlaude-core/target/release/libsocket_client_ffi.dylib
+            packages/vlaude-core/target/release/libvlaude_ffi.dylib
+            packages/vlaude-core/socket-client-ffi/socket_client_ffi.h
+            packages/vlaude-core/vlaude-ffi/vlaude_ffi.h

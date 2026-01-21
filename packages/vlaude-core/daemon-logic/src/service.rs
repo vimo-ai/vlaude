@@ -1384,8 +1384,8 @@ impl DaemonService {
         project_path: &str,
         message: &serde_json::Value,
     ) -> Result<()> {
-        use claude_session_db::db::MessageInput;
-        use claude_session_db::MessageType;
+        use ai_cli_session_db::db::MessageInput;
+        use ai_cli_session_db::MessageType;
 
         // 提取项目名（路径最后一段）
         let project_name = project_path
