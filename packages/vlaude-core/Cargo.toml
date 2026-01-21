@@ -73,3 +73,6 @@ vimo-ffi = { git = "https://github.com/vimo-ai/vimo-rust" }
 # Patch git dependencies to use local paths
 [patch."https://github.com/vimo-ai/ai-cli-session-collector"]
 ai-cli-session-collector = { path = "../../../ai-cli-session-collector" }
+
+[patch."https://github.com/vimo-ai/vimo-rust"]
+vimo-ffi = { path = "../../../vimo-rust/vimo-ffi" }

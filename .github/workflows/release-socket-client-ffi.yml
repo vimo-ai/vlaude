@@ -35,11 +35,18 @@ jobs:
           repository: vimo-ai/ai-cli-session-collector
           path: deps/ai-cli-session-collector
 
+      - name: Checkout vimo-rust
+        uses: actions/checkout@v4
+        with:
+          repository: vimo-ai/vimo-rust
+          path: deps/vimo-rust
+
       - name: Create symlinks for dependencies
         run: |
           # Create symlinks at the expected paths (local dir name != repo name)
           ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-db $GITHUB_WORKSPACE/../claude-session-db
           ln -s $GITHUB_WORKSPACE/deps/ai-cli-session-collector $GITHUB_WORKSPACE/../ai-cli-session-collector
+          ln -s $GITHUB_WORKSPACE/deps/vimo-rust $GITHUB_WORKSPACE/../vimo-rust
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
