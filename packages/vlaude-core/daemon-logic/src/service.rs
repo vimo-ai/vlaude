@@ -1,7 +1,7 @@
 //! Daemon 服务实现
 
 use crate::watcher::{SessionWatcher, SessionWatchEvent};
-use crate::SharedDbAdapter;
+use crate::agent_client::AgentClientAdapter;
 use anyhow::{bail, Result};
 use session_reader::ClaudeReader;
 use socket_client::{
@@ -132,8 +132,9 @@ pub struct DaemonService {
     pending_approvals: Arc<RwLock<HashMap<String, PendingApproval>>>,
     /// 会话监听器
     session_watcher: Arc<SessionWatcher>,
-    /// 共享数据库适配器
-    shared_db: Option<Arc<SharedDbAdapter>>,
+    /// Agent Client 适配器（替代 SharedDbAdapter）
+    /// 使用 RwLock 允许在 start 时初始化
+    agent_client: Arc<RwLock<Option<Arc<AgentClientAdapter>>>>,
 }
 
 impl DaemonService {
@@ -150,17 +151,8 @@ impl DaemonService {
             ..Default::default()
         };
 
-        // 初始化共享数据库
-        let shared_db = match SharedDbAdapter::new(None) {
-            Ok(adapter) => {
-                info!("[SharedDB] Connected to shared database");
-                Some(Arc::new(adapter))
-            }
-            Err(e) => {
-                warn!("[SharedDB] Failed to connect: {}, running without shared-db", e);
-                None
-            }
-        };
+        // 初始化 Agent Client（延迟到 start，使用 RwLock）
+        let agent_client = Arc::new(RwLock::new(None));
 
         Ok(Self {
             socket: Arc::new(RwLock::new(SocketClient::new(config))),
@@ -181,7 +173,7 @@ impl DaemonService {
             check_loading_callback: Arc::new(RwLock::new(None)),
             pending_approvals: Arc::new(RwLock::new(HashMap::new())),
             session_watcher: Arc::new(SessionWatcher::new()),
-            shared_db,
+            agent_client,
         })
     }
 
@@ -223,17 +215,8 @@ impl DaemonService {
             ..Default::default()
         };
 
-        // 初始化共享数据库
-        let shared_db = match SharedDbAdapter::new(None) {
-            Ok(adapter) => {
-                info!("[SharedDB] Connected to shared database");
-                Some(Arc::new(adapter))
-            }
-            Err(e) => {
-                warn!("[SharedDB] Failed to connect: {}, running without shared-db", e);
-                None
-            }
-        };
+        // 初始化 Agent Client（延迟到 start，使用 RwLock）
+        let agent_client = Arc::new(RwLock::new(None));
 
         Ok(Self {
             socket: Arc::new(RwLock::new(SocketClient::new(config))),
@@ -254,7 +237,7 @@ impl DaemonService {
             check_loading_callback: Arc::new(RwLock::new(None)),
             pending_approvals: Arc::new(RwLock::new(HashMap::new())),
             session_watcher: Arc::new(SessionWatcher::new()),
-            shared_db,
+            agent_client,
         })
     }
 
@@ -307,15 +290,15 @@ impl DaemonService {
     pub async fn start(&self) -> Result<()> {
         info!("Starting daemon service...");
 
-        // 注册共享数据库 Writer
-        if let Some(db) = &self.shared_db {
-            match db.register().await {
-                Ok(role) => {
-                    info!("[SharedDB] Registered as {:?}", role);
-                }
-                Err(e) => {
-                    warn!("[SharedDB] Failed to register: {}", e);
-                }
+        // 初始化 Agent Client（连接或启动 Agent）
+        // agent_source_dir 为 None，使用默认查找路径 ~/.vimo/bin/
+        match AgentClientAdapter::new("vlaude-daemon", None, None).await {
+            Ok(adapter) => {
+                info!("[AgentClient] Connected to Agent successfully");
+                *self.agent_client.write().await = Some(Arc::new(adapter));
+            }
+            Err(e) => {
+                warn!("[AgentClient] Failed to connect: {}, running without agent-client", e);
             }
         }
 
@@ -346,12 +329,13 @@ impl DaemonService {
     async fn push_initial_data(&self) -> Result<()> {
         info!("Pushing initial data to server...");
 
-        // 从 DB 读取（禁止降级）
-        let db = self.shared_db.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("SharedDB not initialized"))?;
+        // 从 DB 读取（通过 AgentClient）
+        let client_guard = self.agent_client.read().await;
+        let client = client_guard.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("AgentClient not initialized"))?;
 
         // 1. 推送项目列表（从 DB）
-        let projects = db.list_projects_with_stats(20, 0).await?;
+        let projects = client.list_projects_with_stats(20, 0).await?;
         let projects_json: Vec<serde_json::Value> = projects
             .into_iter()
             .map(|p| serde_json::to_value(p).unwrap())
@@ -363,7 +347,7 @@ impl DaemonService {
         // 2. 推送每个项目的会话列表（从 DB，每个项目最多 50 个）
         for project_json in &projects_json {
             if let Some(project_path) = project_json.get("projectPath").and_then(|v| v.as_str()) {
-                let sessions = db.list_sessions_by_project_path(project_path, 50, 0).await?;
+                let sessions = client.list_sessions_by_project_path(project_path, 50, 0).await?;
                 if !sessions.is_empty() {
                     let sessions_json: Vec<serde_json::Value> = sessions
                         .into_iter()
@@ -390,13 +374,9 @@ impl DaemonService {
     pub async fn stop(&self) {
         info!("Stopping daemon service...");
 
-        // 释放共享数据库 Writer
-        if let Some(db) = &self.shared_db {
-            if let Err(e) = db.release().await {
-                warn!("[SharedDB] Failed to release writer: {}", e);
-            } else {
-                info!("[SharedDB] Writer released");
-            }
+        // Agent Client 会在 Drop 时自动断开
+        if self.agent_client.read().await.is_some() {
+            info!("[AgentClient] Will disconnect on drop");
         }
 
         // 上报离线
@@ -469,25 +449,13 @@ impl DaemonService {
         match event {
             SessionWatchEvent::NewMessage {
                 session_id,
-                project_path,
+                project_path: _,
                 message,
             } => {
                 debug!("New message in session {}", session_id);
 
-                // 写入共享数据库（仅 Writer 模式）
-                if let Some(db) = &self.shared_db {
-                    if db.is_writer().await {
-                        if let Err(e) = self.sync_message_to_shared_db(
-                            db,
-                            &session_id,
-                            &project_path,
-                            &message,
-                        ).await {
-                            warn!("[SharedDB] Failed to sync message: {}", e);
-                        }
-                    }
-                }
-
+                // Agent 会自动监听文件变化并写入 DB，这里不需要主动写入
+                // 只需推送给 Server
                 self.socket.read().await.notify_new_message(&session_id, message).await?;
             }
             SessionWatchEvent::SessionCreated {
@@ -600,12 +568,13 @@ impl DaemonService {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // 从 DB 读取（禁止降级）
-        let db = self.shared_db.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("SharedDB not initialized"))?;
+        // 从 DB 读取（通过 AgentClient）
+        let client_guard = self.agent_client.read().await;
+        let client = client_guard.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("AgentClient not initialized"))?;
 
         let db_start = Instant::now();
-        let projects = db.list_projects_with_stats(limit, offset).await?;
+        let projects = client.list_projects_with_stats(limit, offset).await?;
         let db_elapsed = db_start.elapsed();
 
         let project_count = projects.len();
@@ -644,13 +613,14 @@ impl DaemonService {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        // 从 DB 读取（禁止降级）
-        let db = self.shared_db.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("SharedDB not initialized"))?;
+        // 从 DB 读取（通过 AgentClient）
+        let client_guard = self.agent_client.read().await;
+        let client = client_guard.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("AgentClient not initialized"))?;
 
         let db_start = Instant::now();
         // agent-* 过滤已在 DB 层 SQL 统一处理
-        let sessions = db.list_sessions_by_project_path(project_path, limit, offset).await?;
+        let sessions = client.list_sessions_by_project_path(project_path, limit, offset).await?;
         let db_elapsed = db_start.elapsed();
         let session_count = sessions.len();
 
@@ -704,14 +674,15 @@ impl DaemonService {
 
         let desc = order_str == "desc";
 
-        // 从 DB 读取（禁止降级）
-        let db = self.shared_db.as_ref()
-            .ok_or_else(|| anyhow::anyhow!("SharedDB not initialized"))?;
+        // 从 DB 读取（通过 AgentClient）
+        let client_guard = self.agent_client.read().await;
+        let client = client_guard.as_ref()
+            .ok_or_else(|| anyhow::anyhow!("AgentClient not initialized"))?;
 
         // 1. 从 DB 读取消息
         let db_start = Instant::now();
-        let db_messages = db.get_messages_ordered(session_id, limit, offset, desc).await?;
-        let total = db.get_message_count(session_id).await? as usize;
+        let db_messages = client.get_messages_ordered(session_id, limit, offset, desc).await?;
+        let total = client.get_message_count(session_id).await? as usize;
         let db_elapsed = db_start.elapsed();
 
         let has_more = offset + db_messages.len() < total;
@@ -763,11 +734,14 @@ impl DaemonService {
         let session_id = session_id.to_string();
         let project_path = project_path.to_string();
         let reader = self.reader.clone();
-        let shared_db = self.shared_db.clone();
+        // Clone the Arc to pass to spawn
+        let agent_client_arc = self.agent_client.clone();
         let socket = self.socket.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = Self::do_session_sync(&session_id, &project_path, reader, shared_db, socket).await {
+            // 从 Arc 中读取 Option
+            let agent_client = agent_client_arc.read().await.clone();
+            if let Err(e) = Self::do_session_sync(&session_id, &project_path, reader, agent_client, socket).await {
                 warn!("[SessionSync] Failed to sync session {}: {}", session_id, e);
             }
         });
@@ -778,13 +752,13 @@ impl DaemonService {
         session_id: &str,
         _project_path: &str,
         reader: Arc<RwLock<ClaudeReader>>,
-        shared_db: Option<Arc<SharedDbAdapter>>,
+        agent_client: Option<Arc<AgentClientAdapter>>,
         socket: Arc<RwLock<SocketClient>>,
     ) -> Result<()> {
-        let db = shared_db.ok_or_else(|| anyhow::anyhow!("SharedDB not initialized"))?;
+        let client = agent_client.ok_or_else(|| anyhow::anyhow!("AgentClient not initialized"))?;
 
         // 获取 DB 中该 session 当前的消息数
-        let db_count_before = db.get_message_count(session_id).await? as usize;
+        let db_count_before = client.get_message_count(session_id).await? as usize;
 
         // 从 JSONL 读取新增消息（从 DB 已有数量的位置开始）
         let mut reader_guard = reader.write().await;
@@ -1375,108 +1349,6 @@ impl DaemonService {
     }
 }
 
-impl DaemonService {
-    /// 同步单条消息到共享数据库
-    async fn sync_message_to_shared_db(
-        &self,
-        db: &Arc<SharedDbAdapter>,
-        session_id: &str,
-        project_path: &str,
-        message: &serde_json::Value,
-    ) -> Result<()> {
-        use ai_cli_session_db::db::MessageInput;
-        use ai_cli_session_db::MessageType;
-
-        // 提取项目名（路径最后一段）
-        let project_name = project_path
-            .split('/')
-            .rfind(|s| !s.is_empty())
-            .unwrap_or(project_path);
-
-        // 获取或创建项目
-        let project_id = db.get_or_create_project(project_name, project_path, "claude").await?;
-
-        // 确保会话存在
-        db.upsert_session(session_id, project_id).await?;
-
-        // 从 JSON 提取消息字段
-        let uuid = message.get("uuid")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
-
-        if uuid.is_empty() {
-            // 没有 uuid 的消息跳过（可能是系统消息）
-            return Ok(());
-        }
-
-        let type_str = message.get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("user");
-        let msg_type = match type_str {
-            "assistant" => MessageType::Assistant,
-            _ => MessageType::User,
-        };
-
-        // 提取内容
-        let content = if let Some(content) = message.get("message").and_then(|m| m.get("content")) {
-            // Claude 格式：message.content 可能是数组或字符串
-            if let Some(arr) = content.as_array() {
-                arr.iter()
-                    .filter_map(|item| {
-                        item.get("text").and_then(|t| t.as_str())
-                    })
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            } else if let Some(s) = content.as_str() {
-                s.to_string()
-            } else {
-                String::new()
-            }
-        } else {
-            String::new()
-        };
-
-        // 提取时间戳
-        let timestamp = message.get("timestamp")
-            .and_then(|v| v.as_str())
-            .and_then(|s| s.parse::<i64>().ok())
-            .unwrap_or_else(|| {
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as i64)
-                    .unwrap_or(0)
-            });
-
-        // 保存原始 JSON
-        let raw = serde_json::to_string(message).ok();
-
-        let msg_input = MessageInput {
-            uuid,
-            r#type: msg_type,
-            content_text: content.clone(),
-            content_full: content,
-            timestamp,
-            sequence: 0,
-            source: Some("claude".to_string()),
-            channel: Some("code".to_string()),
-            model: None,
-            tool_call_id: None,
-            tool_name: None,
-            tool_args: None,
-            raw,
-            approval_status: None,
-            approval_resolved_at: None,
-        };
-
-        let inserted = db.insert_messages(session_id, &[msg_input]).await?;
-        if inserted > 0 {
-            debug!("[SharedDB] Synced 1 message to shared database");
-        }
-
-        Ok(())
-    }
-}
 
 fn format_tool_description(tool_name: &str, input: &serde_json::Value) -> String {
     match tool_name {

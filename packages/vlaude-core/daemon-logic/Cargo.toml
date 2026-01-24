@@ -17,8 +17,9 @@ chrono.workspace = true
 session-reader.workspace = true
 socket-client.workspace = true
 
-# 共享数据库（ETerm/Vlaude 数据统一层）
-ai-cli-session-db = { path = "../../../../ai-cli-session-db", features = ["writer", "reader", "coordination"] }
+# 共享数据库（ETerm/Vlaude 数据统一层）- 使用 Agent Client 模式
+ai-cli-session-db = { path = "../../../../ai-cli-session-db", features = ["client"] }
+dirs = "5"  # 用于获取 home 目录
 
 [dev-dependencies]
 tempfile.workspace = true

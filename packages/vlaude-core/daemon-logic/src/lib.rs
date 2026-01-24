@@ -2,10 +2,10 @@
 //!
 //! 整合 session-reader 和 socket-client，实现完整的 daemon 功能
 
+mod agent_client;
 mod content_blocks;
 mod service;
 mod watcher;
-mod shared_db;
 pub mod sync_api;
 
 pub use content_blocks::{ContentBlock, parse_content_blocks, enrich_messages_with_content_blocks};
@@ -27,4 +27,4 @@ pub use service::{
 };
 
 pub use watcher::{SessionWatcher, SessionWatchEvent};
-pub use shared_db::SharedDbAdapter;
+pub use agent_client::AgentClientAdapter;
