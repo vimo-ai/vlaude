@@ -52,6 +52,7 @@ dependencies = [
  "chrono",
  "dirs",
  "libc",
+ "native-tls",
  "parking_lot",
  "rusqlite",
  "serde",
