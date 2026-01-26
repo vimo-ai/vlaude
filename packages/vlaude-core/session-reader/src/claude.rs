@@ -29,7 +29,7 @@ impl ClaudeReader {
 
     /// 使用默认路径创建读取器
     pub fn with_default_path() -> anyhow::Result<Self> {
-        let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("无法获取 HOME 环境变量"))?;
+        let home = std::env::var("HOME").map_err(|_| anyhow::anyhow!("Failed to get HOME environment variable"))?;
         let projects_path = PathBuf::from(home).join(".claude/projects");
         Ok(Self::new(projects_path))
     }
@@ -105,7 +105,7 @@ impl ClaudeReader {
 
         self.inner
             .read_messages(session_path, limit, offset, db_order)
-            .ok_or_else(|| anyhow::anyhow!("无法读取会话消息"))
+            .ok_or_else(|| anyhow::anyhow!("Failed to read session messages"))
             .map(|r| MessagesResult {
                 messages: r.messages,
                 total: r.total,
@@ -128,7 +128,7 @@ impl ClaudeReader {
 
         self.inner
             .read_messages_raw(session_path, limit, offset, db_order)
-            .ok_or_else(|| anyhow::anyhow!("无法读取会话消息"))
+            .ok_or_else(|| anyhow::anyhow!("Failed to read session messages"))
             .map(|r| RawMessagesResult {
                 messages: r.messages,
                 total: r.total,
