@@ -105,9 +105,9 @@ jobs:
           body: |
             ## libvlaude_ffi.dylib v${{ steps.dylib.outputs.version }}
 
-            macOS arm64 动态库 - Vlaude FFI for VlaudeKit
+            macOS arm64 dynamic library - Vlaude FFI for VlaudeKit
 
-            ### 安装
+            ### Installation
 
             ```bash
             mkdir -p ~/.vimo/lib
@@ -115,7 +115,7 @@ jobs:
               https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/libvlaude_ffi.dylib
             ```
 
-            ### 校验
+            ### Checksum
 
             ```
             SHA256: ${{ steps.dylib.outputs.sha256 }}
