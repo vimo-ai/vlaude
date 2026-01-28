@@ -20,6 +20,14 @@ struct Session: Identifiable, Codable, Hashable {
     let encodedDirName: String?
     let lastModified: Int64?
 
+    // V5: lastMessage 预览字段
+    /// 最后一条消息类型 ("user" / "assistant")
+    let lastMessageType: String?
+    /// 最后一条消息预览（纯文本，100 字符）
+    let lastMessagePreview: String?
+    /// 最后一条消息时间戳（毫秒）
+    let lastMessageTimestamp: Int64?
+
     // 兼容旧字段（可选）
     let projectId: Int?
     let messageCount: Int?
@@ -38,6 +46,7 @@ struct Session: Identifiable, Codable, Hashable {
     enum CodingKeys: String, CodingKey {
         case rawId = "id"
         case sessionId, projectPath, projectName, path, encodedDirName, lastModified
+        case lastMessageType, lastMessagePreview, lastMessageTimestamp
         case projectId, messageCount, lastMessageAt, createdAt, updatedAt
         case project, lastMessage, inEterm
     }
@@ -56,6 +65,30 @@ struct Session: Identifiable, Codable, Hashable {
         var copy = self
         copy.inEterm = value
         return copy
+    }
+
+    /// 返回带有新预览信息的副本
+    func withPreview(type: String, preview: String, timestamp: Int64?) -> Session {
+        Session(
+            rawId: self.rawId,
+            sessionId: self.sessionId,
+            projectPath: self.projectPath,
+            projectName: self.projectName,
+            path: self.path,
+            encodedDirName: self.encodedDirName,
+            lastModified: timestamp ?? self.lastModified,
+            lastMessageType: type,
+            lastMessagePreview: preview,
+            lastMessageTimestamp: timestamp ?? self.lastMessageTimestamp,
+            projectId: self.projectId,
+            messageCount: self.messageCount,
+            lastMessageAt: self.lastMessageAt,
+            createdAt: self.createdAt,
+            updatedAt: self.updatedAt,
+            project: self.project,
+            lastMessage: self.lastMessage,
+            inEterm: self.inEterm
+        )
     }
 }
 

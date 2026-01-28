@@ -43,7 +43,7 @@ class SessionDetailViewModel: ObservableObject {
     @Published var pendingApprovals: [String: PendingApproval] = [:]
 
     private let client = VlaudeClient.shared
-    private let wsManager = WebSocketManager.shared
+    private let wsClient = VlaudeWebSocketClient.shared
     private let messageTransformer = MessageTransformer()
     private var rawMessages: [Message] = []  // 保存原始消息用于转换
     private var currentOffset = 0
@@ -56,6 +56,10 @@ class SessionDetailViewModel: ObservableObject {
     private var approvalTimeoutObserver: NSObjectProtocol?
     private var approvalExpiredObserver: NSObjectProtocol?
     private var approvalAckObserver: NSObjectProtocol?
+    private var statuslineMetricsObserver: NSObjectProtocol?
+
+    // WebSocket 事件 token（用于精确移除，不影响其他 ViewModel）
+    private var messageNewToken: VlaudeWebSocketClient.VlaudeEventToken?
 
     // clientMessageId 去重：存储待确认的消息 (clientMessageId -> 乐观更新的消息索引)
     private var pendingMessages: [String: Int] = [:]
@@ -89,17 +93,23 @@ class SessionDetailViewModel: ObservableObject {
     func subscribeToSession(_ sessionId: String) {
         // 取消之前的订阅
         if let oldSessionId = currentSessionId {
-            wsManager.unsubscribeFromSession(oldSessionId)
+            wsClient.unsubscribeFromSession(oldSessionId)
         }
 
         currentSessionId = sessionId
 
         // 注意：这里只订阅消息推送，不加入会话
         // 只有在发送消息时才会触发 join（通知 CLI 进入 remote 模式）
-        wsManager.subscribeToSession(sessionId, projectPath: currentProjectPath)
+        wsClient.subscribeToSession(sessionId, projectPath: currentProjectPath)
 
-        // 监听新消息事件
-        wsManager.on(.messageNew) { [weak self] wsMessage in
+        // 移除旧的 messageNew 监听（避免叠加）
+        if let token = messageNewToken {
+            wsClient.off(token: token)
+            messageNewToken = nil
+        }
+
+        // 监听新消息事件（保存 token 用于精确移除）
+        messageNewToken = wsClient.on(.messageNew) { [weak self] wsMessage in
             guard let self = self,
                   wsMessage.sessionId == sessionId,
                   let newMessage = wsMessage.message else {
@@ -135,8 +145,14 @@ class SessionDetailViewModel: ObservableObject {
             }
         }
 
-        // 监听 statusline 指标更新（通过 NotificationCenter）
-        NotificationCenter.default.addObserver(
+        // 移除旧的 statusline observer（避免叠加）
+        if let observer = statuslineMetricsObserver {
+            NotificationCenter.default.removeObserver(observer)
+            statuslineMetricsObserver = nil
+        }
+
+        // 监听 statusline 指标更新（通过 NotificationCenter，保存 observer 用于移除）
+        statuslineMetricsObserver = NotificationCenter.default.addObserver(
             forName: NSNotification.Name("StatuslineMetricsUpdate"),
             object: nil,
             queue: .main
@@ -459,7 +475,7 @@ class SessionDetailViewModel: ObservableObject {
         }
 
         // 发送响应到服务器（包含 toolUseId 供 ETerm 返回 ack）
-        wsManager.sendApprovalResponse(
+        wsClient.sendApprovalResponse(
             requestId: approval.requestId,
             sessionId: approval.sessionId,
             action: action,
@@ -568,33 +584,48 @@ class SessionDetailViewModel: ObservableObject {
         displayMessages = messageTransformer.transform(messages: rawMessages)
 
         // 发送消息前先加入会话（触发 CLI 进入 remote 模式）
-        wsManager.joinSession(sessionId, projectPath: projectPath)
+        wsClient.joinSession(sessionId, projectPath: projectPath)
 
         // 显示等待响应状态
         isWaitingForResponse = true
 
         // 发送消息到 Server，携带 clientMessageId
-        wsManager.sendMessage(text, sessionId: sessionId, clientMessageId: clientMessageId)
+        wsClient.sendMessage(text, sessionId: sessionId, clientMessageId: clientMessageId)
     }
 
     func unsubscribeFromCurrentSession() {
         if let sessionId = currentSessionId {
-            wsManager.unsubscribeFromSession(sessionId)
+            wsClient.unsubscribeFromSession(sessionId)
         }
-        wsManager.off(.messageNew)
+        // 使用 token 精确移除，不影响其他 ViewModel 的监听
+        if let token = messageNewToken {
+            wsClient.off(token: token)
+            messageNewToken = nil
+        }
+        // 移除 statusline observer
+        if let observer = statuslineMetricsObserver {
+            NotificationCenter.default.removeObserver(observer)
+            statuslineMetricsObserver = nil
+        }
         removeApprovalObservers()
         pendingApprovals.removeAll()
         currentSessionId = nil
     }
 
     deinit {
-        // deinit 不能访问 @MainActor 方法，需要直接调用
+        // deinit 是 nonisolated，使用专门的 nonisolated 方法
         if let sessionId = currentSessionId {
-            WebSocketManager.shared.unsubscribeFromSession(sessionId)
+            VlaudeWebSocketClient.shared.unsubscribeFromSessionInDeinit(sessionId)
         }
-        WebSocketManager.shared.off(.messageNew)
+        // 使用 nonisolated 方法精确移除
+        if let token = messageNewToken {
+            VlaudeWebSocketClient.shared.offFromDeinit(token: token)
+        }
 
-        // 清理 NotificationCenter 观察者
+        // 清理 NotificationCenter 观察者（NotificationCenter 是线程安全的）
+        if let observer = statuslineMetricsObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
         if let observer = approvalRequestObserver {
             NotificationCenter.default.removeObserver(observer)
         }

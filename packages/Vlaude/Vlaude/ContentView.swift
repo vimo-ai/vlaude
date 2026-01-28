@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct ContentView: View {
-    @ObservedObject private var webSocket = WebSocketManager.shared
+    @ObservedObject private var wsClient = VlaudeWebSocketClient.shared
     @State private var isReconnecting = false
     @State private var hasConnectedOnce = false  // 是否曾经连接成功过
 
@@ -17,19 +17,19 @@ struct ContentView: View {
             ProjectListView()
 
             // 首次连接中 - 显示 loading（仅当未失败时）
-            if !webSocket.isConnected && !hasConnectedOnce && !webSocket.connectionFailed {
+            if !wsClient.isConnected && !hasConnectedOnce && !wsClient.connectionFailed {
                 InitialConnectingView()
             }
 
             // 断连覆盖层 - 曾经连接成功后断开 或 首次连接失败
-            if !webSocket.isConnected && (hasConnectedOnce || webSocket.connectionFailed) {
+            if !wsClient.isConnected && (hasConnectedOnce || wsClient.connectionFailed) {
                 DisconnectedOverlayView(
                     isReconnecting: $isReconnecting,
                     onReconnect: reconnect
                 )
             }
         }
-        .onChange(of: webSocket.isConnected) { _, isConnected in
+        .onChange(of: wsClient.isConnected) { _, isConnected in
             if isConnected {
                 hasConnectedOnce = true
             }
@@ -38,7 +38,7 @@ struct ContentView: View {
 
     private func reconnect() {
         isReconnecting = true
-        webSocket.reconnectWithNewToken()
+        wsClient.reconnectWithNewToken()
 
         // 3 秒后重置状态（无论成功失败）
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {

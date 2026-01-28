@@ -14,7 +14,7 @@ struct SessionListView: View {
     let projectName: String
 
     @StateObject private var viewModel: SessionListViewModel
-    @ObservedObject private var wsManager = WebSocketManager.shared
+    @ObservedObject private var wsClient = VlaudeWebSocketClient.shared
 
     @State private var showingCreateAlert = false
     @State private var newSessionPrompt = ""
@@ -124,9 +124,9 @@ struct SessionListView: View {
             ToolbarItem(placement: .navigationBarLeading) {
                 HStack(spacing: 4) {
                     Circle()
-                        .fill(wsManager.isEtermOnline ? Color.green : Color.gray)
+                        .fill(wsClient.isEtermOnline ? Color.green : Color.gray)
                         .frame(width: 8, height: 8)
-                    Text(wsManager.isEtermOnline ? "ETerm" : "SDK")
+                    Text(wsClient.isEtermOnline ? "ETerm" : "SDK")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -135,7 +135,7 @@ struct SessionListView: View {
             // 新建对话按钮
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
-                    if wsManager.isEtermOnline {
+                    if wsClient.isEtermOnline {
                         Task {
                             await createEtermSession()
                         }
@@ -144,8 +144,8 @@ struct SessionListView: View {
                     }
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: wsManager.isEtermOnline ? "terminal" : "plus")
-                        if wsManager.isEtermOnline {
+                        Image(systemName: wsClient.isEtermOnline ? "terminal" : "plus")
+                        if wsClient.isEtermOnline {
                             Text("新建")
                                 .font(.caption)
                         }
@@ -174,7 +174,7 @@ struct SessionListView: View {
         .onDisappear {
             viewModel.stopListening()
         }
-        .onChange(of: wsManager.isConnected) { oldValue, newValue in
+        .onChange(of: wsClient.isConnected) { oldValue, newValue in
             // WebSocket 重连成功后自动刷新会话列表
             if !oldValue && newValue {
                 Task {
@@ -302,8 +302,20 @@ struct SessionRow: View {
                 Spacer()
             }
 
-            // 显示最后一条消息预览
-            if let lastMessage = session.lastMessage {
+            // 显示最后一条消息预览（优先使用 V5 新字段）
+            if let preview = session.lastMessagePreview {
+                HStack(spacing: 4) {
+                    // 消息类型图标
+                    Text(session.lastMessageType == "user" ? "👤" : "🤖")
+                        .font(.caption)
+                    Text(preview)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            } else if let lastMessage = session.lastMessage {
+                // 回退：使用旧的 lastMessage 字段
                 Text(messagePreview(for: lastMessage))
                     .font(.caption)
                     .foregroundColor(.secondary)
@@ -311,8 +323,12 @@ struct SessionRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            // 时间戳
-            if let lastMessageTime = session.lastMessageAt {
+            // 时间戳（优先使用 V5 新字段）
+            if let ts = session.lastMessageTimestamp, ts > 0 {
+                Text(formatTimestamp(ts))
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            } else if let lastMessageTime = session.lastMessageAt {
                 Text(lastMessageTime, style: .relative)
                     .font(.caption2)
                     .foregroundColor(.secondary)

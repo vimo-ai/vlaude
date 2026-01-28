@@ -55,7 +55,7 @@ struct VlaudeApp: App {
 
                 // Token 已准备好，连接 WebSocket
                 DispatchQueue.main.async {
-                    WebSocketManager.shared.reconnectWithNewToken()
+                    VlaudeWebSocketClient.shared.reconnectWithNewToken()
                 }
 
             case .failure(let error):

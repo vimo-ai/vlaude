@@ -31,7 +31,7 @@ class SessionListViewModel: ObservableObject {
 
     private let projectPath: String
     private let client = VlaudeClient.shared
-    private let wsManager = WebSocketManager.shared
+    private let wsClient = VlaudeWebSocketClient.shared
 
     // MARK: - Private State
 
@@ -40,7 +40,8 @@ class SessionListViewModel: ObservableObject {
     private let pageSize = 20
     private var cancellables = Set<AnyCancellable>()
     private var isListening = false
-    private var sessionListUpdatedToken: WebSocketManager.EventHandlerToken?
+    private var sessionListUpdatedToken: VlaudeWebSocketClient.VlaudeEventToken?
+    private var messageNewToken: VlaudeWebSocketClient.VlaudeEventToken?
 
     // MARK: - Initialization
 
@@ -91,8 +92,12 @@ class SessionListViewModel: ObservableObject {
     /// 清理事件监听（按 token 移除，不影响其他模块）
     private func cleanupEventHandler() {
         if let token = sessionListUpdatedToken {
-            wsManager.off(token: token)
+            wsClient.off(token: token)
             sessionListUpdatedToken = nil
+        }
+        if let token = messageNewToken {
+            wsClient.off(token: token)
+            messageNewToken = nil
         }
     }
 
@@ -193,7 +198,7 @@ class SessionListViewModel: ObservableObject {
     /// 订阅状态更新并应用初始状态
     private func subscribeAndApplyInitialState() async {
         // 1. 先订阅 Combine Publisher（确保不丢失任何推送）
-        wsManager.sessionsUpdatePublisher
+        wsClient.sessionsUpdatePublisher
             .filter { [weak self] update in
                 update.projectPath == self?.projectPath
             }
@@ -206,7 +211,7 @@ class SessionListViewModel: ObservableObject {
 
         // 2. 再发起订阅请求（初始状态会通过 Publisher 推送）
         do {
-            _ = try await wsManager.subscribeSessionsPage(projectPath: projectPath)
+            _ = try await wsClient.subscribeSessionsPage(projectPath: projectPath)
         } catch {
         }
     }
@@ -215,9 +220,8 @@ class SessionListViewModel: ObservableObject {
 
     private func setupWebSocketListeners() {
         // 监听 Session 列表更新（新 session 创建/删除）
-        sessionListUpdatedToken = wsManager.on(.sessionListUpdated) { [weak self] message in
+        sessionListUpdatedToken = wsClient.on(.sessionListUpdated) { [weak self] message in
             guard let self = self else { return }
-
 
             // 检查是否是当前项目的更新
             if let msgProjectPath = message.projectPath {
@@ -226,6 +230,25 @@ class SessionListViewModel: ObservableObject {
 
             Task { @MainActor in
                 await self.refreshSilently()
+            }
+        }
+
+        // 监听新消息事件（用于更新列表页预览）
+        messageNewToken = wsClient.on(.messageNew) { [weak self] wsMessage in
+            guard let self = self,
+                  let sessionId = wsMessage.sessionId,
+                  let preview = wsMessage.preview,
+                  let message = wsMessage.message else {
+                return
+            }
+
+            Task { @MainActor in
+                self.updateSessionPreview(
+                    sessionId: sessionId,
+                    preview: preview,
+                    messageType: message.type,
+                    timestamp: message.timestamp
+                )
             }
         }
     }
@@ -246,6 +269,44 @@ class SessionListViewModel: ObservableObject {
 
         if updated {
         }
+    }
+
+    /// 更新会话的预览信息（收到新消息时调用）
+    private func updateSessionPreview(sessionId: String, preview: String, messageType: String, timestamp: String?) {
+        guard let index = sessions.firstIndex(where: { $0.id == sessionId }) else {
+            return
+        }
+
+        // 解析时间戳为毫秒
+        let timestampMs: Int64? = timestamp.flatMap { ts in
+            // 1. 尝试解析带小数秒的 ISO 8601
+            let formatterWithFrac = ISO8601DateFormatter()
+            formatterWithFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            if let date = formatterWithFrac.date(from: ts) {
+                return Int64(date.timeIntervalSince1970 * 1000)
+            }
+
+            // 2. 尝试解析不带小数秒的 ISO 8601
+            let formatterBasic = ISO8601DateFormatter()
+            formatterBasic.formatOptions = [.withInternetDateTime]
+            if let date = formatterBasic.date(from: ts) {
+                return Int64(date.timeIntervalSince1970 * 1000)
+            }
+
+            // 3. 尝试解析为数字毫秒时间戳
+            if let ms = Int64(ts) {
+                return ms
+            }
+
+            return nil
+        }
+
+        // 创建更新后的 Session
+        sessions[index] = sessions[index].withPreview(
+            type: messageType,
+            preview: preview,
+            timestamp: timestampMs
+        )
     }
 
     private func refreshSilently() async {

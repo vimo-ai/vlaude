@@ -397,6 +397,15 @@ class MessageTransformer {
 
         // 优先使用服务端解析好的 contentBlocks
         if let blocks = msg.contentBlocks, !blocks.isEmpty {
+            // 调试日志：检查 contentBlocks 是否存在
+            let hasEditTool = blocks.contains { block in
+                if case .toolUse(let t) = block, t.name == "Edit" { return true }
+                return false
+            }
+            if hasEditTool {
+                print("📦 [Assistant Message] uuid=\(uuid), contentBlocks count=\(blocks.count)")
+            }
+
             var texts: [String] = []
             var executions: [ToolExecution] = []
 
@@ -409,12 +418,26 @@ class MessageTransformer {
                     displayMsg.thinkingContent = thinkingBlock.thinking
 
                 case .toolUse(let toolBlock):
+                    // 调试日志：查看 Edit 工具的 input 内容
+                    if toolBlock.name == "Edit" {
+                        print("🔧 [Edit ToolUse] id=\(toolBlock.id)")
+                        print("   input=\(String(describing: toolBlock.input))")
+                    }
+
                     // 从 contentBlocks 提取工具执行
                     var input: [String: String] = [:]
                     if let inputDict = toolBlock.input {
                         for (key, value) in inputDict {
                             input[key] = jsonValueToString(value)
                         }
+                    }
+
+                    // 调试日志：转换后的 input
+                    if toolBlock.name == "Edit" {
+                        print("   converted input keys=\(input.keys.sorted())")
+                        print("   file_path=\(input["file_path"] ?? "nil")")
+                        print("   old_string length=\(input["old_string"]?.count ?? 0)")
+                        print("   new_string length=\(input["new_string"]?.count ?? 0)")
                     }
 
                     // 查找工具结果

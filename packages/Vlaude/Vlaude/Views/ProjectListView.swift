@@ -9,7 +9,7 @@ import SwiftUI
 
 struct ProjectListView: View {
     @StateObject private var viewModel = ProjectListViewModel()
-    @ObservedObject private var webSocketManager = WebSocketManager.shared
+    @ObservedObject private var wsClient = VlaudeWebSocketClient.shared
 
     var body: some View {
         NavigationStack {
@@ -57,7 +57,7 @@ struct ProjectListView: View {
                             } label: {
                                 ProjectRow(
                                     project: project,
-                                    etermSessionCount: webSocketManager.etermSessionCounts[project.projectPath] ?? 0
+                                    etermSessionCount: wsClient.etermSessionCounts[project.projectPath] ?? 0
                                 )
                             }
                         }
@@ -100,7 +100,7 @@ struct ProjectListView: View {
             .navigationTitle("项目列表")
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {
-                    EtermStatusIndicator(isOnline: webSocketManager.isEtermOnline)
+                    EtermStatusIndicator(isOnline: wsClient.isEtermOnline)
                 }
             }
             .task {
@@ -111,20 +111,20 @@ struct ProjectListView: View {
                 viewModel.startListening()
 
                 // Phase 3: 订阅 projects 页面状态更新
-                webSocketManager.subscribe(page: .projects)
+                wsClient.subscribe(page: .projects)
             }
             .onDisappear {
                 // 离开页面时停止监听项目更新
                 viewModel.stopListening()
             }
-            .onChange(of: webSocketManager.isConnected) { oldValue, newValue in
+            .onChange(of: wsClient.isConnected) { oldValue, newValue in
                 // WebSocket 重连成功后自动刷新项目列表
                 if !oldValue && newValue {
                     Task {
                         await viewModel.loadProjects(reset: true)
                     }
                     // 重新订阅 projects 页面状态
-                    webSocketManager.subscribe(page: .projects)
+                    wsClient.subscribe(page: .projects)
                 }
             }
         }

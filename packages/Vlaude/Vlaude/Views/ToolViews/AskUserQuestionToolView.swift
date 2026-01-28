@@ -350,6 +350,6 @@ struct OptionRow: View {
         // 发送选项索引到终端（1-based，因为 Claude Code 使用 1, 2, 3...）
         let inputText = "\(index + 1)"
         print("📤 [AskUserQuestion] 发送选择: \(inputText) (选项: \(option.label))")
-        WebSocketManager.shared.sendMessage(inputText, sessionId: sessionId)
+        VlaudeWebSocketClient.shared.sendMessage(inputText, sessionId: sessionId)
     }
 }

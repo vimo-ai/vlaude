@@ -63,7 +63,7 @@ extension View {
 ///         description: currentApprovalRequest?.description ?? ""
 ///     ) { action in
 ///         // 用户选择了某个动作 (y/n/a)
-///         WebSocketManager.shared.sendApprovalResponse(
+///         VlaudeWebSocketClient.shared.sendApprovalResponse(
 ///             requestId: currentApprovalRequest?.requestId ?? "",
 ///             sessionId: currentApprovalRequest?.sessionId ?? "",
 ///             action: action

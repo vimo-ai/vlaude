@@ -17,11 +17,12 @@ class ProjectListViewModel: ObservableObject {
     @Published var hasMore = false
 
     private let client = VlaudeClient.shared
-    private let wsManager = WebSocketManager.shared
+    private let wsClient = VlaudeWebSocketClient.shared
     private var loadTask: Task<Void, Never>?
     private var currentOffset = 0
     private let pageSize = 10
     private var isListening = false  // 监听状态标记
+    private var projectUpdatedToken: VlaudeWebSocketClient.VlaudeEventToken?  // 保存 token 用于精确移除
 
     func loadProjects(reset: Bool = false) async {
         // 防止重复加载
@@ -89,7 +90,8 @@ class ProjectListViewModel: ObservableObject {
 
         isListening = true
 
-        wsManager.on(.projectUpdated) { [weak self] message in
+        // 保存 token 用于精确移除
+        projectUpdatedToken = wsClient.on(.projectUpdated) { [weak self] message in
             guard let self = self else { return }
 
             print("🔔 [ProjectListViewModel] 收到项目更新事件")
@@ -112,14 +114,18 @@ class ProjectListViewModel: ObservableObject {
         }
 
         isListening = false
-        wsManager.off(.projectUpdated)
+        // 使用 token 精确移除，不影响其他模块
+        if let token = projectUpdatedToken {
+            wsClient.off(token: token)
+            projectUpdatedToken = nil
+        }
         print("🛑 [ProjectListViewModel] 停止监听项目更新")
     }
 
     deinit {
-        // deinit 不能访问 @MainActor 方法，需要直接调用 WebSocketManager
-        if isListening {
-            WebSocketManager.shared.off(.projectUpdated)
+        // deinit 是 nonisolated，使用专门的 nonisolated 方法
+        if let token = projectUpdatedToken {
+            VlaudeWebSocketClient.shared.offFromDeinit(token: token)
             print("🛑 [ProjectListViewModel] deinit 时停止监听项目更新")
         }
         print("♻️ [ProjectListViewModel] 已销毁")
