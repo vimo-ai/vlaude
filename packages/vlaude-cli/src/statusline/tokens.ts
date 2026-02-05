@@ -3,6 +3,8 @@ import * as fs from 'fs';
 export interface TokenMetrics {
   inputTokens: number;
   outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
 }
 
 /**
@@ -19,6 +21,8 @@ export async function getTokenMetrics(transcriptPath?: string): Promise<TokenMet
 
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheReadTokens = 0;
+    let cacheWriteTokens = 0;
 
     for (const line of lines) {
       try {
@@ -26,13 +30,15 @@ export async function getTokenMetrics(transcriptPath?: string): Promise<TokenMet
         if (data.message?.usage) {
           inputTokens += data.message.usage.input_tokens || 0;
           outputTokens += data.message.usage.output_tokens || 0;
+          cacheReadTokens += data.message.usage.cache_read_input_tokens || 0;
+          cacheWriteTokens += data.message.usage.cache_creation_input_tokens || 0;
         }
       } catch {
         // 跳过无效的 JSON 行
       }
     }
 
-    return { inputTokens, outputTokens };
+    return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens };
   } catch {
     return null;
   }

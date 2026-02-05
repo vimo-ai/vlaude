@@ -1,6 +1,5 @@
 import chalk from 'chalk';
 import type { ClaudeStatusJSON, VlaudeStatus } from './types';
-import { getModelMaxTokens } from './context';
 import { formatTokens, type TokenMetrics } from './tokens';
 import type { GitChanges } from './git';
 
@@ -57,7 +56,7 @@ function renderProgressBar(percentage: number, barLength: number = 10): string {
 export function renderStatusLine(
   data: ClaudeStatusJSON,
   vlaudeStatus: VlaudeStatus,
-  contextLength: number | null,
+  contextPercentage: number | null,
   tokenMetrics: TokenMetrics | null,
   gitChanges: GitChanges | null
 ): string {
@@ -74,19 +73,62 @@ export function renderStatusLine(
   // 没连上就不显示任何符号
 
   // 2. Context 进度条
-  if (contextLength !== null) {
-    const maxTokens = getModelMaxTokens(data.model?.id);
-    const percentage = Math.min(100, (contextLength / maxTokens) * 100);
+  if (contextPercentage !== null) {
+    const percentage = Math.min(100, contextPercentage);
     parts.push(renderProgressBar(percentage) + ' ' + chalk.gray(`${percentage.toFixed(1)}%`));
   }
 
   // 3. Token 使用情况
   if (tokenMetrics) {
-    parts.push(
-      chalk.blue(`↑ ${formatTokens(tokenMetrics.inputTokens)}`) +
-      ' ' +
-      chalk.cyan(`↓ ${formatTokens(tokenMetrics.outputTokens)}`)
-    );
+    const tokenParts = [
+      chalk.blue(`↑${formatTokens(tokenMetrics.inputTokens)}`),
+      chalk.cyan(`↓${formatTokens(tokenMetrics.outputTokens)}`)
+    ];
+    // Cache tokens - 按健康度变色
+    if (tokenMetrics.cacheReadTokens > 0 || tokenMetrics.cacheWriteTokens > 0) {
+      // Cache Read: <10M 绿, 10-50M 黄, >50M 红
+      const rValue = formatTokens(tokenMetrics.cacheReadTokens);
+      let rColor;
+      if (tokenMetrics.cacheReadTokens < 10_000_000) {
+        rColor = chalk.green;
+      } else if (tokenMetrics.cacheReadTokens < 50_000_000) {
+        rColor = chalk.yellow;
+      } else {
+        rColor = chalk.red;
+      }
+      tokenParts.push(rColor(`R${rValue}`));
+
+      // Cache Write: <1M 绿, 1-5M 黄, >5M 红
+      const wValue = formatTokens(tokenMetrics.cacheWriteTokens);
+      let wColor;
+      if (tokenMetrics.cacheWriteTokens < 1_000_000) {
+        wColor = chalk.green;
+      } else if (tokenMetrics.cacheWriteTokens < 5_000_000) {
+        wColor = chalk.yellow;
+      } else {
+        wColor = chalk.red;
+      }
+      tokenParts.push(wColor(`W${wValue}`));
+
+      // 千分比估算: (cacheRead + cacheWrite) / 2.5M = ‰
+      // 基于分析: 25M tokens ≈ 1%, 所以 2.5M ≈ 1‰
+      const TOKENS_PER_PERMILLE = 2_500_000;
+      const totalCache = tokenMetrics.cacheReadTokens + tokenMetrics.cacheWriteTokens;
+      const permille = totalCache / TOKENS_PER_PERMILLE;
+      const permilleStr = permille < 10 ? permille.toFixed(1) : Math.round(permille).toString();
+
+      // 健康度: <5‰ 绿, 5-20‰ 黄, >20‰ 红
+      let permilleColor;
+      if (permille < 5) {
+        permilleColor = chalk.green;
+      } else if (permille < 20) {
+        permilleColor = chalk.yellow;
+      } else {
+        permilleColor = chalk.red;
+      }
+      tokenParts.push(permilleColor(`~${permilleStr}‰`));
+    }
+    parts.push(tokenParts.join(' '));
   }
 
   // 4. Git 变更

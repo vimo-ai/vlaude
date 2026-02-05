@@ -3,7 +3,7 @@
 import chalk from 'chalk';
 import { readStdin } from './statusline/input';
 import { getVlaudeStatus } from './statusline/vlaude-client';
-import { getContextLength } from './statusline/context';
+import { getContextLength, getModelMaxTokens } from './statusline/context';
 import { getTokenMetrics } from './statusline/tokens';
 import { getGitChanges } from './statusline/git';
 import { renderStatusLine } from './statusline/renderer';
@@ -95,15 +95,26 @@ async function main() {
     // 4. 获取 vlaude 状态
     const vlaudeStatus = await getVlaudeStatus(data.session_id || null);
 
-    // 4. 获取 context length 和 token metrics
-    const contextLength = await getContextLength(data.transcript_path);
+    // 5. 获取 context percentage — 优先用 CC 的 context_window
+    let contextPercentage: number | null = null;
+    if (data.context_window?.used_percentage != null) {
+      contextPercentage = data.context_window.used_percentage;
+    } else {
+      const contextLength = await getContextLength(data.transcript_path);
+      if (contextLength !== null) {
+        const maxTokens = getModelMaxTokens(data.model?.id);
+        contextPercentage = Math.min(100, (contextLength / maxTokens) * 100);
+      }
+    }
+
+    // 6. 获取 token metrics — 从 transcript 累计（用于 R/W/‰ 会话级消耗）
     const tokenMetrics = await getTokenMetrics(data.transcript_path);
 
-    // 5. 获取 git 变更
+    // 7. 获取 git 变更
     const gitChanges = getGitChanges();
 
-    // 6. 渲染状态栏
-    const statusLine = renderStatusLine(data, vlaudeStatus, contextLength, tokenMetrics, gitChanges);
+    // 8. 渲染状态栏
+    const statusLine = renderStatusLine(data, vlaudeStatus, contextPercentage, tokenMetrics, gitChanges);
 
     // 7. 输出（添加 reset 代码覆盖 Claude Code 的 dim 设置）
     // Replace all spaces with non-breaking spaces to prevent trimming
