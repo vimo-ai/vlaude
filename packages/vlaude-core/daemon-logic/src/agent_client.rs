@@ -1,14 +1,13 @@
 //! Agent Client 适配器
 //!
 //! 封装 ai-cli-session-db 的 Agent Client，负责：
-//! 1. 连接或启动 Agent
-//! 2. 订阅 NewMessages 事件
-//! 3. 直接读取本地 SessionDB（不通过 Agent）
+//! 1. 连接或启动 Agent（仅 RPC，不订阅事件）
+//! 2. 直接读取本地 SessionDB（不通过 Agent）
 //!
-//! 架构说明：
+//! 架构说明（V2 读写分离）：
 //! - Agent 负责 JSONL → DB 写入（避免多进程写冲突）
-//! - Client 订阅事件获取实时通知
-//! - Client 直接读取本地 DB（不需要通过 Agent）
+//! - 各端自行触发读，不依赖 Agent 事件推送
+//! - Client 直接读取本地 DB（只读模式）
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -16,17 +15,17 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use ai_cli_session_db::{
-    connect_or_start_agent, AgentClient, ClientConfig, DbConfig, EventType,
+    connect_or_start_agent, AgentClient, ClientConfig, DbConfig,
     Message, Project, ProjectWithStats, SearchResult, Session, SessionDB, SessionWithProject,
 };
 
 /// Agent Client 适配器
 ///
 /// 封装 AgentClient + SessionDB 的组合：
-/// - AgentClient: 订阅事件，接收实时通知
+/// - AgentClient: RPC 连接（notify_file_change 等），不订阅事件
 /// - SessionDB: 直接读取本地数据库（只读模式）
 pub struct AgentClientAdapter {
-    /// Agent Client（用于订阅事件）
+    /// Agent Client（仅 RPC 连接）
     agent_client: Arc<RwLock<AgentClient>>,
     /// 本地数据库连接（只读）
     db: Arc<RwLock<SessionDB>>,
@@ -64,13 +63,10 @@ impl AgentClientAdapter {
         if let Some(dir) = agent_source_dir {
             config.agent_source_dir = Some(dir);
         }
-        let mut agent_client = connect_or_start_agent(config).await?;
+        let agent_client = connect_or_start_agent(config).await?;
+        // [V2] 不再订阅事件，仅保留 RPC 连接
 
-        // 2. 订阅 NewMessages 事件
-        agent_client.subscribe(vec![EventType::NewMessage]).await?;
-        info!("[AgentClient] Subscribed to NewMessage events");
-
-        // 3. 打开本地数据库（只读模式）
+        // 2. 打开本地数据库（只读模式）
         info!("[AgentClient] Opening local database: {:?}", db_path);
         let db_config = DbConfig::local(db_path.to_string_lossy().into_owned());
         let db = SessionDB::connect(db_config)?;
@@ -87,14 +83,6 @@ impl AgentClientAdapter {
         let mut client = self.agent_client.write().await;
         client.notify_file_change(path).await?;
         Ok(())
-    }
-
-    /// 接收推送事件（NewMessages）
-    ///
-    /// 应该在事件循环中调用
-    pub async fn recv_push(&self) -> Option<ai_cli_session_db::Push> {
-        let mut client = self.agent_client.write().await;
-        client.recv_push().await
     }
 
     // ==================== 数据查询 API（直接读取本地 DB）====================
