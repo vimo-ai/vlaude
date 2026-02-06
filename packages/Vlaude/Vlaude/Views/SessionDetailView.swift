@@ -113,6 +113,54 @@ struct SessionDetailView: View {
     }
 
     private var messageScrollView: some View {
+        VStack(spacing: 0) {
+            // V2: Timeline 视图（Turn 分组）
+            if !viewModel.turnBuilder.turns.isEmpty {
+                timelineScrollView
+            } else {
+                // 回退到旧版消息列表（历史数据可能没有 eventType）
+                legacyMessageScrollView
+            }
+        }
+    }
+
+    // V2: Timeline 滚动视图
+    private var timelineScrollView: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 16) {
+                    loadMoreButton
+
+                    SessionTimelineView(
+                        turnBuilder: viewModel.turnBuilder,
+                        sessionId: sessionId,
+                        onApprovalAction: { toolUseId, action in
+                            viewModel.sendApprovalResponse(toolUseId: toolUseId, action: action)
+                        }
+                    )
+
+                    waitingIndicator
+                }
+                .padding()
+            }
+            .onAppear {
+                scrollToLastTurn(proxy: proxy)
+            }
+            .onChange(of: viewModel.turnBuilder.turns.count) { oldCount, newCount in
+                if newCount > oldCount {
+                    scrollToLastTurn(proxy: proxy)
+                }
+            }
+            .onChange(of: viewModel.isWaitingForResponse) { oldValue, newValue in
+                if newValue {
+                    scrollToWaitingIndicator(proxy: proxy)
+                }
+            }
+        }
+    }
+
+    // 旧版消息列表（回退用）
+    private var legacyMessageScrollView: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 16) {
@@ -209,6 +257,14 @@ struct SessionDetailView: View {
     }
 
     // MARK: - Helper Methods
+
+    private func scrollToLastTurn(proxy: ScrollViewProxy) {
+        if let lastTurn = viewModel.turnBuilder.turns.last {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                proxy.scrollTo(lastTurn.id, anchor: .bottom)
+            }
+        }
+    }
 
     private func scrollToLastMessage(proxy: ScrollViewProxy) {
         if let lastMessage = viewModel.displayMessages.last {

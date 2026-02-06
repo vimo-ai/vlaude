@@ -205,14 +205,17 @@ class SessionListViewModel: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] update in
                 guard let self = self, self.isListening else { return }
+                print("🔍 [SessionListVM] sessionsUpdatePublisher fired, onlineSessions=\(update.onlineSessions)")
                 self.updateSessionsOnlineStatus(onlineSessions: update.onlineSessions)
             }
             .store(in: &cancellables)
 
         // 2. 再发起订阅请求（初始状态会通过 Publisher 推送）
         do {
-            _ = try await wsClient.subscribeSessionsPage(projectPath: projectPath)
+            let onlineSessions = try await wsClient.subscribeSessionsPage(projectPath: projectPath)
+            print("🔍 [SessionListVM] subscribeSessionsPage succeeded, onlineSessions=\(onlineSessions)")
         } catch {
+            print("❌ [SessionListVM] subscribeSessionsPage failed: \(error)")
         }
     }
 
@@ -256,18 +259,21 @@ class SessionListViewModel: ObservableObject {
     // MARK: - State Updates
 
     private func updateSessionsOnlineStatus(onlineSessions: [String]) {
+        print("🔍 [SessionListVM] updateSessionsOnlineStatus called, onlineSessions=\(onlineSessions), sessionCount=\(sessions.count)")
         var updated = false
         for i in sessions.indices {
             let sessionId = sessions[i].id
             let isOnline = onlineSessions.contains(sessionId)
 
             if sessions[i].inEterm != isOnline {
+                print("🔍 [SessionListVM] session[\(i)] id=\(sessionId) inEterm: \(sessions[i].inEterm ?? false) → \(isOnline)")
                 sessions[i] = sessions[i].withInEterm(isOnline)
                 updated = true
             }
         }
 
         if updated {
+            print("🔍 [SessionListVM] status updated")
         }
     }
 

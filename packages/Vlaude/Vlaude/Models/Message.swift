@@ -135,6 +135,7 @@ struct Message: Identifiable, Codable {
     let requestId: String?
     let agentId: String?  // Agent 消息标识
     let isApiErrorMessage: Bool?  // API 错误消息
+    let eventType: String?  // V2: 主 block 类型: "thinking" | "text" | "tool_use" | "tool_result" | "user_text"
 
     // user 类型特有字段
     let toolUseResult: JSONValue?  // 工具执行结果
@@ -331,7 +332,7 @@ struct Message: Identifiable, Codable {
         case uuid, type, timestamp, sessionId, parentUuid, message, contentBlocks
 
         // user/assistant 字段
-        case isSidechain, userType, cwd, version, gitBranch, requestId, agentId, isApiErrorMessage
+        case isSidechain, userType, cwd, version, gitBranch, requestId, agentId, isApiErrorMessage, eventType
 
         // user 特有字段
         case toolUseResult, thinkingMetadata, isVisibleInTranscriptOnly, isCompactSummary, isMeta

@@ -23,6 +23,7 @@ struct PendingApproval {
 class SessionDetailViewModel: ObservableObject {
     @Published var session: Session?
     @Published var displayMessages: [DisplayMessage] = []
+    @Published var turnBuilder = TurnBuilder()
     @Published var isLoading = false
     @Published var isLoadingMore = false
     @Published var errorMessage: String?
@@ -51,6 +52,9 @@ class SessionDetailViewModel: ObservableObject {
     private var currentSessionId: String?
     private var loadMessagesTask: Task<Void, Never>?
 
+    // 嵌套 ObservableObject 变化转发（turnBuilder 内部变化 → ViewModel.objectWillChange）
+    private var turnBuilderCancellable: AnyCancellable?
+
     // 通知订阅 tokens
     private var approvalRequestObserver: NSObjectProtocol?
     private var approvalTimeoutObserver: NSObjectProtocol?
@@ -66,6 +70,14 @@ class SessionDetailViewModel: ObservableObject {
 
     // 当前项目路径（从 SessionListView 传入）
     private var currentProjectPath: String = ""
+
+    init() {
+        // C1: turnBuilder 是嵌套 ObservableObject，其内部 @Published 变化不会
+        // 自动触发本 ViewModel 的 objectWillChange。手动转发确保 View 刷新。
+        turnBuilderCancellable = turnBuilder.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
 
     func loadSessionDetail(sessionId: String, projectPath: String) async {
         isLoading = true
@@ -140,6 +152,8 @@ class SessionDetailViewModel: ObservableObject {
                     // 重新转换所有消息
                     self.displayMessages = self.messageTransformer.transform(messages: self.rawMessages)
                     self.applyPendingApprovals()  // 应用 pending approvals
+                    // V2: 同步推送到 TurnBuilder
+                    self.turnBuilder.processMessage(newMessage)
                 } else {
                 }
             }
@@ -540,6 +554,7 @@ class SessionDetailViewModel: ObservableObject {
             requestId: nil,
             agentId: nil,
             isApiErrorMessage: nil,
+            eventType: "user_text",
             toolUseResult: nil,
             thinkingMetadata: nil,
             isVisibleInTranscriptOnly: nil,
@@ -582,6 +597,8 @@ class SessionDetailViewModel: ObservableObject {
         rawMessages.append(userMessage)
         // 重新转换所有消息
         displayMessages = messageTransformer.transform(messages: rawMessages)
+        // C2: 同步到 TurnBuilder（开启新 Turn，确保 Timeline 立即显示用户消息）
+        turnBuilder.processMessage(userMessage)
 
         // 发送消息前先加入会话（触发 CLI 进入 remote 模式）
         wsClient.joinSession(sessionId, projectPath: projectPath)
@@ -609,6 +626,9 @@ class SessionDetailViewModel: ObservableObject {
         }
         removeApprovalObservers()
         pendingApprovals.removeAll()
+        // S4: 切换 session 时清空 TurnBuilder 和 pendingMessages，避免残留旧数据
+        pendingMessages.removeAll()
+        turnBuilder.clear()
         currentSessionId = nil
     }
 
@@ -691,6 +711,9 @@ class SessionDetailViewModel: ObservableObject {
 
                 // 使用 MessageTransformer 转换消息
                 displayMessages = messageTransformer.transform(messages: rawMessages)
+
+                // V2: 从历史消息构建 Turn 时间线
+                turnBuilder.processHistoryMessages(rawMessages)
 
                 hasMore = result.hasMore
                 currentOffset += result.messages.count

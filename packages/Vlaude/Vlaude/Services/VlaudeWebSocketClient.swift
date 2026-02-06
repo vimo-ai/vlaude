@@ -367,11 +367,15 @@ class VlaudeWebSocketClient: ObservableObject {
             "projectPath": projectPath
         ], timeout: 10)
 
+        print("🔍 [WS] subscribeSessionsPage raw response: \(response)")
+
         guard let success = response["success"] as? Bool, success else {
+            print("❌ [WS] subscribeSessionsPage: success=\(response["success"] ?? "nil")")
             throw WebSocketError.decodingFailed
         }
 
         let onlineSessions = response["onlineSessions"] as? [String] ?? []
+        print("🔍 [WS] subscribeSessionsPage onlineSessions=\(onlineSessions)")
 
         // 推送初始状态
         sessionsUpdatePublisher.send(SessionsStatusUpdate(
