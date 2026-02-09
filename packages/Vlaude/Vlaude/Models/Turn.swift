@@ -19,6 +19,7 @@ class Turn: ObservableObject, Identifiable {
     @Published var events: [TurnEvent] = []
     @Published var status: TurnStatus = .active
     @Published var subagentTurns: [SubagentTurn] = []
+    var hasCompactionBefore: Bool = false       // 此 Turn 前有上下文压缩
 
     init(id: String, userMessage: DisplayMessage) {
         self.id = id

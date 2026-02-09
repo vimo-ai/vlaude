@@ -81,6 +81,24 @@ struct TurnCard: View {
                         .font(.system(size: 14))
                         .foregroundColor(.secondary)
                 }
+
+                // 用户粘贴的图片
+                if !turn.userMessage.images.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(turn.userMessage.images) { img in
+                                if let data = Data(base64Encoded: img.data),
+                                   let uiImage = UIImage(data: data) {
+                                    Image(uiImage: uiImage)
+                                        .resizable()
+                                        .aspectRatio(contentMode: .fit)
+                                        .frame(maxHeight: 200)
+                                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                            }
+                        }
+                    }
+                }
             }
             .padding(.leading, 10)
         }
@@ -116,17 +134,20 @@ struct TurnCard: View {
 
     @ViewBuilder
     private func activeToolList(events: [TurnEvent]) -> some View {
-        let visibleCount = 3
-        let overflow = events.count > 5
+        // 工具事件始终显示，只折叠 thinking/text 等非工具事件
+        let toolEvents = events.filter { $0.eventType == .toolUse }
+        let otherEvents = events.filter { $0.eventType != .toolUse }
+        let maxOtherVisible = 2
+        let otherOverflow = otherEvents.count > maxOtherVisible
 
         VStack(spacing: 2) {
-            if overflow {
-                // 超过 5 个：显示折叠提示 + 最近 3 个
+            // 非工具事件（thinking/text）：超出时只显示最近几个
+            if otherOverflow {
                 HStack(spacing: 6) {
                     Image(systemName: "ellipsis.circle")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
-                    Text("还有 \(events.count - visibleCount) 个工具调用")
+                    Text("还有 \(otherEvents.count - maxOtherVisible) 个事件")
                         .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
                     Spacer()
@@ -134,13 +155,18 @@ struct TurnCard: View {
                 .padding(.vertical, 4)
                 .padding(.horizontal, 8)
 
-                ForEach(events.suffix(visibleCount)) { event in
+                ForEach(otherEvents.suffix(maxOtherVisible)) { event in
                     activeEventRow(event)
                 }
             } else {
-                ForEach(events) { event in
+                ForEach(otherEvents) { event in
                     activeEventRow(event)
                 }
+            }
+
+            // 工具事件：始终全部显示
+            ForEach(toolEvents) { event in
+                activeEventRow(event)
             }
         }
     }

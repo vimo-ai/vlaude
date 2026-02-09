@@ -55,18 +55,16 @@ final class VlaudeClient {
     func getSessionMessages(
         sessionId: String,
         projectPath: String,
-        limit: Int = 50,
-        offset: Int = 0,
-        order: String = "asc"
-    ) async throws -> (messages: [Message], total: Int, hasMore: Bool) {
+        turnsLimit: Int = 3,
+        before: Int? = nil
+    ) async throws -> (messages: [Message], total: Int, hasMore: Bool, openTurn: Bool, nextCursor: Int?) {
         let request = GetSessionMessagesRequest(
             sessionId: sessionId,
             projectPath: projectPath,
-            limit: limit,
-            offset: offset,
-            order: order
+            turnsLimit: turnsLimit,
+            before: before
         )
-        print("🌐 [VlaudeClient] 请求消息: \(request.baseURL)\(request.path)")
+        print("🌐 [VlaudeClient] 请求消息: \(request.baseURL)\(request.path)?turnsLimit=\(turnsLimit)&before=\(before?.description ?? "nil")")
 
         let response = try await client.send(request)
 
@@ -83,8 +81,11 @@ final class VlaudeClient {
             throw CoreNetworkKit.APIError.noData(message: "响应数据不完整")
         }
 
-        print("✅ [VlaudeClient] 成功获取消息: \(data.count) 条")
-        return (data, total, hasMore)
+        let openTurn = response.openTurn ?? false
+        let nextCursor = response.nextCursor
+
+        print("✅ [VlaudeClient] 成功获取消息: \(data.count) 条, openTurn=\(openTurn), nextCursor=\(nextCursor?.description ?? "nil")")
+        return (data, total, hasMore, openTurn, nextCursor)
     }
 
     // MARK: - Project APIs

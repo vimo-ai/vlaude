@@ -14,7 +14,14 @@ struct BashToolView: View {
     @State private var isExpanded = false
 
     private var command: String {
-        execution.input["command"] ?? ""
+        if let cmd = execution.input["command"], !cmd.isEmpty {
+            return cmd
+        }
+        // summary 模式下 input 被裁剪，使用 displayText
+        if let displayText = execution.displayText, !displayText.isEmpty {
+            return displayText
+        }
+        return ""
     }
 
     private var resultContent: String {

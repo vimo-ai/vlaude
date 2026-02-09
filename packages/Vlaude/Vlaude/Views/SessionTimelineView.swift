@@ -15,6 +15,9 @@ struct SessionTimelineView: View {
 
     var body: some View {
         ForEach(Array(turnBuilder.turns.enumerated()), id: \.element.id) { index, turn in
+            if turn.hasCompactionBefore {
+                CompactionDivider()
+            }
             TurnCard(
                 turn: turn,
                 sessionId: sessionId,
@@ -23,5 +26,27 @@ struct SessionTimelineView: View {
             )
             .id(turn.id)
         }
+    }
+}
+
+// MARK: - Compaction Divider
+
+/// 上下文压缩分隔符
+struct CompactionDivider: View {
+    var body: some View {
+        HStack(spacing: 8) {
+            line
+            Label("上下文已压缩", systemImage: "arrow.trianglehead.2.clockwise")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+            line
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var line: some View {
+        Rectangle()
+            .fill(Color(uiColor: .separator).opacity(0.5))
+            .frame(height: 0.5)
     }
 }

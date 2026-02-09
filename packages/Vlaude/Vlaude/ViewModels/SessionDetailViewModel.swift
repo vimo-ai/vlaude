@@ -46,9 +46,8 @@ class SessionDetailViewModel: ObservableObject {
     private let client = VlaudeClient.shared
     private let wsClient = VlaudeWebSocketClient.shared
     private let messageTransformer = MessageTransformer()
-    private var rawMessages: [Message] = []  // 保存原始消息用于转换
-    private var currentOffset = 0
-    private let pageSize = 20 // 改为每次加载 20 条
+    private(set) var rawMessages: [Message] = []  // 保存原始消息用于转换
+    private var nextCursor: Int?  // Turn-based 分页游标
     private var currentSessionId: String?
     private var loadMessagesTask: Task<Void, Never>?
 
@@ -663,12 +662,15 @@ class SessionDetailViewModel: ObservableObject {
     func loadMessages(sessionId: String, reset: Bool = false) async {
         // 防止重复加载
         if loadMessagesTask != nil {
+            print("⚠️ [loadMessages] loadMessagesTask != nil, 跳过 (reset=\(reset))")
             return
         }
 
+        print("📄 [loadMessages] 开始 reset=\(reset), nextCursor=\(nextCursor?.description ?? "nil"), hasMore=\(hasMore)")
+
         loadMessagesTask = Task {
             if reset {
-                currentOffset = 0
+                nextCursor = nil
                 rawMessages = []
                 messageTransformer.clearCache()
             }
@@ -686,41 +688,49 @@ class SessionDetailViewModel: ObservableObject {
                 // 检查是否被取消
                 try Task.checkCancellation()
 
+                let beforeValue = reset ? nil : nextCursor
+                print("📄 [loadMessages] 请求参数: turnsLimit=3, before=\(beforeValue?.description ?? "nil")")
 
-                // 使用倒序（desc）加载最新消息
+                // Turn-based 分页：Daemon 返回 asc 排序的完整 Turn
                 let result = try await client.getSessionMessages(
                     sessionId: sessionId,
                     projectPath: currentProjectPath,
-                    limit: pageSize,
-                    offset: currentOffset,
-                    order: "desc"
+                    turnsLimit: 3,
+                    before: beforeValue
                 )
 
                 // 再次检查取消状态(请求完成后)
                 try Task.checkCancellation()
 
+                print("📄 [loadMessages] 响应: messages=\(result.messages.count), hasMore=\(result.hasMore), openTurn=\(result.openTurn), nextCursor=\(result.nextCursor?.description ?? "nil")")
 
-                // 新消息添加到数组末尾（因为后端已经倒序，最新的在前面，我们需要反转后追加）
                 if reset {
-                    // 首次加载：直接反转后赋值（最新消息在底部）
-                    rawMessages = result.messages.reversed()
+                    // 首次加载：消息已是 asc 顺序，直接赋值
+                    rawMessages = result.messages
                 } else {
-                    // 加载更早消息：反转后插入到顶部
-                    rawMessages.insert(contentsOf: result.messages.reversed(), at: 0)
+                    // 加载更早消息：插入到顶部
+                    let oldCount = rawMessages.count
+                    rawMessages.insert(contentsOf: result.messages, at: 0)
+                    print("📄 [loadMessages] loadMore: 插入 \(result.messages.count) 条到顶部, rawMessages: \(oldCount) → \(rawMessages.count)")
                 }
 
                 // 使用 MessageTransformer 转换消息
                 displayMessages = messageTransformer.transform(messages: rawMessages)
 
                 // V2: 从历史消息构建 Turn 时间线
-                turnBuilder.processHistoryMessages(rawMessages)
+                turnBuilder.processHistoryMessages(rawMessages, openTurn: result.openTurn)
+
+                print("📄 [loadMessages] 处理完成: displayMessages=\(displayMessages.count), turns=\(turnBuilder.turns.count)")
 
                 hasMore = result.hasMore
-                currentOffset += result.messages.count
+                nextCursor = result.nextCursor
+
+                print("📄 [loadMessages] 更新游标: hasMore=\(hasMore), nextCursor=\(nextCursor?.description ?? "nil")")
 
             } catch is CancellationError {
-                // Task 被取消,静默处理
+                print("📄 [loadMessages] Task 被取消")
             } catch {
+                print("❌ [loadMessages] 错误: \(error)")
                 errorMessage = error.localizedDescription
             }
         }

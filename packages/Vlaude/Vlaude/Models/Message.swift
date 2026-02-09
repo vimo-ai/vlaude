@@ -15,6 +15,7 @@ enum ContentBlock: Codable {
     case toolUse(ToolUseBlock)
     case toolResult(ToolResultBlock)
     case thinking(ThinkingBlock)
+    case image(ImageBlock)
     case unknown(UnknownBlock)
 
     struct TextBlock: Codable {
@@ -40,6 +41,15 @@ enum ContentBlock: Codable {
 
     struct ThinkingBlock: Codable {
         let thinking: String
+    }
+
+    struct ImageBlock: Codable {
+        let source: ImageSource
+        struct ImageSource: Codable {
+            let type: String       // "base64"
+            let media_type: String // "image/png"
+            let data: String       // base64 data
+        }
     }
 
     struct UnknownBlock: Codable {
@@ -68,6 +78,9 @@ enum ContentBlock: Codable {
         case "thinking":
             let block = try ThinkingBlock(from: decoder)
             self = .thinking(block)
+        case "image":
+            let block = try ImageBlock(from: decoder)
+            self = .image(block)
         default:
             let block = try UnknownBlock(from: decoder)
             self = .unknown(block)
@@ -88,6 +101,9 @@ enum ContentBlock: Codable {
             try block.encode(to: encoder)
         case .thinking(let block):
             try container.encode("thinking", forKey: .type)
+            try block.encode(to: encoder)
+        case .image(let block):
+            try container.encode("image", forKey: .type)
             try block.encode(to: encoder)
         case .unknown(let block):
             try container.encode("unknown", forKey: .type)
@@ -257,6 +273,9 @@ struct Message: Identifiable, Codable {
                 // 思考过程目前隐藏
                 break
 
+            case .image:
+                parts.append("[图片]")
+
             case .unknown:
                 break
             }
@@ -377,6 +396,7 @@ public struct ToolExecution: Identifiable {
     public let id: String          // tool_use_id
     public let name: String
     public let input: [String: String]  // 简化的参数存储
+    public var displayText: String?     // Rust 端生成的人类可读摘要（summary 模式下 input 被裁剪时用）
     public var result: ToolResult?
     public var approvalStatus: ToolApprovalStatus  // 审批状态
     public var approvalRequestId: String?          // 关联的权限请求 ID
@@ -393,10 +413,11 @@ public struct ToolExecution: Identifiable {
         }
     }
 
-    public init(id: String, name: String, input: [String: String], result: ToolResult?, approvalStatus: ToolApprovalStatus = .none, approvalRequestId: String? = nil) {
+    public init(id: String, name: String, input: [String: String], result: ToolResult?, displayText: String? = nil, approvalStatus: ToolApprovalStatus = .none, approvalRequestId: String? = nil) {
         self.id = id
         self.name = name
         self.input = input
+        self.displayText = displayText
         self.result = result
         self.approvalStatus = approvalStatus
         self.approvalRequestId = approvalRequestId
@@ -693,4 +714,6 @@ struct MessageListResponse: Codable {
     let total: Int?
     let hasMore: Bool?
     let message: String?
+    let openTurn: Bool?
+    let nextCursor: Int?
 }

@@ -448,6 +448,7 @@ class MessageTransformer {
                         name: toolBlock.name,
                         input: input,
                         result: result,
+                        displayText: toolBlock.displayText,
                         approvalStatus: getApprovalStatus(for: toolBlock.id)
                     )
                     executions.append(execution)
@@ -455,6 +456,10 @@ class MessageTransformer {
 
                 case .toolResult:
                     // tool_result 在 assistant 消息中不应出现，跳过
+                    break
+
+                case .image:
+                    // image 在 assistant 消息中不常见，跳过
                     break
 
                 case .unknown:

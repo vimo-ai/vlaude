@@ -69,7 +69,12 @@ struct CompactToolRow: View {
 
     @ViewBuilder
     private var statusIndicator: some View {
-        if isActive && execution.result == nil {
+        if execution.approvalStatus == .timeout && execution.result == nil {
+            // 中断的工具调用（无 tool_result）
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 11))
+                .foregroundColor(.orange)
+        } else if isActive && execution.result == nil {
             ProgressView()
                 .scaleEffect(0.5)
                 .frame(width: 14, height: 14)
@@ -87,6 +92,7 @@ struct CompactToolRow: View {
     // MARK: - 紧凑摘要
 
     private var compactSummary: String {
+        // 优先从 input 提取（实时推送有完整 input）
         switch execution.name {
         case "Read", "Edit", "Write":
             if let path = execution.input["file_path"] {
@@ -116,7 +122,12 @@ struct CompactToolRow: View {
         default:
             break
         }
-        return execution.formattedInput.components(separatedBy: .newlines).first ?? execution.name
+        // Fallback: 使用 Rust 端生成的 displayText（summary 模式下 input 被裁剪时）
+        if let displayText = execution.displayText, !displayText.isEmpty {
+            return displayText
+        }
+        let formatted = execution.formattedInput.components(separatedBy: .newlines).first ?? ""
+        return formatted.isEmpty ? "" : formatted
     }
 
     // MARK: - 图标/颜色

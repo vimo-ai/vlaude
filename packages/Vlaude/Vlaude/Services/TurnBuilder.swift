@@ -34,9 +34,14 @@ class TurnBuilder: ObservableObject {
         // 跳过非 user/assistant 类型（system, summary, queue-operation 等）
         guard message.type == "user" || message.type == "assistant" else { return }
 
+        // 跳过压缩摘要、仅 transcript 可见、元数据行（不是真正的用户输入）
+        if message.isCompactSummary == true { return }
+        if message.isVisibleInTranscriptOnly == true { return }
+        if message.isMeta == true { return }
+
         // 1. user_text → 开启新 Turn
         let isUserText = message.eventType == "user_text" ||
-            (message.type == "user" && !looksLikeToolResult(message))
+            (message.type == "user" && !looksLikeToolResult(message) && !looksLikeCommandOutput(message))
         if isUserText {
             // 前一个 Turn 自动关闭（用户已发送新消息 = 上一轮已结束）
             if let prev = currentTurn, prev.status != .completed {
@@ -87,19 +92,99 @@ class TurnBuilder: ObservableObject {
     }
 
     /// 处理历史消息（批量加载）
-    func processHistoryMessages(_ messages: [Message]) {
-        // 清空现有状态
-        turns.removeAll()
-        currentTurn = nil
+    /// 使用原子赋值避免 UI 闪烁（先构建到临时变量，最后一次性赋值）
+    /// - Parameter openTurn: 后端标记最新 Turn 是否未结束，false 时强制标记完成
+    func processHistoryMessages(_ messages: [Message], openTurn: Bool = false) {
+        var tempTurns: [Turn] = []
+        var tempCurrentTurn: Turn? = nil
+
+        var pendingCompaction = false
 
         for msg in messages {
-            processMessage(msg)
+            // 检测 compact_boundary（在 user/assistant 过滤之前）
+            if msg.type == "system" && msg.subtype == "compact_boundary" {
+                pendingCompaction = true
+                continue
+            }
+
+            guard msg.type == "user" || msg.type == "assistant" else { continue }
+
+            // 跳过压缩摘要、仅 transcript 可见、元数据行
+            if msg.isCompactSummary == true { continue }
+            if msg.isVisibleInTranscriptOnly == true { continue }
+            if msg.isMeta == true { continue }
+
+            let isUserText = msg.eventType == "user_text" ||
+                (msg.type == "user" && !looksLikeToolResult(msg))
+            if isUserText {
+                if let prev = tempCurrentTurn, prev.status != .completed {
+                    prev.status = .completed
+                }
+                let displayMsg = transformToDisplayMessage(msg)
+                let turn = Turn(id: msg.uuid ?? UUID().uuidString, userMessage: displayMsg)
+                // Fix 3: 标记 compaction 边界
+                if pendingCompaction {
+                    turn.hasCompactionBefore = true
+                    pendingCompaction = false
+                }
+                tempTurns.append(turn)
+                tempCurrentTurn = turn
+                continue
+            }
+
+            guard let turn = tempCurrentTurn else {
+                if msg.type == "user" && (msg.eventType == "tool_result" || looksLikeToolResult(msg)) {
+                    continue
+                }
+                continue
+            }
+
+            if msg.eventType == "tool_result" || (msg.type == "user" && looksLikeToolResult(msg)) {
+                appendToolResult(msg, to: turn)
+                if turn.status == .waitingTool {
+                    turn.status = .active
+                }
+                continue
+            }
+
+            if let agentId = msg.agentId, !agentId.isEmpty {
+                appendSubagentEvent(msg, agentId: agentId, to: turn)
+                continue
+            }
+
+            let events = buildEvents(from: msg)
+            turn.events.append(contentsOf: events)
+
+            if msg.stopReason == "end_turn" {
+                turn.status = .completed
+            } else if msg.stopReason == "tool_use" {
+                turn.status = .waitingTool
+            }
         }
 
-        // 历史数据已经发生过，最后一个 Turn 如果没有明确完成也标记完成
-        if let last = turns.last, last.status != .completed {
+        // 历史数据已经发生过，仅在非 openTurn 时强制标记完成
+        if !openTurn, let last = tempTurns.last, last.status != .completed {
             last.status = .completed
         }
+
+        // Fix 4: 标记中断的 tool_use（有 tool_use 但没有对应 tool_result）
+        for turn in tempTurns where turn.status == .completed {
+            for (i, event) in turn.events.enumerated() {
+                if case .toolUse(var exec) = event.content, exec.result == nil {
+                    exec.approvalStatus = .timeout
+                    turn.events[i] = TurnEvent(
+                        id: event.id, eventType: event.eventType,
+                        timestamp: event.timestamp,
+                        content: .toolUse(execution: exec),
+                        isFinal: event.isFinal
+                    )
+                }
+            }
+        }
+
+        // 原子赋值 — 只触发一次 @Published
+        self.turns = tempTurns
+        self.currentTurn = tempCurrentTurn
     }
 
     /// 清空所有状态
@@ -173,13 +258,13 @@ class TurnBuilder: ObservableObject {
                         input[key] = jsonValueToString(value)
                     }
                 }
-                let execution = ToolExecution(id: toolBlock.id, name: toolBlock.name, input: input, result: nil)
+                let execution = ToolExecution(id: toolBlock.id, name: toolBlock.name, input: input, result: nil, displayText: toolBlock.displayText)
                 events.append(TurnEvent(
                     id: eventId, eventType: .toolUse, timestamp: timestamp,
                     content: .toolUse(execution: execution), isFinal: false
                 ))
-            case .toolResult, .unknown:
-                break  // toolResult 走 appendToolResult 路径
+            case .image, .toolResult, .unknown:
+                break  // image 在 transformToDisplayMessage 处理; toolResult 走 appendToolResult 路径
             }
         }
         return events
@@ -405,7 +490,8 @@ class TurnBuilder: ObservableObject {
                     id: toolBlock.id,
                     name: toolBlock.name,
                     input: input,
-                    result: nil
+                    result: nil,
+                    displayText: toolBlock.displayText
                 )
             }
         }
@@ -488,6 +574,18 @@ class TurnBuilder: ObservableObject {
 
     // MARK: - Helpers
 
+    /// 判断 user 消息是否为斜杠命令输出（/copy, /clear 等）
+    /// 这些不是真正的用户输入，不应创建 Turn
+    private func looksLikeCommandOutput(_ message: Message) -> Bool {
+        if message.isMeta == true { return true }
+        // 检查 content 文本是否以命令标记开头
+        let text = message.content
+        if text.hasPrefix("<local-command") || text.hasPrefix("<command-name>") {
+            return true
+        }
+        return false
+    }
+
     /// 判断 user 消息是否实际上是 tool_result（兼容无 eventType 的历史数据）
     private func looksLikeToolResult(_ message: Message) -> Bool {
         // 显式 eventType
@@ -518,18 +616,24 @@ class TurnBuilder: ObservableObject {
             type: .user,
             timestamp: parseTimestamp(message.timestamp)
         )
-        // 提取文本内容
+        // 提取文本内容和图片
         if let msg = message.message {
             if case .string(let text) = msg.content {
                 displayMsg.textContent = text
             } else if case .array(let items) = msg.content {
-                let texts = items.compactMap { item -> String? in
+                var texts: [String] = []
+                for item in items {
                     if case .object(let dict) = item,
-                       case .string(let type) = dict["type"], type == "text",
-                       case .string(let text) = dict["text"] {
-                        return text
+                       case .string(let type) = dict["type"] {
+                        if type == "text", case .string(let text) = dict["text"] {
+                            texts.append(text)
+                        } else if type == "image",
+                                  case .object(let source) = dict["source"],
+                                  case .string(let mediaType) = source["media_type"],
+                                  case .string(let data) = source["data"] {
+                            displayMsg.images.append(ImageData(type: "base64", mediaType: mediaType, data: data))
+                        }
                     }
-                    return nil
                 }
                 displayMsg.textContent = texts.joined(separator: "\n")
             }

@@ -68,21 +68,22 @@ struct GetSessionMessagesRequest: Request {
 
     let sessionId: String
     let projectPath: String
-    let limit: Int
-    let offset: Int
-    let order: String
+    let turnsLimit: Int
+    let before: Int?
 
     var baseURL: URL { VlaudeAPI.baseURL }
     var path: String { "/sessions/\(sessionId)/messages" }
     var method: HTTPMethod { .get }
 
     var query: [String: Any]? {
-        [
-            "limit": limit,
-            "offset": offset,
-            "order": order,
+        var q: [String: Any] = [
+            "turnsLimit": turnsLimit,
             "projectPath": projectPath
         ]
+        if let before = before {
+            q["before"] = before
+        }
+        return q
     }
 }
 

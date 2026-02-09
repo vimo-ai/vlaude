@@ -97,6 +97,9 @@ class VlaudeWebSocketClient: ObservableObject {
     /// 多订阅管理（核心改进）
     private var activeSubscriptions = Set<Subscription>()
 
+    /// 实时消息订阅：sessionId -> projectPath（session:subscribe，需重连恢复）
+    private var activeMessageSubscriptions: [String: String] = [:]
+
     /// 已加入的 sessions
     private var joinedSessions: [String: String] = [:]
 
@@ -341,10 +344,19 @@ class VlaudeWebSocketClient: ObservableObject {
 
     /// 恢复所有订阅（重连后）
     private func restoreSubscriptions() async {
-        print("🔄 [VlaudeWebSocketClient] 恢复 \(activeSubscriptions.count) 个订阅")
+        print("🔄 [VlaudeWebSocketClient] 恢复 \(activeSubscriptions.count) 个页面订阅, \(activeMessageSubscriptions.count) 个消息订阅")
 
         for subscription in activeSubscriptions {
             await performSubscribe(subscription)
+        }
+
+        // 恢复 session:subscribe 实时消息订阅
+        for (sessionId, projectPath) in activeMessageSubscriptions {
+            client?.emit("session:subscribe", data: [
+                "sessionId": sessionId,
+                "projectPath": projectPath
+            ])
+            print("🔄 [VlaudeWebSocketClient] 恢复消息订阅: \(sessionId)")
         }
     }
 
@@ -442,6 +454,9 @@ class VlaudeWebSocketClient: ObservableObject {
     }
 
     func subscribeToSession(_ sessionId: String, projectPath: String) {
+        // 追踪订阅，重连时恢复
+        activeMessageSubscriptions[sessionId] = projectPath
+
         guard isConnected else { return }
 
         client?.emit("session:subscribe", data: [
@@ -451,6 +466,8 @@ class VlaudeWebSocketClient: ObservableObject {
     }
 
     func unsubscribeFromSession(_ sessionId: String) {
+        activeMessageSubscriptions.removeValue(forKey: sessionId)
+
         guard isConnected else { return }
 
         client?.emit("session:unsubscribe", data: ["sessionId": sessionId])

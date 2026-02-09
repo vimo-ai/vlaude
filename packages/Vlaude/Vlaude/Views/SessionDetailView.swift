@@ -114,11 +114,10 @@ struct SessionDetailView: View {
 
     private var messageScrollView: some View {
         VStack(spacing: 0) {
-            // V2: Timeline 视图（Turn 分组）
+            // Turn-Based Pagination 保证历史加载包含完整 Turn，TurnBuilder 一定能构建
             if !viewModel.turnBuilder.turns.isEmpty {
                 timelineScrollView
             } else {
-                // 回退到旧版消息列表（历史数据可能没有 eventType）
                 legacyMessageScrollView
             }
         }
