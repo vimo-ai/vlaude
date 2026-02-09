@@ -134,6 +134,12 @@ impl AgentClientAdapter {
         Ok(db.get_project_by_path(path)?)
     }
 
+    /// 按 session_id 获取单个 SessionWithProject
+    pub async fn get_session_with_project(&self, session_id: &str) -> anyhow::Result<Option<SessionWithProject>> {
+        let db = self.db.read().await;
+        Ok(db.get_session_with_project(session_id)?)
+    }
+
     /// 根据项目路径列出会话（带项目信息，支持分页）
     pub async fn list_sessions_by_project_path(&self, project_path: &str, limit: usize, offset: usize) -> anyhow::Result<Vec<SessionWithProject>> {
         let db = self.db.read().await;
@@ -149,6 +155,50 @@ impl AgentClientAdapter {
     /// 获取统计信息
     pub async fn get_stats(&self) -> anyhow::Result<ai_cli_session_db::Stats> {
         let db = self.db.read().await;
+        Ok(db.get_stats()?)
+    }
+
+    // ==================== 同步数据查询 API（无需 Tokio Runtime）====================
+
+    /// 同步获取消息（带排序），使用 try_read 避免需要 tokio runtime
+    pub fn get_messages_ordered_sync(
+        &self,
+        session_id: &str,
+        limit: usize,
+        offset: usize,
+        desc: bool,
+    ) -> anyhow::Result<Vec<Message>> {
+        let db = self.db.try_read().map_err(|_| anyhow::anyhow!("DB read lock contention"))?;
+        Ok(db.list_messages_ordered(session_id, limit, offset, desc)?)
+    }
+
+    /// 同步获取消息总数
+    pub fn get_message_count_sync(&self, session_id: &str) -> anyhow::Result<i64> {
+        let db = self.db.try_read().map_err(|_| anyhow::anyhow!("DB read lock contention"))?;
+        Ok(db.get_session_message_count(session_id)?)
+    }
+
+    /// 同步列出项目
+    pub fn list_projects_with_stats_sync(&self, limit: usize, offset: usize) -> anyhow::Result<Vec<ProjectWithStats>> {
+        let db = self.db.try_read().map_err(|_| anyhow::anyhow!("DB read lock contention"))?;
+        Ok(db.list_projects_with_stats(limit, offset)?)
+    }
+
+    /// 同步列出会话
+    pub fn list_sessions_by_project_path_sync(&self, project_path: &str, limit: usize, offset: usize) -> anyhow::Result<Vec<SessionWithProject>> {
+        let db = self.db.try_read().map_err(|_| anyhow::anyhow!("DB read lock contention"))?;
+        Ok(db.list_sessions_by_project_path(project_path, limit, offset)?)
+    }
+
+    /// 同步搜索
+    pub fn search_sync(&self, query: &str, limit: usize) -> anyhow::Result<Vec<SearchResult>> {
+        let db = self.db.try_read().map_err(|_| anyhow::anyhow!("DB read lock contention"))?;
+        Ok(db.search_fts(query, limit)?)
+    }
+
+    /// 同步获取统计信息
+    pub fn get_stats_sync(&self) -> anyhow::Result<ai_cli_session_db::Stats> {
+        let db = self.db.try_read().map_err(|_| anyhow::anyhow!("DB read lock contention"))?;
         Ok(db.get_stats()?)
     }
 }

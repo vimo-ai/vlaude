@@ -28,6 +28,73 @@ fn validate_path_component(s: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// 判断消息是否为 user_text（Turn 起点）
+/// type == "user" 且 content 不是 tool_result，也不是斜杠命令输出
+/// 注意：raw JSON 来自原始 JSONL，不含 eventType（那是 Swift 端添加的）
+pub fn is_user_text(msg: &serde_json::Value) -> bool {
+    if msg.get("type").and_then(|v| v.as_str()) != Some("user") {
+        return false;
+    }
+    // isMeta 的消息不是真正的用户输入（如 local-command-caveat）
+    if msg.get("isMeta").and_then(|v| v.as_bool()) == Some(true) {
+        return false;
+    }
+    let content = msg.get("message").and_then(|m| m.get("content"));
+    match content {
+        Some(c) if c.is_string() => {
+            let s = c.as_str().unwrap_or("");
+            // 斜杠命令输出不是用户输入
+            !s.starts_with("<local-command") && !s.starts_with("<command-name>")
+        }
+        Some(c) if c.is_array() => {
+            !c.as_array().unwrap().iter().any(|item| {
+                item.get("type").and_then(|v| v.as_str()) == Some("tool_result")
+            })
+        }
+        _ => false,
+    }
+}
+
+/// 从末尾往前扫描判断最后一个 Turn 是否已结束
+/// 策略：
+/// 1. 最后一条 assistant 有 stopReason == "end_turn" → 已结束
+/// 2. 末尾有 system/turn_duration 或 system/stop_hook_summary → 已结束
+/// 3. 真正的 user_text → 新 Turn 开始，session 仍在进行
+/// 4. 其他（命令输出、file-history-snapshot 等）→ 跳过继续往前找
+pub fn is_last_turn_closed(messages: &[serde_json::Value]) -> bool {
+    for msg in messages.iter().rev() {
+        let msg_type = msg.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        match msg_type {
+            "assistant" => {
+                // 找到最后一条 assistant，检查 stopReason
+                return msg.get("stopReason").and_then(|v| v.as_str()) == Some("end_turn");
+            }
+            "system" => {
+                let subtype = msg.get("subtype").and_then(|v| v.as_str()).unwrap_or("");
+                if subtype == "turn_duration" || subtype == "stop_hook_summary" {
+                    return true;
+                }
+                // 其他 system 消息继续往前找
+            }
+            "progress" => {
+                // progress 消息继续往前找
+            }
+            "user" => {
+                if is_user_text(msg) {
+                    // 真正的用户输入 → 新 Turn 开始，尚未收到回复
+                    return false;
+                }
+                // tool_result / 命令输出 / isMeta → 跳过继续往前找
+            }
+            _ => {
+                // file-history-snapshot 等未知类型 → 跳过继续往前找
+            }
+        }
+    }
+    // 空消息列表
+    false
+}
+
 /// Mobile 查看状态回调类型
 pub type MobileViewingCallback = Arc<dyn Fn(&str, bool) + Send + Sync>;
 
@@ -606,6 +673,7 @@ impl DaemonService {
 
         let project_path = data.get("projectPath").and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("projectPath is required"))?;
+        let session_id_filter = data.get("sessionId").and_then(|v| v.as_str());
         let limit = data.get("limit").and_then(|v| v.as_u64()).unwrap_or(1000) as usize;
         let offset = data.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
         let request_id = data
@@ -619,17 +687,21 @@ impl DaemonService {
             .ok_or_else(|| anyhow::anyhow!("AgentClient not initialized"))?;
 
         let db_start = Instant::now();
-        // agent-* 过滤已在 DB 层 SQL 统一处理
-        let sessions = client.list_sessions_by_project_path(project_path, limit, offset).await?;
-        let db_elapsed = db_start.elapsed();
-        let session_count = sessions.len();
 
-        let serialize_start = Instant::now();
-        let sessions_json: Vec<serde_json::Value> = sessions
-            .into_iter()
-            .map(|s| serde_json::to_value(s).unwrap())
-            .collect();
-        let serialize_elapsed = serialize_start.elapsed();
+        let sessions_json: Vec<serde_json::Value> = if let Some(sid) = session_id_filter {
+            // 按 sessionId 精确查询单个 session
+            match client.get_session_with_project(sid).await? {
+                Some(s) => vec![serde_json::to_value(s).unwrap()],
+                None => vec![],
+            }
+        } else {
+            // 全量列表查询
+            let sessions = client.list_sessions_by_project_path(project_path, limit, offset).await?;
+            sessions.into_iter().map(|s| serde_json::to_value(s).unwrap()).collect()
+        };
+
+        let db_elapsed = db_start.elapsed();
+        let session_count = sessions_json.len();
 
         let socket_start = Instant::now();
         self.socket.read().await
@@ -643,8 +715,8 @@ impl DaemonService {
 
         let total_elapsed = total_start.elapsed();
         vlaude_log_info!(
-            "[Perf] request_session_metadata: total={:?}, db={:?}, serialize={:?}, socket={:?}, count={}, project={}",
-            total_elapsed, db_elapsed, serialize_elapsed, socket_elapsed, session_count, project_path
+            "[Perf] request_session_metadata: total={:?}, db={:?}, socket={:?}, count={}, project={}, filter={:?}",
+            total_elapsed, db_elapsed, socket_elapsed, session_count, project_path, session_id_filter
         );
 
         Ok(())
@@ -664,65 +736,160 @@ impl DaemonService {
 
         validate_path_component(session_id, "session_id")?;
 
-        let limit = data.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
-        let offset = data.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
-        let order_str = data.get("order").and_then(|v| v.as_str()).unwrap_or("asc");
         let request_id = data
             .get("requestId")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
 
-        let desc = order_str == "desc";
+        // detail 参数：summary（默认，裁剪大 payload）或 full（完整数据）
+        let detail = data.get("detail").and_then(|v| v.as_str()).unwrap_or("summary");
+
+        // turns_limit 模式 vs 传统 limit/offset 模式
+        let turns_limit = data.get("turnsLimit").and_then(|v| v.as_u64()).map(|v| v as usize);
 
         // 从 DB 读取（通过 AgentClient）
         let client_guard = self.agent_client.read().await;
         let client = client_guard.as_ref()
             .ok_or_else(|| anyhow::anyhow!("AgentClient not initialized"))?;
 
-        // 1. 从 DB 读取消息
-        let db_start = Instant::now();
-        let db_messages = client.get_messages_ordered(session_id, limit, offset, desc).await?;
         let total = client.get_message_count(session_id).await? as usize;
-        let db_elapsed = db_start.elapsed();
 
-        let has_more = offset + db_messages.len() < total;
+        if let Some(turns_limit) = turns_limit {
+            // ===== turns_limit 模式：按 Turn 数量分页 =====
+            let before = data.get("before").and_then(|v| v.as_u64()).map(|v| v as usize);
+            let is_first_page = before.is_none();
+            let end_index = before.unwrap_or(total);
 
-        // 2. 把 DB Message 的 raw 字段解析成 serde_json::Value
-        let parse_start = Instant::now();
-        let mut messages: Vec<serde_json::Value> = db_messages
-            .into_iter()
-            .filter_map(|msg| {
-                msg.raw.as_ref().and_then(|raw| serde_json::from_str(raw).ok())
-            })
-            .collect();
+            // 首页：从末尾读取一批（每 turn 约 30 条，多留余量），避免全量读取
+            // 翻页：读取 [0, before) 范围
+            let (read_offset, read_limit) = if is_first_page {
+                let batch = std::cmp::min(turns_limit.saturating_mul(40).max(100), end_index);
+                (end_index.saturating_sub(batch), batch)
+            } else {
+                (0, end_index)
+            };
 
-        // 解析 contentBlocks 并添加到消息中
-        crate::content_blocks::enrich_messages_with_content_blocks(&mut messages);
-        let parse_elapsed = parse_start.elapsed();
+            let db_start = Instant::now();
+            let db_messages = client.get_messages_ordered(session_id, read_limit, read_offset, false).await?;
+            let db_elapsed = db_start.elapsed();
 
-        let message_count = messages.len();
+            let parse_start = Instant::now();
+            let mut all_messages: Vec<serde_json::Value> = db_messages
+                .into_iter()
+                .filter_map(|msg| {
+                    msg.raw.as_ref().and_then(|raw| serde_json::from_str(raw).ok())
+                })
+                .collect();
+            crate::content_blocks::enrich_messages_with_content_blocks(&mut all_messages);
+            let parse_elapsed = parse_start.elapsed();
 
-        // 3. 发送响应
-        let socket_start = Instant::now();
-        self.socket.read().await
-            .report_session_messages(
-                session_id.to_string(),
-                project_path.to_string(),
-                messages,
-                total,
-                has_more,
-                request_id.clone(),
-            )
-            .await?;
-        let socket_elapsed = socket_start.elapsed();
+            // openTurn：只在第一页有意义，从末尾扫描判断最后 turn 是否完成
+            let open_turn = if is_first_page && !all_messages.is_empty() {
+                !is_last_turn_closed(&all_messages)
+            } else {
+                false
+            };
 
-        let total_elapsed = total_start.elapsed();
-        vlaude_log_info!(
-            "[Perf] request_session_messages: total={:?}, db={:?}, parse={:?}, socket={:?}, count={}, session={}",
-            total_elapsed, db_elapsed, parse_elapsed, socket_elapsed, message_count, session_id
-        );
+            // 从末尾往前扫描，找到第 N 个 Turn 起点（user_text）
+            let mut turn_count = 0usize;
+            let mut slice_start_local = 0usize;
 
-        // 4. 异步触发 JSONL 采集（问题 11：保鲜机制）
+            for i in (0..all_messages.len()).rev() {
+                if is_user_text(&all_messages[i]) {
+                    turn_count += 1;
+                    if turn_count > turns_limit {
+                        slice_start_local = i + 1;
+                        break;
+                    }
+                    slice_start_local = i;
+                }
+            }
+
+            let mut result_messages: Vec<serde_json::Value> = all_messages[slice_start_local..].to_vec();
+
+            // summary 模式裁剪大 payload
+            if detail == "summary" {
+                crate::content_blocks::trim_messages_for_summary(&mut result_messages);
+            }
+            let absolute_start = read_offset + slice_start_local;
+            let has_more = absolute_start > 0;
+            let next_cursor = if has_more { Some(absolute_start) } else { None };
+
+            let message_count = result_messages.len();
+
+            let socket_start = Instant::now();
+            self.socket.read().await
+                .report_session_messages(
+                    session_id.to_string(),
+                    project_path.to_string(),
+                    result_messages,
+                    total,
+                    has_more,
+                    request_id.clone(),
+                    Some(open_turn),
+                    next_cursor,
+                )
+                .await?;
+            let socket_elapsed = socket_start.elapsed();
+
+            let total_elapsed = total_start.elapsed();
+            vlaude_log_info!(
+                "[Perf] request_session_messages(turns={}): total={:?}, db={:?}, parse={:?}, socket={:?}, count={}, session={}",
+                turns_limit, total_elapsed, db_elapsed, parse_elapsed, socket_elapsed, message_count, session_id
+            );
+        } else {
+            // ===== 传统 limit/offset 模式 =====
+            let limit = data.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let offset = data.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            let order_str = data.get("order").and_then(|v| v.as_str()).unwrap_or("asc");
+            let desc = order_str == "desc";
+
+            let db_start = Instant::now();
+            let db_messages = client.get_messages_ordered(session_id, limit, offset, desc).await?;
+            let db_elapsed = db_start.elapsed();
+
+            let has_more = offset + db_messages.len() < total;
+
+            let parse_start = Instant::now();
+            let mut messages: Vec<serde_json::Value> = db_messages
+                .into_iter()
+                .filter_map(|msg| {
+                    msg.raw.as_ref().and_then(|raw| serde_json::from_str(raw).ok())
+                })
+                .collect();
+            crate::content_blocks::enrich_messages_with_content_blocks(&mut messages);
+
+            // summary 模式裁剪大 payload
+            if detail == "summary" {
+                crate::content_blocks::trim_messages_for_summary(&mut messages);
+            }
+            let parse_elapsed = parse_start.elapsed();
+
+            let message_count = messages.len();
+
+            let socket_start = Instant::now();
+            self.socket.read().await
+                .report_session_messages(
+                    session_id.to_string(),
+                    project_path.to_string(),
+                    messages,
+                    total,
+                    has_more,
+                    request_id.clone(),
+                    None,
+                    None,
+                )
+                .await?;
+            let socket_elapsed = socket_start.elapsed();
+
+            let total_elapsed = total_start.elapsed();
+            vlaude_log_info!(
+                "[Perf] request_session_messages: total={:?}, db={:?}, parse={:?}, socket={:?}, count={}, session={}",
+                total_elapsed, db_elapsed, parse_elapsed, socket_elapsed, message_count, session_id
+            );
+        }
+
+        // 异步触发 JSONL 采集（保鲜机制）
         self.trigger_session_sync(session_id, project_path).await;
 
         Ok(())

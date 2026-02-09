@@ -8,7 +8,7 @@ mod service;
 mod watcher;
 pub mod sync_api;
 
-pub use content_blocks::{ContentBlock, parse_content_blocks, enrich_messages_with_content_blocks};
+pub use content_blocks::{ContentBlock, parse_content_blocks, enrich_messages_with_content_blocks, trim_messages_for_summary};
 pub use service::{
     DaemonService,
     ApprovalResult,
@@ -28,3 +28,5 @@ pub use service::{
 
 pub use watcher::{SessionWatcher, SessionWatchEvent};
 pub use agent_client::AgentClientAdapter;
+pub use service::is_user_text;
+pub use service::is_last_turn_closed;

@@ -323,6 +323,129 @@ pub fn enrich_messages_with_content_blocks(messages: &mut [Value]) {
     }
 }
 
+/// 裁剪消息为 summary 级别（去掉大 payload，保留元信息）
+///
+/// 裁剪规则：
+/// - Thinking: `thinking` 字段清空为 ""，添加 `hasThinking: true`
+/// - ToolResult: `content` 字段清空（保留 preview/hasMore/sizeDescription）
+/// - ToolUse: `input` 字段清空为 {}（保留 id/name/displayText/iconName）
+/// - Text: 保持不变
+///
+/// 同时处理 `contentBlocks` 数组和 `message.content` 数组
+pub fn trim_messages_for_summary(messages: &mut [Value]) {
+    for message in messages.iter_mut() {
+        trim_message_for_summary(message);
+    }
+}
+
+fn trim_message_for_summary(message: &mut Value) {
+    // 1. 裁剪 contentBlocks 数组
+    if let Some(blocks) = message.get_mut("contentBlocks").and_then(|v| v.as_array_mut()) {
+        for block in blocks.iter_mut() {
+            trim_content_block(block);
+        }
+    }
+
+    // 2. 裁剪 message.content 数组（原始数据中也有大 payload）
+    if let Some(content) = message.get_mut("message").and_then(|m| m.get_mut("content")).and_then(|c| c.as_array_mut()) {
+        for item in content.iter_mut() {
+            let block_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            match block_type {
+                "thinking" => {
+                    if item.get("thinking").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+                        item.as_object_mut().map(|obj| {
+                            obj.insert("thinking".to_string(), Value::String(String::new()));
+                            obj.insert("hasThinking".to_string(), Value::Bool(true));
+                        });
+                    }
+                }
+                "tool_result" => {
+                    item.as_object_mut().map(|obj| {
+                        obj.insert("content".to_string(), Value::String(String::new()));
+                    });
+                }
+                "tool_use" => {
+                    item.as_object_mut().map(|obj| {
+                        obj.insert("input".to_string(), Value::Object(serde_json::Map::new()));
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // 3. 裁剪 raw 字段（JSON 字符串形式的原始数据）
+    if let Some(raw_str) = message.get("raw").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+        if let Ok(mut raw_json) = serde_json::from_str::<Value>(&raw_str) {
+            let mut changed = false;
+            if let Some(content) = raw_json.get_mut("message").and_then(|m| m.get_mut("content")).and_then(|c| c.as_array_mut()) {
+                for item in content.iter_mut() {
+                    let block_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    match block_type {
+                        "thinking" => {
+                            if item.get("thinking").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+                                item.as_object_mut().map(|obj| {
+                                    obj.insert("thinking".to_string(), Value::String(String::new()));
+                                    obj.insert("hasThinking".to_string(), Value::Bool(true));
+                                });
+                                changed = true;
+                            }
+                        }
+                        "tool_result" => {
+                            item.as_object_mut().map(|obj| {
+                                obj.insert("content".to_string(), Value::String(String::new()));
+                            });
+                            changed = true;
+                        }
+                        "tool_use" => {
+                            item.as_object_mut().map(|obj| {
+                                obj.insert("input".to_string(), Value::Object(serde_json::Map::new()));
+                            });
+                            changed = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            if changed {
+                if let Ok(new_raw) = serde_json::to_string(&raw_json) {
+                    message.as_object_mut().map(|obj| {
+                        obj.insert("raw".to_string(), Value::String(new_raw));
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// 裁剪单个 contentBlock
+fn trim_content_block(block: &mut Value) {
+    let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    match block_type {
+        "thinking" => {
+            if block.get("thinking").and_then(|v| v.as_str()).map(|s| !s.is_empty()).unwrap_or(false) {
+                block.as_object_mut().map(|obj| {
+                    obj.insert("thinking".to_string(), Value::String(String::new()));
+                    obj.insert("hasThinking".to_string(), Value::Bool(true));
+                });
+            }
+        }
+        "tool_result" => {
+            // 清空 content，保留 preview/hasMore/sizeDescription
+            block.as_object_mut().map(|obj| {
+                obj.insert("content".to_string(), Value::String(String::new()));
+            });
+        }
+        "tool_use" => {
+            // 清空 input，保留 id/name/displayText/iconName
+            block.as_object_mut().map(|obj| {
+                obj.insert("input".to_string(), Value::Object(serde_json::Map::new()));
+            });
+        }
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -435,5 +558,201 @@ mod tests {
         assert!(message.get("contentBlocks").is_some());
         let blocks = message.get("contentBlocks").unwrap().as_array().unwrap();
         assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn test_trim_thinking_block() {
+        let mut message = json!({
+            "contentBlocks": [
+                {
+                    "type": "thinking",
+                    "thinking": "This is a long thinking process with many details..."
+                }
+            ]
+        });
+
+        trim_message_for_summary(&mut message);
+
+        let blocks = message.get("contentBlocks").unwrap().as_array().unwrap();
+        let block = &blocks[0];
+
+        // thinking 字段应该被清空
+        assert_eq!(block.get("thinking").unwrap().as_str().unwrap(), "");
+        // hasThinking 应该设置为 true
+        assert_eq!(block.get("hasThinking").unwrap().as_bool().unwrap(), true);
+        // type 应该保留
+        assert_eq!(block.get("type").unwrap().as_str().unwrap(), "thinking");
+    }
+
+    #[test]
+    fn test_trim_tool_result() {
+        let mut message = json!({
+            "contentBlocks": [
+                {
+                    "type": "tool_result",
+                    "toolUseId": "tool_123",
+                    "content": "Very long file content that should be trimmed...",
+                    "preview": "Very long file...",
+                    "hasMore": true,
+                    "sizeDescription": "1.2 KB"
+                }
+            ]
+        });
+
+        trim_message_for_summary(&mut message);
+
+        let blocks = message.get("contentBlocks").unwrap().as_array().unwrap();
+        let block = &blocks[0];
+
+        // content 应该被清空
+        assert_eq!(block.get("content").unwrap().as_str().unwrap(), "");
+        // 元信息应该保留
+        assert_eq!(block.get("preview").unwrap().as_str().unwrap(), "Very long file...");
+        assert_eq!(block.get("hasMore").unwrap().as_bool().unwrap(), true);
+        assert_eq!(block.get("sizeDescription").unwrap().as_str().unwrap(), "1.2 KB");
+    }
+
+    #[test]
+    fn test_trim_tool_use() {
+        let mut message = json!({
+            "contentBlocks": [
+                {
+                    "type": "tool_use",
+                    "id": "tool_456",
+                    "name": "Read",
+                    "input": {
+                        "file_path": "/very/long/path/to/file.txt",
+                        "limit": 100
+                    },
+                    "displayText": "读取文件: file.txt",
+                    "iconName": "doc.text"
+                }
+            ]
+        });
+
+        trim_message_for_summary(&mut message);
+
+        let blocks = message.get("contentBlocks").unwrap().as_array().unwrap();
+        let block = &blocks[0];
+
+        // input 应该被清空为空对象
+        let input = block.get("input").unwrap().as_object().unwrap();
+        assert_eq!(input.len(), 0);
+        // 元信息应该保留
+        assert_eq!(block.get("id").unwrap().as_str().unwrap(), "tool_456");
+        assert_eq!(block.get("name").unwrap().as_str().unwrap(), "Read");
+        assert_eq!(block.get("displayText").unwrap().as_str().unwrap(), "读取文件: file.txt");
+        assert_eq!(block.get("iconName").unwrap().as_str().unwrap(), "doc.text");
+    }
+
+    #[test]
+    fn test_trim_text_unchanged() {
+        let mut message = json!({
+            "contentBlocks": [
+                {
+                    "type": "text",
+                    "text": "This is user text that should not be modified"
+                }
+            ]
+        });
+
+        let original = message.clone();
+        trim_message_for_summary(&mut message);
+
+        // text 类型不应该被修改
+        assert_eq!(message, original);
+    }
+
+    #[test]
+    fn test_trim_messages_batch() {
+        let mut messages = vec![
+            json!({
+                "contentBlocks": [
+                    {"type": "thinking", "thinking": "First thinking..."}
+                ]
+            }),
+            json!({
+                "contentBlocks": [
+                    {"type": "tool_result", "toolUseId": "t1", "content": "Long content..."}
+                ]
+            }),
+            json!({
+                "contentBlocks": [
+                    {"type": "text", "text": "User message"}
+                ]
+            })
+        ];
+
+        trim_messages_for_summary(&mut messages);
+
+        // 验证第一条消息的 thinking 被裁剪
+        let blocks0 = messages[0].get("contentBlocks").unwrap().as_array().unwrap();
+        assert_eq!(blocks0[0].get("thinking").unwrap().as_str().unwrap(), "");
+        assert_eq!(blocks0[0].get("hasThinking").unwrap().as_bool().unwrap(), true);
+
+        // 验证第二条消息的 tool_result 被裁剪
+        let blocks1 = messages[1].get("contentBlocks").unwrap().as_array().unwrap();
+        assert_eq!(blocks1[0].get("content").unwrap().as_str().unwrap(), "");
+
+        // 验证第三条消息的 text 不变
+        let blocks2 = messages[2].get("contentBlocks").unwrap().as_array().unwrap();
+        assert_eq!(blocks2[0].get("text").unwrap().as_str().unwrap(), "User message");
+    }
+
+    #[test]
+    fn test_trim_message_content_array() {
+        let mut message = json!({
+            "message": {
+                "content": [
+                    {
+                        "type": "thinking",
+                        "thinking": "Deep thinking process..."
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "tool_789",
+                        "name": "Bash",
+                        "input": {
+                            "command": "ls -la /some/path"
+                        }
+                    }
+                ]
+            }
+        });
+
+        trim_message_for_summary(&mut message);
+
+        let content = message.get("message").unwrap()
+            .get("content").unwrap().as_array().unwrap();
+
+        // 验证 thinking 被裁剪
+        assert_eq!(content[0].get("thinking").unwrap().as_str().unwrap(), "");
+        assert_eq!(content[0].get("hasThinking").unwrap().as_bool().unwrap(), true);
+
+        // 验证 tool_use input 被清空
+        let input = content[1].get("input").unwrap().as_object().unwrap();
+        assert_eq!(input.len(), 0);
+    }
+
+    #[test]
+    fn test_trim_raw_field() {
+        let mut message = json!({
+            "uuid": "msg_999",
+            "raw": "{\"message\":{\"content\":[{\"type\":\"thinking\",\"thinking\":\"Long raw thinking...\"},{\"type\":\"tool_result\",\"tool_use_id\":\"t1\",\"content\":\"Big output\"}]}}"
+        });
+
+        trim_message_for_summary(&mut message);
+
+        let raw_str = message.get("raw").unwrap().as_str().unwrap();
+        let raw_json: Value = serde_json::from_str(raw_str).unwrap();
+        let content = raw_json.get("message").unwrap()
+            .get("content").unwrap().as_array().unwrap();
+
+        // 验证 raw 中的 thinking 被裁剪
+        assert_eq!(content[0].get("thinking").unwrap().as_str().unwrap(), "");
+        assert_eq!(content[0].get("hasThinking").unwrap().as_bool().unwrap(), true);
+
+        // 验证 raw 中的 tool_result content 被清空
+        assert_eq!(content[1].get("content").unwrap().as_str().unwrap(), "");
     }
 }
