@@ -13,8 +13,22 @@ import { AllExceptionsFilter } from './plugins/filter/allExceptionsFilter';
 import { FastifyAdapter } from '@nestjs/platform-fastify';
 import fastifyMultipart from '@fastify/multipart';
 import { IoAdapter } from '@nestjs/platform-socket.io';
+import type { ServerOptions } from 'socket.io';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
+
+/**
+ * 自定义 Socket.IO Adapter：调大 maxHttpBufferSize
+ * 默认 1MB 不够大会话（3+ turns 可达 2-5MB），调到 4MB 作为安全兜底
+ */
+class CustomIoAdapter extends IoAdapter {
+  createIOServer(port: number, options?: ServerOptions): any {
+    return super.createIOServer(port, {
+      ...options,
+      maxHttpBufferSize: 4 * 1024 * 1024, // 4MB
+    });
+  }
+}
 
 /**
  * 加载 mTLS 证书配置
@@ -58,8 +72,8 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule, fastifyAdapter);
 
-  // 使用 Socket.IO adapter
-  app.useWebSocketAdapter(new IoAdapter(app));
+  // 使用自定义 Socket.IO adapter（maxHttpBufferSize: 4MB）
+  app.useWebSocketAdapter(new CustomIoAdapter(app));
 
   app.enableCors();
   app.useGlobalFilters(new AllExceptionsFilter());

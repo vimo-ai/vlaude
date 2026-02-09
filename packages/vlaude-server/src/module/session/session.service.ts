@@ -111,25 +111,37 @@ export class SessionService {
   async getSessionMessages(
     sessionId: string,
     projectPath: string,
-    limit = 50,
-    offset = 0,
-    order: 'asc' | 'desc' = 'asc',
+    turnsLimit?: number,
+    before?: number,
+    limit?: number,
+    offset?: number,
+    order?: 'asc' | 'desc',
+    detail?: 'summary' | 'full',
   ): Promise<ApiResponse<{
     messages: any[];
     total: number;
     hasMore: boolean;
+    openTurn?: boolean;
+    nextCursor?: number;
   }>> {
-    this.logger.log(`📋 获取会话消息: ${sessionId}, limit=${limit}, offset=${offset}, order=${order}`);
+    this.logger.log(`📋 获取会话消息: ${sessionId}, turnsLimit=${turnsLimit}, before=${before}, limit=${limit}, offset=${offset}`);
     this.logger.log(`   同步模式: ${this.dataSyncService.getSyncMode()}`);
 
+    // 默认 summary 模式（裁剪大 payload）
+    const effectiveDetail = detail ?? 'summary';
+
+    // turnsLimit 模式必须走 Daemon（DB 不支持 Turn-based 分页）
     // forward 模式：直接透传到 Daemon
-    if (this.dataSyncService.isForwardMode()) {
+    if (this.dataSyncService.isForwardMode() || turnsLimit !== undefined) {
       const result = await this.daemonGateway.requestSessionMessages(
         sessionId,
         projectPath,
+        turnsLimit,
+        before,
         limit,
         offset,
         order,
+        effectiveDetail,
       );
 
       if (!result) {
@@ -142,20 +154,20 @@ export class SessionService {
     }
 
     // sync 模式：先读 DB（快速响应），同时请求 Daemon（后台刷新）
-    // 关键：不使用 Promise.all，避免 Daemon 超时阻塞 DB 响应
+    const effectiveLimit = limit ?? 50;
+    const effectiveOffset = offset ?? 0;
+    const effectiveOrder = order ?? 'asc';
 
     // 1. 先尝试读 DB 缓存（毫秒级）
-    const dbResult = await this.dataSyncService.getMessagesFromDb(sessionId, limit, offset, order);
+    const dbResult = await this.dataSyncService.getMessagesFromDb(sessionId, effectiveLimit, effectiveOffset, effectiveOrder);
 
     // 2. 后台请求 Daemon 并同步（不阻塞返回）
-    this.daemonGateway.requestSessionMessages(sessionId, projectPath, limit, offset, order)
+    this.daemonGateway.requestSessionMessages(sessionId, projectPath, turnsLimit, before, limit, offset, order, effectiveDetail)
       .then((daemonResult) => {
         if (daemonResult && daemonResult.messages.length > 0) {
-          // 后台同步到 DB
           this.syncMessagesToDb(sessionId, projectPath, daemonResult.messages).catch((err) => {
             this.logger.error(`❌ 后台同步失败: ${err.message}`);
           });
-          // TODO: 如果有增量，可以通过 WebSocket 推送给订阅的客户端
         }
       })
       .catch((err) => {
@@ -173,15 +185,17 @@ export class SessionService {
     const daemonResult = await this.daemonGateway.requestSessionMessages(
       sessionId,
       projectPath,
+      turnsLimit,
+      before,
       limit,
       offset,
       order,
+      effectiveDetail,
     );
 
     if (daemonResult) {
       this.logger.log(`✅ 返回 Daemon 数据: ${daemonResult.messages.length} 条消息`);
 
-      // 同步到 DB（不阻塞响应）
       this.syncMessagesToDb(sessionId, projectPath, daemonResult.messages).catch((err) => {
         this.logger.error(`❌ 同步失败: ${err.message}`);
       });
@@ -189,7 +203,6 @@ export class SessionService {
       return { status: 'ok', data: daemonResult, source: 'daemon' };
     }
 
-    // 都没有数据
     this.logger.warn('Daemon 离线且 DB 无缓存');
     return { status: 'offline', message: 'Daemon not connected and no cached data' };
   }

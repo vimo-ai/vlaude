@@ -18,7 +18,6 @@ import {
   Param,
   Query,
   ParseIntPipe,
-  DefaultValuePipe,
   Inject,
   forwardRef,
 } from '@nestjs/common';
@@ -175,16 +174,21 @@ export class SessionController {
 
   /**
    * 分页获取会话消息
-   * GET /sessions/:sessionId/messages?projectPath=/xxx&limit=50&offset=0&order=asc
-   * 注意：V4 需要 projectPath 参数
+   * GET /sessions/:sessionId/messages?projectPath=/xxx&turnsLimit=3&before=142
+   * 支持两种模式：
+   *   - turnsLimit 模式（默认）：按 Turn 数量分页
+   *   - limit/offset 模式（兼容）：传统按消息条数分页
    */
   @Get(':sessionId/messages')
   async getSessionMessages(
     @Param('sessionId') sessionId: string,
     @Query('projectPath') projectPath: string,
-    @Query('limit', new DefaultValuePipe(50), ParseIntPipe) limit: number,
-    @Query('offset', new DefaultValuePipe(0), ParseIntPipe) offset: number,
-    @Query('order', new DefaultValuePipe('asc')) order: 'asc' | 'desc',
+    @Query('turnsLimit') turnsLimitStr?: string,
+    @Query('before') beforeStr?: string,
+    @Query('limit') limitStr?: string,
+    @Query('offset') offsetStr?: string,
+    @Query('order') order?: string,
+    @Query('detail') detail?: string,
   ) {
     if (!projectPath) {
       return {
@@ -193,12 +197,20 @@ export class SessionController {
       };
     }
 
+    const turnsLimit = turnsLimitStr ? parseInt(turnsLimitStr, 10) : undefined;
+    const before = beforeStr ? parseInt(beforeStr, 10) : undefined;
+    const limit = limitStr ? parseInt(limitStr, 10) : undefined;
+    const offset = offsetStr ? parseInt(offsetStr, 10) : undefined;
+
     const result = await this.sessionService.getSessionMessages(
       sessionId,
       projectPath,
+      turnsLimit,
+      before,
       limit,
       offset,
-      order,
+      order as 'asc' | 'desc' | undefined,
+      detail as 'summary' | 'full' | undefined,
     );
 
     if (result.status !== 'ok') {
@@ -215,6 +227,8 @@ export class SessionController {
       data: result.data!.messages,
       total: result.data!.total,
       hasMore: result.data!.hasMore,
+      openTurn: result.data!.openTurn,
+      nextCursor: result.data!.nextCursor,
     };
   }
 

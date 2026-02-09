@@ -19,6 +19,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DaemonGateway } from '../../module/daemon-gateway/daemon.gateway';
 import { StatusService } from '../../module/status';
 import { RegistryService } from '../../module/registry/registry.service';
+import { DataSyncService } from '../../module/data-sync';
 
 // =================== Mock 数据 ===================
 
@@ -59,6 +60,19 @@ function createMockRegistryService() {
   };
 }
 
+function createMockDataSyncService() {
+  return {
+    getSyncMode: vi.fn().mockReturnValue('forward'),
+    isForwardMode: vi.fn().mockReturnValue(true),
+    isSyncMode: vi.fn().mockReturnValue(false),
+    getMessagesFromDb: vi.fn().mockResolvedValue(null),
+    ensureProject: vi.fn().mockResolvedValue(1),
+    ensureSession: vi.fn().mockResolvedValue(1),
+    syncMessages: vi.fn().mockResolvedValue(undefined),
+    writeMessage: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
 function createMockSocket() {
   return {
     id: 'socket-123',
@@ -96,6 +110,10 @@ describe('DaemonGateway', () => {
         {
           provide: EventEmitter2,
           useValue: mockEventEmitter,
+        },
+        {
+          provide: DataSyncService,
+          useValue: createMockDataSyncService(),
         },
       ],
     }).compile();
@@ -371,6 +389,10 @@ describe('DaemonGateway 场景测试', () => {
           provide: EventEmitter2,
           useValue: { emit: vi.fn() },
         },
+        {
+          provide: DataSyncService,
+          useValue: createMockDataSyncService(),
+        },
       ],
     }).compile();
 
@@ -453,5 +475,213 @@ describe('DaemonGateway 场景测试', () => {
         'session-1',
       );
     });
+  });
+});
+
+// =================== Chunk 组装测试 ===================
+
+describe('DaemonGateway Chunk 组装', () => {
+  let gateway: DaemonGateway;
+  let mockStatusService: ReturnType<typeof createMockStatusService>;
+
+  beforeEach(async () => {
+    mockStatusService = createMockStatusService();
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        DaemonGateway,
+        { provide: StatusService, useValue: mockStatusService },
+        { provide: RegistryService, useValue: createMockRegistryService() },
+        { provide: EventEmitter2, useValue: { emit: vi.fn() } },
+        { provide: DataSyncService, useValue: createMockDataSyncService() },
+      ],
+    }).compile();
+
+    gateway = module.get<DaemonGateway>(DaemonGateway);
+  });
+
+  it('单个 chunk (total=1) 应直接组装并分派', async () => {
+    const socket = createMockSocket();
+    const payload = {
+      sessionId: 's1',
+      projectPath: '/p',
+      messages: [{ text: 'hello' }],
+      total: 1,
+      hasMore: false,
+      requestId: 'req_1',
+    };
+    const jsonStr = JSON.stringify(payload);
+
+    // 单个 chunk 应该直接处理，不应该抛异常
+    expect(() => {
+      gateway.handleChunk(
+        {
+          transferId: 'tx_1',
+          event: 'daemon:sessionMessages',
+          seq: 0,
+          total: 1,
+          data: jsonStr,
+        },
+        socket as any,
+      );
+    }).not.toThrow();
+  });
+
+  it('多个 chunk 凑齐后正确组装 JSON 并分派到 handleSessionMessages', async () => {
+    const socket = createMockSocket();
+    const payload = {
+      sessionId: 's1',
+      projectPath: '/p',
+      messages: [{ text: 'hello' }],
+      total: 1,
+      hasMore: false,
+      requestId: 'req_test',
+    };
+    const jsonStr = JSON.stringify(payload);
+
+    // 把 jsonStr 切成 3 段
+    const chunkSize = Math.ceil(jsonStr.length / 3);
+    const chunk0 = jsonStr.slice(0, chunkSize);
+    const chunk1 = jsonStr.slice(chunkSize, chunkSize * 2);
+    const chunk2 = jsonStr.slice(chunkSize * 2);
+
+    // 设置 pending request 以验证分派
+    let resolvedValue: any = null;
+    (gateway as any).pendingMessageRequests.set('req_test', {
+      resolve: (val: any) => {
+        resolvedValue = val;
+      },
+      timer: setTimeout(() => {}, 10000),
+      startTime: Date.now(),
+    });
+
+    // 发送前两个 chunk
+    gateway.handleChunk(
+      {
+        transferId: 'tx_2',
+        event: 'daemon:sessionMessages',
+        seq: 0,
+        total: 3,
+        data: chunk0,
+      },
+      socket as any,
+    );
+    gateway.handleChunk(
+      {
+        transferId: 'tx_2',
+        event: 'daemon:sessionMessages',
+        seq: 1,
+        total: 3,
+        data: chunk1,
+      },
+      socket as any,
+    );
+
+    // 还没凑齐，不应该 resolve
+    expect(resolvedValue).toBeNull();
+
+    // 发送最后一个 chunk
+    gateway.handleChunk(
+      {
+        transferId: 'tx_2',
+        event: 'daemon:sessionMessages',
+        seq: 2,
+        total: 3,
+        data: chunk2,
+      },
+      socket as any,
+    );
+
+    // 应该 resolve 了
+    expect(resolvedValue).not.toBeNull();
+    expect(resolvedValue.messages).toHaveLength(1);
+    expect(resolvedValue.total).toBe(1);
+  });
+
+  it('chunk 乱序到达也能正确组装', async () => {
+    const socket = createMockSocket();
+    const payload = {
+      sessionId: 's1',
+      projectPath: '/p',
+      messages: [],
+      total: 0,
+      hasMore: false,
+      requestId: 'req_ooo',
+    };
+    const jsonStr = JSON.stringify(payload);
+    const mid = Math.ceil(jsonStr.length / 2);
+    const chunk0 = jsonStr.slice(0, mid);
+    const chunk1 = jsonStr.slice(mid);
+
+    let resolvedValue: any = null;
+    (gateway as any).pendingMessageRequests.set('req_ooo', {
+      resolve: (val: any) => {
+        resolvedValue = val;
+      },
+      timer: setTimeout(() => {}, 10000),
+      startTime: Date.now(),
+    });
+
+    // 先发 seq=1，再发 seq=0
+    gateway.handleChunk(
+      {
+        transferId: 'tx_ooo',
+        event: 'daemon:sessionMessages',
+        seq: 1,
+        total: 2,
+        data: chunk1,
+      },
+      socket as any,
+    );
+    gateway.handleChunk(
+      {
+        transferId: 'tx_ooo',
+        event: 'daemon:sessionMessages',
+        seq: 0,
+        total: 2,
+        data: chunk0,
+      },
+      socket as any,
+    );
+
+    expect(resolvedValue).not.toBeNull();
+    expect(resolvedValue.total).toBe(0);
+  });
+
+  it('不完整 chunk 不触发分派', () => {
+    const socket = createMockSocket();
+
+    let resolvedValue: any = null;
+    (gateway as any).pendingMessageRequests.set('req_partial', {
+      resolve: (val: any) => {
+        resolvedValue = val;
+      },
+      timer: setTimeout(() => {}, 10000),
+      startTime: Date.now(),
+    });
+
+    gateway.handleChunk(
+      {
+        transferId: 'tx_partial',
+        event: 'daemon:sessionMessages',
+        seq: 0,
+        total: 3,
+        data: '{"partial',
+      },
+      socket as any,
+    );
+    gateway.handleChunk(
+      {
+        transferId: 'tx_partial',
+        event: 'daemon:sessionMessages',
+        seq: 2,
+        total: 3,
+        data: '": true}',
+      },
+      socket as any,
+    );
+
+    // 只收到 2/3，不应该 resolve
+    expect(resolvedValue).toBeNull();
   });
 });

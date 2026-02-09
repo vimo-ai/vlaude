@@ -44,6 +44,16 @@ export class DaemonGateway
   private pendingSessionRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout; startTime: number }>();
   private pendingMessageRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout; startTime: number }>();
 
+  // 分段传输缓冲区
+  // Key: transferId, Value: { event, chunks, total, receivedCount, timer }
+  private chunkBuffers = new Map<string, {
+    event: string;
+    chunks: string[];
+    total: number;
+    receivedCount: number;
+    timer: NodeJS.Timeout;
+  }>();
+
   // ETerm 状态已迁移到 Redis，通过 RegistryService 读取
   // 详见 PLAN_REDIS_STATE_SYNC.md
 
@@ -66,6 +76,80 @@ export class DaemonGateway
   handleDisconnect(client: Socket) {
     this.logger.log(`Daemon disconnected: ${client.id}`);
     this.connectedDaemons.delete(client.id);
+  }
+
+  /**
+   * 接收 Daemon 发送的分段数据
+   * 大 payload 超过 512KB 时，Daemon 会自动分段发送
+   * 凑齐所有 chunk 后拼装 JSON，分派到原事件 handler
+   */
+  @SubscribeMessage(DaemonEvents.CHUNK)
+  handleChunk(
+    @MessageBody() data: { transferId: string; event: string; seq: number; total: number; data: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const { transferId, event, seq, total } = data;
+
+    if (!this.chunkBuffers.has(transferId)) {
+      // 首个 chunk，初始化缓冲区 + 30s TTL
+      const timer = setTimeout(() => {
+        this.logger.warn(`⏰ [Chunk] 传输超时，丢弃: transferId=${transferId}, event=${event}, received=${this.chunkBuffers.get(transferId)?.receivedCount}/${total}`);
+        this.chunkBuffers.delete(transferId);
+      }, 30000);
+
+      this.chunkBuffers.set(transferId, {
+        event,
+        chunks: new Array(total).fill(''),
+        total,
+        receivedCount: 0,
+        timer,
+      });
+    }
+
+    const buffer = this.chunkBuffers.get(transferId)!;
+    buffer.chunks[seq] = data.data;
+    buffer.receivedCount++;
+
+    this.logger.log(`📦 [Chunk] transferId=${transferId}, seq=${seq}/${total}, event=${event}`);
+
+    // 凑齐所有 chunk
+    if (buffer.receivedCount >= buffer.total) {
+      clearTimeout(buffer.timer);
+      this.chunkBuffers.delete(transferId);
+
+      // 拼装 JSON
+      const fullJson = buffer.chunks.join('');
+      this.logger.log(`✅ [Chunk] 组装完成: transferId=${transferId}, event=${event}, size=${fullJson.length}`);
+
+      try {
+        const payload = JSON.parse(fullJson);
+        // 分派到原事件 handler
+        this.dispatchReassembledEvent(event, payload, client);
+      } catch (err) {
+        this.logger.error(`❌ [Chunk] JSON 解析失败: transferId=${transferId}, error=${err}`);
+      }
+    }
+
+    return { success: true };
+  }
+
+  /**
+   * 将组装后的 chunk 数据分派到对应的事件 handler
+   */
+  private dispatchReassembledEvent(event: string, payload: any, client: Socket) {
+    switch (event) {
+      case DaemonEvents.SESSION_MESSAGES:
+        this.handleSessionMessages(payload, client);
+        break;
+      case DaemonEvents.PROJECT_DATA:
+        this.handleProjectData(payload, client);
+        break;
+      case DaemonEvents.SESSION_METADATA:
+        this.handleSessionMetadata(payload, client);
+        break;
+      default:
+        this.logger.warn(`⚠️ [Chunk] 未知事件类型: ${event}`);
+    }
   }
 
   /**
@@ -149,6 +233,8 @@ export class DaemonGateway
       total: number;
       hasMore: boolean;
       requestId?: string;
+      openTurn?: boolean;
+      nextCursor?: number;
     },
     @ConnectedSocket() client: Socket,
   ) {
@@ -166,6 +252,8 @@ export class DaemonGateway
         messages: data.messages,
         total: data.total,
         hasMore: data.hasMore,
+        openTurn: data.openTurn,
+        nextCursor: data.nextCursor,
       });
     }
 
@@ -277,7 +365,7 @@ export class DaemonGateway
    * V4: 请求 daemon 获取会话列表（使用 server:requestSessionMetadata 事件）
    * Rust Daemon 会响应 daemon:sessionMetadata 事件
    */
-  async requestSessions(projectPath: string, limit: number = 50, offset: number = 0): Promise<{
+  async requestSessions(projectPath: string, limit: number = 50, offset: number = 0, sessionId?: string): Promise<{
     sessions: any[];
     total: number;
     hasMore: boolean;
@@ -319,35 +407,38 @@ export class DaemonGateway
       });
 
       // 发送请求事件（复用 Rust 已有的 server:requestSessionMetadata）
-      daemon.socket.emit(ServerEvents.REQUEST_SESSION_METADATA, { projectPath, requestId });
-      this.logger.log(`📤 Sent server:requestSessionMetadata (projectPath=${projectPath}, requestId=${requestId})`);
+      const payload: Record<string, any> = { projectPath, requestId };
+      if (sessionId) payload.sessionId = sessionId;
+      daemon.socket.emit(ServerEvents.REQUEST_SESSION_METADATA, payload);
+      this.logger.log(`📤 Sent server:requestSessionMetadata (projectPath=${projectPath}, sessionId=${sessionId || 'all'}, requestId=${requestId})`);
     });
   }
 
   /**
    * V4: 请求 daemon 根据 sessionId 获取会话详情
-   * 先获取全量会话，然后在本地筛选
+   * 直接传 sessionId 给 daemon，精确查询单个 session
    */
   async requestSessionBySessionId(sessionId: string, projectPath: string): Promise<any | null> {
-    const result = await this.requestSessions(projectPath, 1000, 0);
-    if (!result) return null;
-
-    // Rust SessionMeta 使用 `id`，兼容旧格式的 `sessionId`
-    const session = result.sessions.find((s: any) => (s.sessionId || s.id) === sessionId);
-    return session || null;
+    const result = await this.requestSessions(projectPath, 1, 0, sessionId);
+    if (!result || result.sessions.length === 0) return null;
+    return result.sessions[0];
   }
 
   /**
    * V4: 请求 daemon 读取会话消息（使用 server:requestSessionMessages 事件）
    * Rust Daemon 会响应 daemon:sessionMessages 事件
+   * 支持 turnsLimit 模式（按 Turn 分页）和传统 limit/offset 模式
    */
   async requestSessionMessages(
     sessionId: string,
     projectPath: string,
-    limit: number = 50,
-    offset: number = 0,
-    order: 'asc' | 'desc' = 'asc',
-  ): Promise<{ messages: any[]; total: number; hasMore: boolean } | null> {
+    turnsLimit?: number,
+    before?: number,
+    limit?: number,
+    offset?: number,
+    order?: 'asc' | 'desc',
+    detail?: 'summary' | 'full',
+  ): Promise<{ messages: any[]; total: number; hasMore: boolean; openTurn?: boolean; nextCursor?: number } | null> {
     const totalStart = Date.now();
     const daemons = Array.from(this.connectedDaemons.values());
     if (daemons.length === 0) {
@@ -367,7 +458,7 @@ export class DaemonGateway
       }, 10000);
 
       this.pendingMessageRequests.set(requestId, {
-        resolve: (result: { messages: any[]; total: number; hasMore: boolean }) => {
+        resolve: (result: { messages: any[]; total: number; hasMore: boolean; openTurn?: boolean; nextCursor?: number }) => {
           const totalTime = Date.now() - totalStart;
           this.logger.log(`[Perf] requestSessionMessages completed: total=${totalTime}ms, count=${result.messages.length}, session=${sessionId}`);
           resolve(result);
@@ -376,16 +467,17 @@ export class DaemonGateway
         startTime,
       });
 
-      // 发送请求事件（复用 Rust 已有的 server:requestSessionMessages）
-      daemon.socket.emit(ServerEvents.REQUEST_SESSION_MESSAGES, {
-        sessionId,
-        projectPath,
-        limit,
-        offset,
-        order,
-        requestId,
-      });
-      this.logger.log(`📤 Sent server:requestSessionMessages (sessionId=${sessionId}, requestId=${requestId})`);
+      // 构建请求 payload，只传有值的字段
+      const payload: Record<string, any> = { sessionId, projectPath, requestId };
+      if (turnsLimit !== undefined) payload.turnsLimit = turnsLimit;
+      if (before !== undefined) payload.before = before;
+      if (limit !== undefined) payload.limit = limit;
+      if (offset !== undefined) payload.offset = offset;
+      if (order !== undefined) payload.order = order;
+      if (detail !== undefined) payload.detail = detail;
+
+      daemon.socket.emit(ServerEvents.REQUEST_SESSION_MESSAGES, payload);
+      this.logger.log(`📤 Sent server:requestSessionMessages (sessionId=${sessionId}, turnsLimit=${turnsLimit}, requestId=${requestId})`);
     });
   }
 

@@ -105,6 +105,10 @@ export const DaemonEvents = {
   CHECK_LOADING_RESULT: 'daemon:checkLoadingResult',
   /** @payload { success: boolean, error?: string, requestId?: string } */
   SEND_MESSAGE_RESULT: 'daemon:sendMessageResult',
+
+  // === 分段传输 ===
+  /** @payload { transferId: string, event: string, seq: number, total: number, data: string } */
+  CHUNK: 'daemon:chunk',
 } as const;
 
 /**

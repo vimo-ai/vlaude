@@ -65,6 +65,8 @@ export interface SessionMessagesPayload {
   total: number;
   hasMore: boolean;
   requestId?: string;
+  openTurn?: boolean;
+  nextCursor?: number;
 }
 
 export interface SearchResultsPayload {
@@ -219,8 +221,10 @@ export interface RequestSessionMetadataPayload {
 export interface RequestSessionMessagesPayload {
   sessionId: string;
   projectPath: string;
-  limit: number;
-  offset: number;
+  turnsLimit?: number;
+  before?: number;
+  limit?: number;
+  offset?: number;
   order?: string;
   requestId?: string;
 }
