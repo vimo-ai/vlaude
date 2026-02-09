@@ -100,6 +100,10 @@ pub mod daemon_events {
     /// @payload { sessionId: String, projectPath: String }
     pub const SESSION_DELETED: &str = "daemon:sessionDeleted";
 
+    // 分段传输
+    /// @payload { transferId: String, event: String, seq: usize, total: usize, data: String }
+    pub const CHUNK: &str = "daemon:chunk";
+
     // 命令响应
     /// @payload { success: bool, sessionId: Option<String>, error: Option<String>, requestId: Option<String> }
     pub const SESSION_CREATED_RESULT: &str = "daemon:sessionCreatedResult";
@@ -382,6 +386,12 @@ pub struct SessionMessagesPayload {
     pub has_more: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    /// 最新 Turn 是否未结束（turns_limit 模式）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub open_turn: Option<bool>,
+    /// 下次 loadMore 的游标（turns_limit 模式）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<usize>,
 }
 
 // ==================== 其他上行事件数据结构 ====================

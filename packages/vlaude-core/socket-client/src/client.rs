@@ -1011,6 +1011,54 @@ impl SocketClient {
             .await
     }
 
+    /// 分段发送大 payload（阈值 512KB）
+    ///
+    /// 超过阈值时自动切分为多个 chunk，通过 `daemon:chunk` 事件发送
+    /// Server 端组装完成后分派到原始事件 handler
+    async fn emit_chunked(&self, event: &str, data: Value) -> Result<(), SocketError> {
+        let json_str = serde_json::to_string(&data)
+            .map_err(|e| SocketError::EmitFailed(format!("JSON serialize failed: {}", e)))?;
+        let payload_size = json_str.len();
+
+        const CHUNK_THRESHOLD: usize = 512 * 1024; // 512KB
+
+        if payload_size <= CHUNK_THRESHOLD {
+            return self.emit(event, data).await;
+        }
+
+        info!(
+            "[Chunked] Splitting {} event: {}KB into chunks",
+            event,
+            payload_size / 1024
+        );
+
+        let transfer_id = format!(
+            "tx_{}",
+            chrono::Utc::now().timestamp_millis(),
+        );
+
+        let bytes = json_str.into_bytes();
+        let chunk_size = CHUNK_THRESHOLD;
+        let total_chunks = (bytes.len() + chunk_size - 1) / chunk_size;
+
+        for (seq, chunk_bytes) in bytes.chunks(chunk_size).enumerate() {
+            let chunk_data = json!({
+                "transferId": transfer_id,
+                "event": event,
+                "seq": seq,
+                "total": total_chunks,
+                "data": String::from_utf8_lossy(chunk_bytes),
+            });
+            self.emit(daemon_events::CHUNK, chunk_data).await?;
+        }
+
+        info!(
+            "[Chunked] Sent {} chunks for {} (transferId={})",
+            total_chunks, event, transfer_id
+        );
+        Ok(())
+    }
+
     /// 上报会话消息
     pub async fn report_session_messages(
         &self,
@@ -1020,6 +1068,8 @@ impl SocketClient {
         total: usize,
         has_more: bool,
         request_id: Option<String>,
+        open_turn: Option<bool>,
+        next_cursor: Option<usize>,
     ) -> Result<(), SocketError> {
         let data = SessionMessagesPayload {
             session_id,
@@ -1028,8 +1078,10 @@ impl SocketClient {
             total,
             has_more,
             request_id,
+            open_turn,
+            next_cursor,
         };
-        self.emit(daemon_events::SESSION_MESSAGES, serde_json::to_value(data).unwrap())
+        self.emit_chunked(daemon_events::SESSION_MESSAGES, serde_json::to_value(data).unwrap())
             .await
     }
 

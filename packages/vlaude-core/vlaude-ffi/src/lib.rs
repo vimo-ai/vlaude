@@ -589,6 +589,61 @@ pub unsafe extern "C" fn vlaude_get_messages(
     })
 }
 
+/// 按 Turn 数量获取会话消息（Turn-based 分页）
+///
+/// # Arguments
+/// * `session_id` - 会话 ID（C 字符串）
+/// * `turns_limit` - 返回最近 N 个 Turn
+/// * `before` - 翻页游标，-1 表示首页
+///
+/// 返回 JSON: `{ "messages": [...], "total": N, "hasMore": bool, "openTurn": bool, "nextCursor": N|null }`
+///
+/// # Safety
+/// - `session_id` 必须是有效的 UTF-8 C 字符串
+/// - 返回的字符串必须通过 `vlaude_free_string` 释放
+#[no_mangle]
+pub unsafe extern "C" fn vlaude_get_messages_by_turns(
+    session_id: *const c_char,
+    turns_limit: u32,
+    before: i64,
+    detail: *const c_char,
+) -> *mut c_char {
+    ffi_boundary_simple(error_response("internal panic"), || {
+        if session_id.is_null() {
+            return error_response("session_id is null");
+        }
+
+        let sid = match CStr::from_ptr(session_id).to_str() {
+            Ok(s) => s,
+            Err(_) => return error_response("Invalid UTF-8 in session_id"),
+        };
+
+        let detail_str = if detail.is_null() {
+            "summary"
+        } else {
+            CStr::from_ptr(detail).to_str().unwrap_or("summary")
+        };
+
+        let before_opt = if before < 0 { None } else { Some(before as usize) };
+
+        match daemon_logic::sync_api::get_messages_by_turns(sid, turns_limit as usize, before_opt, detail_str) {
+            Ok(result) => {
+                let mut json = serde_json::json!({
+                    "messages": result.messages,
+                    "total": result.total,
+                    "hasMore": result.has_more,
+                    "openTurn": result.open_turn,
+                });
+                if let Some(cursor) = result.next_cursor {
+                    json["nextCursor"] = serde_json::json!(cursor);
+                }
+                json_to_c_string(json)
+            }
+            Err(e) => error_response(&format!("Query failed: {}", e)),
+        }
+    })
+}
+
 /// 全文搜索
 ///
 /// # Arguments

@@ -569,6 +569,8 @@ pub unsafe extern "C" fn socket_client_report_session_messages(
     total: usize,
     has_more: bool,
     request_id: *const c_char,
+    open_turn: i8,
+    next_cursor: i64,
 ) -> SocketClientError {
     if handle.is_null() || session_id.is_null() || project_path.is_null() || messages_json.is_null() {
         return SocketClientError::NullPointer;
@@ -599,8 +601,13 @@ pub unsafe extern "C" fn socket_client_report_session_messages(
                 .to_string())
         };
 
+        // open_turn: -1 = None, 0 = Some(false), 1 = Some(true)
+        let open_turn_opt = if open_turn < 0 { None } else { Some(open_turn != 0) };
+        // next_cursor: -1 = None, >= 0 = Some(value)
+        let next_cursor_opt = if next_cursor < 0 { None } else { Some(next_cursor as usize) };
+
         handle.runtime.block_on(async {
-            handle.client.report_session_messages(sid, ppath, messages, total, has_more, req_id).await
+            handle.client.report_session_messages(sid, ppath, messages, total, has_more, req_id, open_turn_opt, next_cursor_opt).await
         }).map_err(|_| SocketClientError::EmitFailed)
     }));
 
