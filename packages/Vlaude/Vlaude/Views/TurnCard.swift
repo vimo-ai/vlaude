@@ -2,10 +2,10 @@
 //  TurnCard.swift
 //  Vlaude
 //
-//  Turn 卡片：三段式布局
-//  一、用户消息（蓝色色带 + 首行加粗）
-//  二、执行过程（紧凑工具行 / 摘要折叠条）
-//  三、AI 回复（紫色色带 + Markdown）
+//  Turn 卡片 V2：折叠/展开双模式
+//  折叠态 — AI text 全部可见 + 工具/thinking 折叠为内联指示器
+//  展开态 — 所有事件按时间顺序完整展示
+//  底部统计栏始终可见
 //
 
 import SwiftUI
@@ -21,50 +21,78 @@ struct TurnCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            // Turn 编号
-            Text(String(format: "%02d", turnIndex))
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundStyle(.tertiary)
-                .padding(.leading, 2)
+            // Turn 编号 + 折叠/展开切换
+            turnHeader
 
-            // 一、用户消息
+            // 用户消息
             userPromptSection
 
-            // 二、执行过程
-            activitySection
+            // 事件区域
+            if turn.isExpanded {
+                expandedEventsView
+            } else {
+                collapsedEventsView
+            }
 
             // Subagent 子时间线
             ForEach(turn.subagentTurns) { sub in
                 SubagentRow(subagent: sub, sessionId: sessionId)
             }
 
-            // 三、AI 最终回复
-            if let finalResponse = turn.finalResponse,
-               case .text(let text, _) = finalResponse.content,
-               !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                finalResponseSection(text: text)
+            // 统计栏
+            let stats = turn.statistics
+            if stats.totalToolCount > 0 || stats.thinkingCount > 0 {
+                turnStatsBar(stats)
             }
 
-            // 状态（仅活跃时显示）
-            if turn.status != .completed {
+            // 活跃状态指示
+            if turn.status == .active || turn.status == .waitingTool {
                 TurnStatusBar(status: turn.status)
             }
         }
     }
 
-    // MARK: - 一、用户消息
+    // MARK: - Turn Header
 
-    /// 色带透明度：活跃时鲜明，完成后退居幕后
-    private var accentOpacity: Double {
-        turn.status == .completed ? 0.4 : 1.0
+    @ViewBuilder
+    private var turnHeader: some View {
+        HStack {
+            Text(String(format: "%02d", turnIndex))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundStyle(.tertiary)
+
+            Spacer()
+
+            // 折叠/展开按钮（仅当有非 text 事件时显示）
+            let stats = turn.statistics
+            if stats.totalToolCount > 0 || stats.thinkingCount > 0 {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        turn.isExpanded.toggle()
+                    }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: turn.isExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical")
+                            .font(.system(size: 10))
+                        Text(turn.isExpanded ? "折叠" : "展开")
+                            .font(.system(size: 11))
+                    }
+                    .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.leading, 2)
     }
+
+    // MARK: - 用户消息
 
     @ViewBuilder
     private var userPromptSection: some View {
         HStack(alignment: .top, spacing: 0) {
             // 蓝色色带
             RoundedRectangle(cornerRadius: 1.5)
-                .fill(Color.blue.opacity(accentOpacity))
+                .fill(Color.blue)
                 .frame(width: 3)
                 .padding(.vertical, 2)
 
@@ -87,8 +115,7 @@ struct TurnCard: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(turn.userMessage.images) { img in
-                                if let data = Data(base64Encoded: img.data),
-                                   let uiImage = UIImage(data: data) {
+                                if let uiImage = Self.cachedImage(for: img) {
                                     Image(uiImage: uiImage)
                                         .resizable()
                                         .aspectRatio(contentMode: .fit)
@@ -112,111 +139,225 @@ struct TurnCard: View {
         return lines
     }
 
-    // MARK: - 二、执行过程
+    // MARK: - 折叠态：text 全部可见 + 内联指示器
 
     @ViewBuilder
-    private var activitySection: some View {
-        let activity = turn.activityEvents
-        if !activity.isEmpty {
-            if turn.status == .completed {
-                // 已完成：摘要折叠条
-                ExecutionSummaryBar(
-                    turn: turn,
-                    sessionId: sessionId,
-                    onApprovalAction: onApprovalAction
-                )
-            } else {
-                // 活跃中：实时工具列表
-                activeToolList(events: activity)
+    private var collapsedEventsView: some View {
+        let segments = turn.collapsedSegments
+        if !segments.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(segments) { segment in
+                    switch segment {
+                    case .text(let event):
+                        textEventView(event)
+                    case .indicator(_, let tools, let thinkings):
+                        inlineCollapsedIndicator(tools: tools, thinkings: thinkings)
+                    }
+                }
             }
         }
     }
 
+    // MARK: - 展开态：所有事件按时间顺序
+
     @ViewBuilder
-    private func activeToolList(events: [TurnEvent]) -> some View {
-        // 工具事件始终显示，只折叠 thinking/text 等非工具事件
-        let toolEvents = events.filter { $0.eventType == .toolUse }
-        let otherEvents = events.filter { $0.eventType != .toolUse }
-        let maxOtherVisible = 2
-        let otherOverflow = otherEvents.count > maxOtherVisible
-
-        VStack(spacing: 2) {
-            // 非工具事件（thinking/text）：超出时只显示最近几个
-            if otherOverflow {
-                HStack(spacing: 6) {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
-                    Text("还有 \(otherEvents.count - maxOtherVisible) 个事件")
-                        .font(.system(size: 12))
-                        .foregroundStyle(.tertiary)
-                    Spacer()
+    private var expandedEventsView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(turn.events) { event in
+                switch event.eventType {
+                case .text:
+                    textEventView(event)
+                case .toolUse:
+                    if case .toolUse(let execution) = event.content {
+                        CompactToolRow(
+                            execution: execution,
+                            sessionId: sessionId,
+                            isActive: turn.status != .completed,
+                            onApprovalAction: onApprovalAction
+                        )
+                    }
+                case .thinking:
+                    if case .thinking(let text) = event.content {
+                        ThinkingEventView(text: text)
+                    }
+                case .toolResult:
+                    EmptyView()
                 }
-                .padding(.vertical, 4)
-                .padding(.horizontal, 8)
-
-                ForEach(otherEvents.suffix(maxOtherVisible)) { event in
-                    activeEventRow(event)
-                }
-            } else {
-                ForEach(otherEvents) { event in
-                    activeEventRow(event)
-                }
-            }
-
-            // 工具事件：始终全部显示
-            ForEach(toolEvents) { event in
-                activeEventRow(event)
             }
         }
     }
 
+    // MARK: - Text 事件渲染（折叠/展开态共用）
+
     @ViewBuilder
-    private func activeEventRow(_ event: TurnEvent) -> some View {
-        switch event.content {
-        case .toolUse(let execution):
-            CompactToolRow(
-                execution: execution,
-                sessionId: sessionId,
-                isActive: turn.status != .completed,
-                onApprovalAction: onApprovalAction
+    private func textEventView(_ event: TurnEvent) -> some View {
+        if case .text(let text, _) = event.content,
+           !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            MarkdownEventView(id: event.id, text: text)
+                .equatable()
+        }
+    }
+
+    // MARK: - 内联折叠指示器
+
+    @ViewBuilder
+    private func inlineCollapsedIndicator(tools: Int, thinkings: Int) -> some View {
+        Button(action: {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                turn.isExpanded = true
+            }
+        }) {
+            HStack(spacing: 6) {
+                Image(systemName: "wrench.and.screwdriver")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+
+                // 构建描述文本
+                let parts = buildIndicatorParts(tools: tools, thinkings: thinkings)
+                Text(parts)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 6)
+            .padding(.horizontal, 10)
+            .background(
+                RoundedRectangle(cornerRadius: 6)
+                    .fill(Color(uiColor: .systemGray6).opacity(0.5))
             )
-        case .thinking(let text):
-            ThinkingEventView(text: text)
-        case .text(let text, _):
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                Text(text)
-                    .font(.system(size: 13))
-                    .foregroundColor(.secondary)
-                    .padding(.vertical, 4)
-                    .padding(.horizontal, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color(uiColor: .systemGray6).opacity(0.3))
-                    )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func buildIndicatorParts(tools: Int, thinkings: Int) -> String {
+        var parts: [String] = []
+        if tools > 0 {
+            parts.append("\(tools) tool\(tools > 1 ? "s" : "")")
+        }
+        if thinkings > 0 {
+            parts.append("\(thinkings) thinking")
+        }
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
+    // MARK: - 统计栏
+
+    @ViewBuilder
+    private func turnStatsBar(_ stats: TurnStatistics) -> some View {
+        VStack(spacing: 6) {
+            // 细分隔线
+            Rectangle()
+                .fill(Color(uiColor: .separator).opacity(0.3))
+                .frame(height: 0.5)
+
+            HStack(spacing: 0) {
+                Text(buildStatsText(stats))
+                    .font(.system(size: 11))
+                    .foregroundStyle(.tertiary)
+
+                Spacer()
+
+                // Turn 耗时
+                if let duration = stats.duration {
+                    Text(formatDuration(duration))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.tertiary)
+                }
             }
-        case .toolResult:
-            EmptyView()
         }
     }
 
-    // MARK: - 三、AI 回复
+    private func buildStatsText(_ stats: TurnStatistics) -> String {
+        var parts: [String] = []
+
+        // 按工具类型细分
+        let sortedTools = stats.toolCountsByType.sorted { $0.value > $1.value }
+        for (name, count) in sortedTools {
+            let label = name.lowercased()
+            parts.append("\(count) \(label)")
+        }
+
+        if stats.thinkingCount > 0 {
+            parts.append("\(stats.thinkingCount) thinking")
+        }
+
+        return parts.joined(separator: " \u{00B7} ")
+    }
+
+    private func formatDuration(_ seconds: TimeInterval) -> String {
+        if seconds < 60 {
+            return String(format: "%.0fs", seconds)
+        }
+        let minutes = Int(seconds) / 60
+        let secs = Int(seconds) % 60
+        return "\(minutes)m \(secs)s"
+    }
+
+    // MARK: - Pending Approval Card
 
     @ViewBuilder
-    private func finalResponseSection(text: String) -> some View {
-        HStack(alignment: .top, spacing: 0) {
-            // 紫色色带
-            RoundedRectangle(cornerRadius: 1.5)
-                .fill(Color.purple.opacity(accentOpacity))
-                .frame(width: 3)
-                .padding(.vertical, 2)
+    private func pendingApprovalCard(execution: ToolExecution) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .foregroundColor(.orange)
+                    .font(.system(size: 14))
 
-            Markdown(text)
-                .markdownTheme(.claudeCode)
-                .markdownCodeSyntaxHighlighter(HighlightrCodeSyntaxHighlighter())
-                .textSelection(.enabled)
-                .padding(.leading, 10)
+                Text("需要权限")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.orange)
+            }
+
+            // 工具信息
+            HStack(spacing: 6) {
+                Text(execution.name)
+                    .font(.system(size: 13, design: .monospaced))
+                    .foregroundColor(.primary)
+
+                Text(execution.formattedInput.components(separatedBy: .newlines).first ?? "")
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+
+            // 审批按钮
+            if let handler = onApprovalAction {
+                ApprovalButtonsView(
+                    status: .awaitingPermission,
+                    onApprove: { action in handler(execution.id, action) }
+                )
+            }
         }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.orange.opacity(0.08))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.orange.opacity(0.3), lineWidth: 1)
+        )
+    }
+
+    // MARK: - Image Cache
+
+    private static let imageCache = NSCache<NSString, UIImage>()
+
+    private static func cachedImage(for img: ImageData) -> UIImage? {
+        let key = NSString(string: img.id.uuidString)
+        if let cached = imageCache.object(forKey: key) {
+            return cached
+        }
+        guard let data = Data(base64Encoded: img.data),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        imageCache.setObject(image, forKey: key)
+        return image
     }
 }

@@ -7,6 +7,7 @@
 
 import SwiftUI
 import MarkdownUI
+import Combine
 
 struct SessionDetailView: View {
     let sessionId: String
@@ -15,6 +16,7 @@ struct SessionDetailView: View {
     @StateObject private var viewModel = SessionDetailViewModel()
     @State private var inputText = ""
     @State private var selectedMessageForDetail: DisplayMessage?
+    @State private var isNearBottom: Bool = true   // 用户是否在底部附近
 
     // 权限请求错误状态（审批按钮已移至 ToolView 内嵌方式）
     @State private var showTimeoutError = false
@@ -127,32 +129,50 @@ struct SessionDetailView: View {
     private var timelineScrollView: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(spacing: 16) {
-                    loadMoreButton
+                VStack(spacing: 0) {
+                    LazyVStack(spacing: 16) {
+                        loadMoreButton
 
-                    SessionTimelineView(
-                        turnBuilder: viewModel.turnBuilder,
-                        sessionId: sessionId,
-                        onApprovalAction: { toolUseId, action in
-                            viewModel.sendApprovalResponse(toolUseId: toolUseId, action: action)
-                        }
-                    )
+                        SessionTimelineView(
+                            turnBuilder: viewModel.turnBuilder,
+                            sessionId: sessionId,
+                            onApprovalAction: { toolUseId, action in
+                                viewModel.sendApprovalResponse(toolUseId: toolUseId, action: action)
+                            }
+                        )
+                    }
+                    .padding()
 
-                    waitingIndicator
+                    // 底部哨兵：在 LazyVStack 外部，保证始终渲染
+                    Color.clear
+                        .frame(height: 1)
+                        .id("timeline-bottom")
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: BottomVisibleKey.self,
+                                    value: geo.frame(in: .named("timelineScroll")).maxY
+                                )
+                            }
+                        )
                 }
-                .padding()
+            }
+            .coordinateSpace(name: "timelineScroll")
+            .onPreferenceChange(BottomVisibleKey.self) { bottomY in
+                if bottomY > 0 {
+                    isNearBottom = bottomY < UIScreen.main.bounds.height + 100
+                }
             }
             .onAppear {
                 scrollToLastTurn(proxy: proxy)
             }
-            .onChange(of: viewModel.turnBuilder.turns.count) { oldCount, newCount in
-                if newCount > oldCount {
+            // 内容变化时，仅在用户处于底部附近才自动滚动
+            .onReceive(
+                viewModel.turnBuilder.objectWillChange
+                    .debounce(for: .milliseconds(300), scheduler: RunLoop.main)
+            ) { _ in
+                if isNearBottom {
                     scrollToLastTurn(proxy: proxy)
-                }
-            }
-            .onChange(of: viewModel.isWaitingForResponse) { oldValue, newValue in
-                if newValue {
-                    scrollToWaitingIndicator(proxy: proxy)
                 }
             }
         }
@@ -282,12 +302,17 @@ struct SessionDetailView: View {
     }
 
     private func sendMessage() {
+        print("🔴 [SessionDetailView.sendMessage] 被调用, inputText.count=\(inputText.count)")
         let message = inputText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !message.isEmpty else { return }
+        guard !message.isEmpty else {
+            print("🔴 [SessionDetailView.sendMessage] 消息为空，return")
+            return
+        }
 
-        // 发送消息到 Server
+        print("🔴 [SessionDetailView.sendMessage] 调用 viewModel.sendMessage, text=\(message.prefix(30))...")
         viewModel.sendMessage(message)
         inputText = ""
+        print("🔴 [SessionDetailView.sendMessage] inputText 已清空")
     }
 }
 
@@ -532,33 +557,54 @@ struct ToolExecutionBubble: View {
             { action in handler(execution.id, action) }
         }
 
-        switch execution.name {
-        case "Bash":
-            BashToolView(execution: execution, onApprovalAction: approvalHandler)
-        case "Read":
-            ReadToolView(execution: execution)
-        case "Grep":
-            GrepToolView(execution: execution)
-        case "Glob":
-            GlobToolView(execution: execution)
-        case "Write":
-            WriteToolView(execution: execution)
-        case "Edit":
-            EditToolView(execution: execution)
-        case "TodoWrite":
-            TodoWriteToolView(execution: execution)
-        case "AskUserQuestion":
-            AskUserQuestionToolView(execution: execution, sessionId: sessionId)
-        case "Task":
-            TaskToolView(execution: execution)
-        case "WebSearch":
-            WebSearchToolView(execution: execution)
-        case "WebFetch":
-            WebFetchToolView(execution: execution)
-        case let name where name.hasPrefix("mcp__"):
-            MCPToolView(execution: execution)
-        default:
-            GenericToolView(execution: execution)
+        VStack(alignment: .leading, spacing: 0) {
+            switch execution.name {
+            case "Bash":
+                BashToolView(execution: execution, onApprovalAction: approvalHandler)
+            case "Read":
+                ReadToolView(execution: execution)
+            case "Grep":
+                GrepToolView(execution: execution)
+            case "Glob":
+                GlobToolView(execution: execution)
+            case "Write":
+                WriteToolView(execution: execution)
+            case "Edit":
+                EditToolView(execution: execution)
+            case "TodoWrite":
+                TodoWriteToolView(execution: execution)
+            case "AskUserQuestion":
+                AskUserQuestionToolView(execution: execution, sessionId: sessionId)
+            case "Task":
+                TaskToolView(execution: execution)
+            case "WebSearch":
+                WebSearchToolView(execution: execution)
+            case "WebFetch":
+                WebFetchToolView(execution: execution)
+            case let name where name.hasPrefix("mcp__"):
+                MCPToolView(execution: execution)
+            default:
+                GenericToolView(execution: execution)
+            }
+
+            // 通用审批按钮（Bash 已内置，其他工具在此统一处理）
+            if execution.name != "Bash", let onApprove = approvalHandler {
+                if execution.approvalStatus == .awaitingPermission {
+                    ApprovalButtonsView(status: execution.approvalStatus, onApprove: onApprove)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                }
+                if execution.approvalStatus == .pendingAck || execution.approvalStatus == .executing {
+                    ApprovalButtonsView(status: execution.approvalStatus, onApprove: { _ in })
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                }
+                if execution.approvalStatus == .rejected || execution.approvalStatus == .timeout {
+                    ApprovalButtonsView(status: execution.approvalStatus, onApprove: { _ in })
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                }
+            }
         }
     }
 }
@@ -780,6 +826,16 @@ struct InfoRow: View {
                 .font(monospaced ? .system(.body, design: .monospaced) : .body)
                 .textSelection(.enabled)
         }
+    }
+}
+
+// MARK: - Bottom Visible PreferenceKey
+
+/// 用于检测底部哨兵在 ScrollView 中的 Y 位置
+private struct BottomVisibleKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }
 

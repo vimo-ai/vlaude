@@ -477,8 +477,9 @@ class VlaudeWebSocketClient: ObservableObject {
     // MARK: - Messaging
 
     func sendMessage(_ text: String, sessionId: String, clientMessageId: String? = nil) {
+        print("📨 [WS.sendMessage] 开始, sessionId=\(sessionId), text=\(text.prefix(20))..., clientMsgId=\(clientMessageId ?? "nil")")
         guard isConnected else {
-            print("❌ [VlaudeWebSocketClient] 未连接，无法发送消息")
+            print("❌ [WS.sendMessage] 未连接，无法发送消息")
             return
         }
 
@@ -491,7 +492,9 @@ class VlaudeWebSocketClient: ObservableObject {
             payload["clientMessageId"] = clientMsgId
         }
 
+        print("📨 [WS.sendMessage] client=\(client != nil ? "有值" : "nil"), payload=\(payload)")
         client?.emit("message:send", data: payload)
+        print("📨 [WS.sendMessage] emit 已调用")
     }
 
     // MARK: - Approval

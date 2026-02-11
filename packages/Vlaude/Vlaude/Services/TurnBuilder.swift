@@ -12,7 +12,16 @@ import Combine
 // MARK: - TurnBuilder
 
 class TurnBuilder: ObservableObject {
-    @Published var turns: [Turn] = []
+    private var isBatching = false
+    var turns: [Turn] = [] {
+        didSet {
+            if !isBatching {
+                turnsCount = turns.count
+                objectWillChange.send()
+            }
+        }
+    }
+    @Published private(set) var turnsCount: Int = 0
     private var currentTurn: Turn?
     private let transformer: MessageTransformer
 
@@ -43,12 +52,21 @@ class TurnBuilder: ObservableObject {
         let isUserText = message.eventType == "user_text" ||
             (message.type == "user" && !looksLikeToolResult(message) && !looksLikeCommandOutput(message))
         if isUserText {
+            // 回显检测：iOS 发送 prompt 时已通过 processMessage 创建 Turn，
+            // VlaudeKit 从 DB 采集到同一条用户消息推回 iOS 时应跳过，避免重复 Turn
+            if let existing = currentTurn,
+               existing.status == .active || existing.status == .waitingTool,
+               existing.userMessage.textContent == transformToDisplayMessage(message).textContent {
+                return
+            }
+
             // 前一个 Turn 自动关闭（用户已发送新消息 = 上一轮已结束）
             if let prev = currentTurn, prev.status != .completed {
                 prev.status = .completed
             }
             let displayMsg = transformToDisplayMessage(message)
             let turn = Turn(id: message.uuid ?? UUID().uuidString, userMessage: displayMsg)
+            turn.isExpanded = true  // 实时推送的 Turn 默认展开
             turns.append(turn)
             currentTurn = turn
             return
@@ -81,7 +99,7 @@ class TurnBuilder: ObservableObject {
 
         // 4. 普通事件 → 追加到当前 Turn（一条消息可能含多个 content blocks）
         let events = buildEvents(from: message)
-        turn.events.append(contentsOf: events)
+        turn.appendEvents(events)
 
         // 5. 检查 Turn 状态变化
         if message.stopReason == "end_turn" {
@@ -89,6 +107,42 @@ class TurnBuilder: ObservableObject {
         } else if message.stopReason == "tool_use" {
             turn.status = .waitingTool
         }
+    }
+
+    /// 批量处理实时消息（100ms 窗口内的消息合并为一次 UI 更新）
+    func processMessages(_ messages: [Message]) {
+        isBatching = true
+        // 抑制 Turn 级别通知，避免 AttributeGraph propagate_dirty 风暴
+        for turn in turns { turn.isBatching = true }
+        for sub in turns.flatMap({ $0.subagentTurns }) { sub.isBatching = true }
+
+        var modifiedTurns: Set<ObjectIdentifier> = []
+
+        for message in messages {
+            processMessage(message)
+            // 新创建的 Turn 也需要抑制（processMessage 内创建）
+            if let turn = currentTurn {
+                if !turn.isBatching { turn.isBatching = true }
+                modifiedTurns.insert(ObjectIdentifier(turn))
+            }
+        }
+
+        // 结束 Turn 批处理：仅被修改的 Turn 发送一次 objectWillChange
+        for turn in turns {
+            if modifiedTurns.contains(ObjectIdentifier(turn)) {
+                turn.endBatch()
+            } else {
+                turn.isBatching = false
+            }
+            // SubagentTurn 也结束批处理
+            for sub in turn.subagentTurns {
+                sub.endBatch()
+            }
+        }
+
+        isBatching = false
+        turnsCount = turns.count
+        objectWillChange.send()
     }
 
     /// 处理历史消息（批量加载）
@@ -153,7 +207,7 @@ class TurnBuilder: ObservableObject {
             }
 
             let events = buildEvents(from: msg)
-            turn.events.append(contentsOf: events)
+            turn.appendEvents(events)
 
             if msg.stopReason == "end_turn" {
                 turn.status = .completed
@@ -172,12 +226,12 @@ class TurnBuilder: ObservableObject {
             for (i, event) in turn.events.enumerated() {
                 if case .toolUse(var exec) = event.content, exec.result == nil {
                     exec.approvalStatus = .timeout
-                    turn.events[i] = TurnEvent(
+                    turn.replaceEvent(at: i, with: TurnEvent(
                         id: event.id, eventType: event.eventType,
                         timestamp: event.timestamp,
                         content: .toolUse(execution: exec),
                         isFinal: event.isFinal
-                    )
+                    ))
                 }
             }
         }
@@ -185,12 +239,91 @@ class TurnBuilder: ObservableObject {
         // 原子赋值 — 只触发一次 @Published
         self.turns = tempTurns
         self.currentTurn = tempCurrentTurn
+        self.turnsCount = tempTurns.count
     }
 
     /// 清空所有状态
     func clear() {
         turns.removeAll()
+        turnsCount = 0
         currentTurn = nil
+        isBatching = false
+    }
+
+    // MARK: - Approval Status Management
+
+    /// 更新工具执行的审批状态（供 ViewModel 调用，替代原来依赖 displayMessages 的逻辑）
+    func updateToolApproval(toolUseId: String, status: ToolApprovalStatus, requestId: String?) {
+        for turn in turns {
+            for (i, event) in turn.events.enumerated() {
+                if case .toolUse(var exec) = event.content, exec.id == toolUseId {
+                    exec.approvalStatus = status
+                    if let reqId = requestId { exec.approvalRequestId = reqId }
+                    turn.replaceEvent(at: i, with: TurnEvent(
+                        id: event.id, eventType: event.eventType,
+                        timestamp: event.timestamp,
+                        content: .toolUse(execution: exec),
+                        isFinal: event.isFinal
+                    ))
+                    return
+                }
+            }
+            // Also check subagent turns
+            for sub in turn.subagentTurns {
+                for (i, event) in sub.events.enumerated() {
+                    if case .toolUse(var exec) = event.content, exec.id == toolUseId {
+                        exec.approvalStatus = status
+                        if let reqId = requestId { exec.approvalRequestId = reqId }
+                        sub.replaceEvent(at: i, with: TurnEvent(
+                            id: event.id, eventType: event.eventType,
+                            timestamp: event.timestamp,
+                            content: .toolUse(execution: exec),
+                            isFinal: event.isFinal
+                        ))
+                        return
+                    }
+                }
+            }
+        }
+    }
+
+    /// 查找最近的待审批工具执行（toolName 匹配 + approvalStatus == .none）
+    func findPendingToolUseId(toolName: String) -> String? {
+        for turn in turns.reversed() {
+            for event in turn.events.reversed() {
+                if case .toolUse(let exec) = event.content,
+                   exec.name == toolName,
+                   exec.approvalStatus == .none {
+                    return exec.id
+                }
+            }
+        }
+        return nil
+    }
+
+    /// 应用缓存的 pending approvals（permission_request 可能先于 tool_use 到达）
+    func applyPendingApprovals(_ pendingApprovals: [String: PendingApproval]) {
+        guard !pendingApprovals.isEmpty else { return }
+        for (toolUseId, approval) in pendingApprovals {
+            for turn in turns {
+                for (i, event) in turn.events.enumerated() {
+                    if case .toolUse(var exec) = event.content, exec.id == toolUseId {
+                        let needsStatusUpdate = exec.approvalStatus == .none
+                        let needsRequestIdUpdate = exec.approvalStatus == .awaitingPermission && exec.approvalRequestId == nil
+                        if needsStatusUpdate || needsRequestIdUpdate {
+                            if needsStatusUpdate { exec.approvalStatus = .awaitingPermission }
+                            exec.approvalRequestId = approval.requestId
+                            turn.replaceEvent(at: i, with: TurnEvent(
+                                id: event.id, eventType: event.eventType,
+                                timestamp: event.timestamp,
+                                content: .toolUse(execution: exec),
+                                isFinal: event.isFinal
+                            ))
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // MARK: - Event Building
@@ -343,13 +476,13 @@ class TurnBuilder: ObservableObject {
             if case .toolUse(var execution) = turn.events[index].content {
                 execution.result = result
                 let original = turn.events[index]
-                turn.events[index] = TurnEvent(
+                turn.replaceEvent(at: index, with: TurnEvent(
                     id: original.id,
                     eventType: original.eventType,
                     timestamp: original.timestamp,
                     content: .toolUse(execution: execution),
                     isFinal: original.isFinal
-                )
+                ))
             }
             return
         }
@@ -363,7 +496,7 @@ class TurnBuilder: ObservableObject {
             content: .toolResult(result: result, toolName: toolName),
             isFinal: false
         )
-        turn.events.append(event)
+        turn.appendEvent(event)
     }
 
     private func extractToolUseId(from message: Message) -> String? {
@@ -401,7 +534,7 @@ class TurnBuilder: ObservableObject {
         guard let sub = sub else { return }
 
         let events = buildEvents(from: message)
-        sub.events.append(contentsOf: events)
+        sub.appendEvents(events)
         // 更新摘要（取最后一条 text 事件）
         if let lastText = events.last(where: { $0.eventType == .text }),
            case .text(let text, _) = lastText.content {

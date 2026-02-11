@@ -48,6 +48,16 @@ struct CompactToolRow: View {
             }
             .buttonStyle(.plain)
 
+            // 审批按钮直接展示（不需要展开详情）
+            if execution.approvalStatus == .awaitingPermission, let handler = onApprovalAction {
+                ApprovalButtonsView(
+                    status: .awaitingPermission,
+                    onApprove: { action in handler(execution.id, action) }
+                )
+                .padding(.horizontal, 8)
+                .padding(.bottom, 6)
+            }
+
             // 展开：完整 ToolView
             if isExpanded {
                 ToolExecutionBubble(
@@ -69,7 +79,9 @@ struct CompactToolRow: View {
 
     @ViewBuilder
     private var statusIndicator: some View {
-        if execution.approvalStatus == .timeout && execution.result == nil {
+        if execution.approvalStatus == .awaitingPermission {
+            ApprovalStatusBadge(status: .awaitingPermission)
+        } else if execution.approvalStatus == .timeout && execution.result == nil {
             // 中断的工具调用（无 tool_result）
             Image(systemName: "exclamationmark.triangle.fill")
                 .font(.system(size: 11))

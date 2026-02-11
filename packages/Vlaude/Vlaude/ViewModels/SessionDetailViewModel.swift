@@ -42,6 +42,8 @@ class SessionDetailViewModel: ObservableObject {
 
     // 权限审批状态管理 (toolUseId -> PendingApproval)
     @Published var pendingApprovals: [String: PendingApproval] = [:]
+    // 未匹配的审批请求（tool_use_id 为空，等待 tool_use 消息到达后匹配）
+    private var unmatchedApprovals: [PendingApproval] = []
 
     private let client = VlaudeClient.shared
     private let wsClient = VlaudeWebSocketClient.shared
@@ -70,12 +72,20 @@ class SessionDetailViewModel: ObservableObject {
     // 当前项目路径（从 SessionListView 传入）
     private var currentProjectPath: String = ""
 
+    // 消息批处理
+    private var messageBuffer: [Message] = []
+    private var batchFlushTask: Task<Void, Never>?
+    private let batchInterval: UInt64 = 100_000_000 // 100ms in nanoseconds
+
     init() {
-        // C1: turnBuilder 是嵌套 ObservableObject，其内部 @Published 变化不会
-        // 自动触发本 ViewModel 的 objectWillChange。手动转发确保 View 刷新。
-        turnBuilderCancellable = turnBuilder.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
+        // C1: 只在 turns 数量变化时转发 objectWillChange
+        // Turn 内部 events 增长不再触发 ViewModel 全量刷新
+        // SessionTimelineView 通过 @ObservedObject turnBuilder 直接观察
+        turnBuilderCancellable = turnBuilder.$turnsCount
+            .removeDuplicates()
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+            }
     }
 
     func loadSessionDetail(sessionId: String, projectPath: String) async {
@@ -128,33 +138,10 @@ class SessionDetailViewModel: ObservableObject {
             }
 
             Task { @MainActor in
+                let df = DateFormatter(); df.dateFormat = "HH:mm:ss.SSS"
+                print("[DIAG] recv ts=\(df.string(from: Date())) sid=\(sessionId.prefix(8)) uuid=\(newMessage.id.prefix(8)) role=\(newMessage.type)")
 
-                // 收到 assistant 响应，隐藏 loading
-                if newMessage.type == "assistant" {
-                    self.isWaitingForResponse = false
-                }
-
-                // clientMessageId 去重逻辑
-                if let clientMsgId = newMessage.clientMessageId,
-                   let pendingIndex = self.pendingMessages[clientMsgId] {
-                    // 找到匹配的乐观更新消息，用真实消息替换
-                    self.rawMessages[pendingIndex] = newMessage
-                    self.pendingMessages.removeValue(forKey: clientMsgId)
-                    self.displayMessages = self.messageTransformer.transform(messages: self.rawMessages)
-                    self.applyPendingApprovals()  // 应用 pending approvals
-                    return
-                }
-
-                // 常规 uuid 去重
-                if !self.rawMessages.contains(where: { $0.id == newMessage.id }) {
-                    self.rawMessages.append(newMessage)
-                    // 重新转换所有消息
-                    self.displayMessages = self.messageTransformer.transform(messages: self.rawMessages)
-                    self.applyPendingApprovals()  // 应用 pending approvals
-                    // V2: 同步推送到 TurnBuilder
-                    self.turnBuilder.processMessage(newMessage)
-                } else {
-                }
+                self.bufferMessage(newMessage)
             }
         }
 
@@ -254,14 +241,12 @@ class SessionDetailViewModel: ObservableObject {
             let rawToolUseId = userInfo["toolUseID"] as? String ?? ""
             var effectiveToolUseId = rawToolUseId.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            // 如果 toolUseId 为空，尝试从 displayMessages 中查找匹配的 ToolExecution
+            // 如果 toolUseId 为空，尝试从 TurnBuilder/displayMessages 中查找匹配的 ToolExecution
             if effectiveToolUseId.isEmpty {
                 if let matchedId = self.findPendingToolUseId(toolName: toolName) {
                     effectiveToolUseId = matchedId
-                } else {
                 }
             }
-
 
             // 存储 pending approval
             let approval = PendingApproval(
@@ -273,10 +258,12 @@ class SessionDetailViewModel: ObservableObject {
                 description: description,
                 timestamp: Date()
             )
-            self.pendingApprovals[effectiveToolUseId] = approval
 
-            // 更新对应 ToolExecution 的状态
-            if !effectiveToolUseId.isEmpty {
+            if effectiveToolUseId.isEmpty {
+                // tool_use 消息尚未到达，存入未匹配队列，等 processMessages 后延迟匹配
+                self.unmatchedApprovals.append(approval)
+            } else {
+                self.pendingApprovals[effectiveToolUseId] = approval
                 self.updateToolExecutionStatus(toolUseId: effectiveToolUseId, status: .awaitingPermission, requestId: requestId)
             }
         }
@@ -299,6 +286,8 @@ class SessionDetailViewModel: ObservableObject {
                 self.updateToolExecutionStatus(toolUseId: toolUseId, status: .timeout, requestId: nil)
                 self.pendingApprovals.removeValue(forKey: toolUseId)
             }
+            // 同时清理 unmatchedApprovals 中的对应条目
+            self.unmatchedApprovals.removeAll { $0.requestId == requestId }
         }
 
         // 监听审批过期（延迟响应）
@@ -319,6 +308,8 @@ class SessionDetailViewModel: ObservableObject {
                 self.updateToolExecutionStatus(toolUseId: toolUseId, status: .timeout, requestId: nil)
                 self.pendingApprovals.removeValue(forKey: toolUseId)
             }
+            // 同时清理 unmatchedApprovals 中的对应条目
+            self.unmatchedApprovals.removeAll { $0.requestId == requestId }
         }
 
         // 监听 approval-ack（ETerm 确认收到审批响应）
@@ -370,7 +361,13 @@ class SessionDetailViewModel: ObservableObject {
 
     /// 更新 ToolExecution 的审批状态
     private func updateToolExecutionStatus(toolUseId: String, status: ToolApprovalStatus, requestId: String?) {
-        // 遍历所有 displayMessages，找到对应的 ToolExecution 并更新状态
+        // Timeline 模式：通过 TurnBuilder 更新
+        if !turnBuilder.turns.isEmpty {
+            turnBuilder.updateToolApproval(toolUseId: toolUseId, status: status, requestId: requestId)
+            return
+        }
+
+        // Legacy 模式：原有逻辑
         for i in 0..<displayMessages.count {
             for j in 0..<displayMessages[i].toolExecutions.count {
                 if displayMessages[i].toolExecutions[j].id == toolUseId {
@@ -404,7 +401,12 @@ class SessionDetailViewModel: ObservableObject {
     /// - Parameter toolName: 工具名称
     /// - Returns: 匹配的 toolUseId，如果没找到返回 nil
     private func findPendingToolUseId(toolName: String) -> String? {
+        // Timeline 模式：通过 TurnBuilder 查找
+        if !turnBuilder.turns.isEmpty {
+            return turnBuilder.findPendingToolUseId(toolName: toolName)
+        }
 
+        // Legacy 模式：原有逻辑
         // 倒序查找最近的消息
         for (msgIndex, message) in displayMessages.reversed().enumerated() {
             if !message.toolExecutions.isEmpty {
@@ -425,6 +427,13 @@ class SessionDetailViewModel: ObservableObject {
     private func applyPendingApprovals() {
         guard !pendingApprovals.isEmpty else { return }
 
+        // Timeline 模式：委托给 TurnBuilder
+        if !turnBuilder.turns.isEmpty {
+            turnBuilder.applyPendingApprovals(pendingApprovals)
+            return
+        }
+
+        // Legacy 模式：原有逻辑
         var hasUpdates = false
 
         for (toolUseId, approval) in pendingApprovals {
@@ -470,6 +479,40 @@ class SessionDetailViewModel: ObservableObject {
         }
     }
 
+    /// 延迟匹配：审批请求先于 tool_use 消息到达时，等 processMessages 后重试匹配
+    /// 典型场景：Claude Code PermissionRequest hook 不提供 tool_use_id，且直接 socket 路径比 DB 采集快
+    private func matchDeferredApprovals() {
+        guard !unmatchedApprovals.isEmpty else { return }
+
+        var matched: [Int] = []
+        for (index, approval) in unmatchedApprovals.enumerated() {
+            // 按工具名查找最近一个未审批的 tool_use 事件
+            if let toolUseId = findPendingToolUseId(toolName: approval.toolName) {
+                let updatedApproval = PendingApproval(
+                    requestId: approval.requestId,
+                    sessionId: approval.sessionId,
+                    toolUseId: toolUseId,
+                    toolName: approval.toolName,
+                    input: approval.input,
+                    description: approval.description,
+                    timestamp: approval.timestamp
+                )
+                pendingApprovals[toolUseId] = updatedApproval
+                updateToolExecutionStatus(toolUseId: toolUseId, status: .awaitingPermission, requestId: approval.requestId)
+                matched.append(index)
+            }
+        }
+
+        // 移除已匹配的条目（倒序删除保持索引正确）
+        for index in matched.reversed() {
+            unmatchedApprovals.remove(at: index)
+        }
+
+        // 清理过期的未匹配审批（超过 60 秒）
+        let cutoff = Date().addingTimeInterval(-60)
+        unmatchedApprovals.removeAll { $0.timestamp < cutoff }
+    }
+
     /// 发送审批响应
     func sendApprovalResponse(toolUseId: String, action: String) {
         guard let approval = pendingApprovals[toolUseId] else {
@@ -503,7 +546,19 @@ class SessionDetailViewModel: ObservableObject {
             return .awaitingPermission
         }
 
-        // 再从 displayMessages 中查找
+        // Timeline 模式：从 TurnBuilder 查找
+        if !turnBuilder.turns.isEmpty {
+            for turn in turnBuilder.turns {
+                for event in turn.events {
+                    if case .toolUse(let exec) = event.content, exec.id == toolUseId {
+                        return exec.approvalStatus
+                    }
+                }
+            }
+            return .none
+        }
+
+        // Legacy 模式：从 displayMessages 查找
         for message in displayMessages {
             for execution in message.toolExecutions {
                 if execution.id == toolUseId {
@@ -520,6 +575,7 @@ class SessionDetailViewModel: ObservableObject {
     func sendMessage(_ text: String) {
         print("📤 [ViewModel.sendMessage] 被调用, text=\(text.prefix(20))...")
         print("📤 [ViewModel.sendMessage] currentSessionId=\(currentSessionId ?? "nil")")
+        print("📤 [ViewModel.sendMessage] wsClient.isConnected=\(wsClient.isConnected)")
 
         guard let sessionId = currentSessionId else {
             print("❌ [ViewModel.sendMessage] currentSessionId 为 nil，提前返回")
@@ -594,19 +650,87 @@ class SessionDetailViewModel: ObservableObject {
         pendingMessages[clientMessageId] = messageIndex
 
         rawMessages.append(userMessage)
-        // 重新转换所有消息
-        displayMessages = messageTransformer.transform(messages: rawMessages)
+        // 跳过 transform — Timeline 模式不依赖 displayMessages 渲染
+        // displayMessages 在下一次 message:new 或 loadMessages 时自然更新
         // C2: 同步到 TurnBuilder（开启新 Turn，确保 Timeline 立即显示用户消息）
         turnBuilder.processMessage(userMessage)
 
         // 发送消息前先加入会话（触发 CLI 进入 remote 模式）
         wsClient.joinSession(sessionId, projectPath: projectPath)
 
-        // 显示等待响应状态
-        isWaitingForResponse = true
-
         // 发送消息到 Server，携带 clientMessageId
         wsClient.sendMessage(text, sessionId: sessionId, clientMessageId: clientMessageId)
+    }
+
+    // MARK: - 消息批处理
+
+    /// 缓冲消息，100ms 窗口内合并为一次处理（节流模式）
+    private func bufferMessage(_ message: Message) {
+        messageBuffer.append(message)
+
+        // 节流：首条消息启动 100ms 窗口，后续消息只入队不重置定时
+        // 避免持续流式输出时定时器永远被重置导致 UI 冻结
+        guard batchFlushTask == nil else { return }
+        batchFlushTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: batchInterval)
+            guard !Task.isCancelled else { return }
+            self.flushMessageBuffer()
+        }
+    }
+
+    /// 刷新消息缓冲区，一次性处理所有缓冲消息
+    private func flushMessageBuffer() {
+        guard !messageBuffer.isEmpty else { return }
+        let batch = messageBuffer
+        messageBuffer.removeAll()
+        batchFlushTask = nil
+        processBatch(batch)
+    }
+
+    /// 批量处理消息（核心：去重 + 条件 transform + 批量 TurnBuilder）
+    private func processBatch(_ messages: [Message]) {
+        var newMessages: [Message] = []
+
+        for msg in messages {
+            // clientMessageId 去重（乐观更新替换）
+            if let clientMsgId = msg.clientMessageId,
+               let pendingIndex = pendingMessages[clientMsgId] {
+                rawMessages[pendingIndex] = msg
+                pendingMessages.removeValue(forKey: clientMsgId)
+                continue
+            }
+
+            // uuid 去重
+            guard !rawMessages.contains(where: { $0.id == msg.id }) else { continue }
+
+            rawMessages.append(msg)
+            newMessages.append(msg)
+        }
+
+        // Timeline 模式：跳过 MessageTransformer（TurnBuilder 是渲染数据源）
+        if !turnBuilder.turns.isEmpty {
+            // 仅在有待审批时通过 TurnBuilder 应用
+            if !pendingApprovals.isEmpty {
+                turnBuilder.applyPendingApprovals(pendingApprovals)
+            }
+        } else {
+            // Legacy 模式：保留原有 transform 逻辑
+            displayMessages = messageTransformer.transform(messages: rawMessages)
+            applyPendingApprovals()
+        }
+
+        // 批量更新 TurnBuilder（单次 objectWillChange）
+        if !newMessages.isEmpty {
+            turnBuilder.processMessages(newMessages)
+        }
+
+        // 延迟匹配：tool_use 消息到达后，匹配之前无法关联的审批请求
+        matchDeferredApprovals()
+
+        // 收到 assistant 响应，隐藏 loading
+        if messages.contains(where: { $0.type == "assistant" }) {
+            isWaitingForResponse = false
+        }
     }
 
     func unsubscribeFromCurrentSession() {
@@ -628,6 +752,10 @@ class SessionDetailViewModel: ObservableObject {
         // S4: 切换 session 时清空 TurnBuilder 和 pendingMessages，避免残留旧数据
         pendingMessages.removeAll()
         turnBuilder.clear()
+        // 清理消息批处理缓冲
+        batchFlushTask?.cancel()
+        batchFlushTask = nil
+        messageBuffer.removeAll()
         currentSessionId = nil
     }
 
@@ -657,6 +785,10 @@ class SessionDetailViewModel: ObservableObject {
         if let observer = approvalAckObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+
+        // 清理批处理任务
+        // 注意：Task.cancel() 是线程安全的，可以在 nonisolated deinit 中调用
+        batchFlushTask?.cancel()
     }
 
     func loadMessages(sessionId: String, reset: Bool = false) async {

@@ -16,14 +16,69 @@ import Combine
 class Turn: ObservableObject, Identifiable {
     let id: String                             // 用户消息 UUID
     let userMessage: DisplayMessage
-    @Published var events: [TurnEvent] = []
-    @Published var status: TurnStatus = .active
-    @Published var subagentTurns: [SubagentTurn] = []
+    // 全部去掉 @Published，用 didSet + isBatching 手动控制 objectWillChange
+    var status: TurnStatus = .active {
+        didSet { if !isBatching { objectWillChange.send() } }
+    }
+    var subagentTurns: [SubagentTurn] = [] {
+        didSet { if !isBatching { objectWillChange.send() } }
+    }
+    var isExpanded: Bool = false {              // 用户交互触发，始终通知
+        didSet { objectWillChange.send() }
+    }
     var hasCompactionBefore: Bool = false       // 此 Turn 前有上下文压缩
+
+    // events + eventVersion 都不用 @Published，手动控制 objectWillChange
+    private(set) var events: [TurnEvent] = []
+    private(set) var eventVersion: Int = 0
+
+    // 批处理抑制：TurnBuilder 批量处理时设为 true，结束后统一通知
+    var isBatching = false
+
+    // 缓存：按 eventVersion 失效
+    private var cachedSegments: [CollapsedSegment]?
+    private var cachedStatistics: TurnStatistics?
+    private var cacheVersion: Int = -1
 
     init(id: String, userMessage: DisplayMessage) {
         self.id = id
         self.userMessage = userMessage
+    }
+
+    /// 批量追加事件
+    func appendEvents(_ newEvents: [TurnEvent]) {
+        events.append(contentsOf: newEvents)
+        invalidateCache()
+        eventVersion += 1
+        if !isBatching { objectWillChange.send() }
+    }
+
+    /// 追加单个事件
+    func appendEvent(_ event: TurnEvent) {
+        events.append(event)
+        invalidateCache()
+        eventVersion += 1
+        if !isBatching { objectWillChange.send() }
+    }
+
+    /// 替换指定位置的事件（用于 tool result 合并、approval 更新等）
+    func replaceEvent(at index: Int, with event: TurnEvent) {
+        guard index >= 0 && index < events.count else { return }
+        events[index] = event
+        invalidateCache()
+        eventVersion += 1
+        if !isBatching { objectWillChange.send() }
+    }
+
+    /// 结束批处理，发送一次 objectWillChange
+    func endBatch() {
+        isBatching = false
+        objectWillChange.send()
+    }
+
+    private func invalidateCache() {
+        cachedSegments = nil
+        cachedStatistics = nil
     }
 }
 
@@ -70,39 +125,76 @@ enum TurnEventContent {
 class SubagentTurn: ObservableObject, Identifiable {
     let id: String              // agentId
     let agentModel: String?     // sonnet/haiku
-    @Published var events: [TurnEvent] = []
-    @Published var isExpanded: Bool = false  // 默认折叠
+    var isExpanded: Bool = false {             // 用户交互触发，始终通知
+        didSet { objectWillChange.send() }
+    }
     var summary: String?        // 子代理最终回复摘要
+
+    // events + eventVersion 不用 @Published，手动控制 objectWillChange
+    private(set) var events: [TurnEvent] = []
+    private(set) var eventVersion: Int = 0
+    var isBatching = false
 
     init(id: String, agentModel: String? = nil) {
         self.id = id
         self.agentModel = agentModel
     }
+
+    /// 追加事件
+    func appendEvent(_ event: TurnEvent) {
+        events.append(event)
+        eventVersion += 1
+        if !isBatching { objectWillChange.send() }
+    }
+
+    func appendEvents(_ newEvents: [TurnEvent]) {
+        events.append(contentsOf: newEvents)
+        eventVersion += 1
+        if !isBatching { objectWillChange.send() }
+    }
+
+    /// 替换指定位置的事件
+    func replaceEvent(at index: Int, with event: TurnEvent) {
+        guard index >= 0 && index < events.count else { return }
+        events[index] = event
+        eventVersion += 1
+        if !isBatching { objectWillChange.send() }
+    }
+
+    func endBatch() {
+        isBatching = false
+        objectWillChange.send()
+    }
+}
+
+// MARK: - CollapsedSegment
+
+/// 折叠态段落：text 事件和内联指示器交替排列
+enum CollapsedSegment: Identifiable {
+    case text(event: TurnEvent)
+    case indicator(id: String, toolCount: Int, thinkingCount: Int)
+
+    var id: String {
+        switch self {
+        case .text(let event): return "seg-\(event.id)"
+        case .indicator(let id, _, _): return id
+        }
+    }
+}
+
+// MARK: - TurnStatistics
+
+/// Turn 统计信息
+struct TurnStatistics {
+    let toolCountsByType: [String: Int]
+    let totalToolCount: Int
+    let thinkingCount: Int
+    let duration: TimeInterval?
 }
 
 // MARK: - Turn Computed Properties
 
 extension Turn {
-    /// 活动事件（thinking + 工具 + 中间文本），不含 final text 和 toolResult
-    var activityEvents: [TurnEvent] {
-        events.filter { event in
-            if event.isFinal && event.eventType == .text { return false }
-            if event.eventType == .toolResult { return false }
-            return true
-        }
-    }
-
-    /// 最终 AI 回复（isFinal 的 text 事件，或 turn 完成后的最后一条 text）
-    var finalResponse: TurnEvent? {
-        if let final = events.last(where: { $0.eventType == .text && $0.isFinal }) {
-            return final
-        }
-        if status == .completed {
-            return events.last(where: { $0.eventType == .text })
-        }
-        return nil
-    }
-
     /// 提取所有 ToolExecution
     var toolExecutions: [ToolExecution] {
         events.compactMap { event in
@@ -111,97 +203,100 @@ extension Turn {
         }
     }
 
-    /// 摘要条图标：基于主要操作类型
-    var summaryIcon: String {
-        let tools = toolExecutions
-        guard !tools.isEmpty else { return "checkmark.circle" }
-
-        // 按出现次数找主要操作
-        var counts: [String: Int] = [:]
-        for tool in tools { counts[tool.name, default: 0] += 1 }
-        let dominant = counts.max(by: { $0.value < $1.value })?.key ?? ""
-
-        switch dominant {
-        case "Edit", "Write": return "pencil"
-        case "Read": return "doc.text"
-        case "Bash": return "terminal"
-        case "Grep", "Glob": return "magnifyingglass"
-        case "WebSearch", "WebFetch": return "globe"
-        case "Task": return "list.bullet"
-        default: return "bolt.fill"
+    /// 折叠态段落（带缓存，按 eventVersion 失效）
+    var collapsedSegments: [CollapsedSegment] {
+        if let cached = cachedSegments, cacheVersion == eventVersion {
+            return cached
         }
+        let result = computeCollapsedSegments()
+        cachedSegments = result
+        cacheVersion = eventVersion
+        return result
     }
 
-    /// 摘要条图标颜色
-    var summaryIconColor: String {
-        let tools = toolExecutions
-        var counts: [String: Int] = [:]
-        for tool in tools { counts[tool.name, default: 0] += 1 }
-        let dominant = counts.max(by: { $0.value < $1.value })?.key ?? ""
+    private func computeCollapsedSegments() -> [CollapsedSegment] {
+        var segments: [CollapsedSegment] = []
+        var pendingToolCount = 0
+        var pendingThinkingCount = 0
+        var gapIndex = 0
 
-        switch dominant {
-        case "Edit", "Write": return "blue"
-        case "Bash": return "purple"
-        case "Grep", "Glob": return "orange"
-        case "WebSearch", "WebFetch": return "cyan"
-        case "Task": return "indigo"
-        default: return "orange"
+        func flushGap() {
+            if pendingToolCount > 0 || pendingThinkingCount > 0 {
+                segments.append(.indicator(
+                    id: "gap-\(id)-\(gapIndex)",
+                    toolCount: pendingToolCount,
+                    thinkingCount: pendingThinkingCount
+                ))
+                gapIndex += 1
+                pendingToolCount = 0
+                pendingThinkingCount = 0
+            }
         }
+
+        for event in events {
+            switch event.eventType {
+            case .text:
+                flushGap()
+                segments.append(.text(event: event))
+            case .toolUse:
+                pendingToolCount += 1
+            case .thinking:
+                pendingThinkingCount += 1
+            case .toolResult:
+                break // 已合并到 toolUse，不计数
+            }
+        }
+        flushGap() // 末尾残余
+
+        return segments
     }
 
-    /// 语义化执行摘要（结构化：动词 + 文件名列表 + 状态）
-    struct ExecutionSummaryInfo {
-        let verb: String           // "Edited" / "Searched" / ...
-        let fileNames: [String]    // 胶囊显示的文件名
-        let extraCount: Int        // "+N files"
-        let hasError: Bool
-        let fallbackText: String?  // 无文件时的纯文本摘要
+    /// Turn 统计信息（带缓存）
+    var statistics: TurnStatistics {
+        if let cached = cachedStatistics, cacheVersion == eventVersion {
+            return cached
+        }
+        let result = computeStatistics()
+        cachedStatistics = result
+        // Note: cacheVersion is updated by collapsedSegments,
+        // but if statistics is called first, we need to ensure it's set
+        if cacheVersion != eventVersion {
+            cacheVersion = eventVersion
+        }
+        return result
     }
 
-    var executionSummaryInfo: ExecutionSummaryInfo {
-        let tools = toolExecutions
-        guard !tools.isEmpty else {
-            return ExecutionSummaryInfo(verb: "", fileNames: [], extraCount: 0, hasError: false, fallbackText: "已完成")
+    private func computeStatistics() -> TurnStatistics {
+        var toolCounts: [String: Int] = [:]
+        var thinkingCount = 0
+
+        for event in events {
+            switch event.eventType {
+            case .toolUse:
+                if case .toolUse(let exec) = event.content {
+                    toolCounts[exec.name, default: 0] += 1
+                }
+            case .thinking:
+                thinkingCount += 1
+            default:
+                break
+            }
         }
 
-        let hasError = tools.contains { $0.result?.isError == true }
+        let totalTools = toolCounts.values.reduce(0, +)
 
-        let editedFiles = tools.compactMap { tool -> String? in
-            guard tool.name == "Edit" || tool.name == "Write" else { return nil }
-            guard let path = tool.input["file_path"] else { return nil }
-            return (path as NSString).lastPathComponent
+        // 耗时：首条事件到末条事件
+        var duration: TimeInterval? = nil
+        if let first = events.first, let last = events.last, events.count > 1 {
+            let diff = last.timestamp.timeIntervalSince(first.timestamp)
+            if diff > 0 { duration = diff }
         }
 
-        if !editedFiles.isEmpty {
-            let display = Array(editedFiles.prefix(2))
-            let extra = editedFiles.count > 2 ? editedFiles.count - 2 : 0
-            return ExecutionSummaryInfo(verb: "Edited", fileNames: display, extraCount: extra, hasError: hasError, fallbackText: nil)
-        }
-
-        let readFiles = tools.compactMap { tool -> String? in
-            guard tool.name == "Read" else { return nil }
-            guard let path = tool.input["file_path"] else { return nil }
-            return (path as NSString).lastPathComponent
-        }
-        if !readFiles.isEmpty {
-            let display = Array(readFiles.prefix(2))
-            let extra = readFiles.count > 2 ? readFiles.count - 2 : 0
-            return ExecutionSummaryInfo(verb: "Read", fileNames: display, extraCount: extra, hasError: hasError, fallbackText: nil)
-        }
-
-        var counts: [String: Int] = [:]
-        for tool in tools { counts[tool.name, default: 0] += 1 }
-        let parts = counts.map { "\($0.key) ×\($0.value)" }.joined(separator: "  ")
-        return ExecutionSummaryInfo(verb: "", fileNames: [], extraCount: 0, hasError: hasError, fallbackText: "\(tools.count) tools — \(parts)")
-    }
-
-    /// 纯文本版摘要（保留兼容）
-    var executionSummary: String {
-        let info = executionSummaryInfo
-        if let fallback = info.fallbackText { return fallback }
-        let files = info.fileNames.joined(separator: ", ")
-        let extra = info.extraCount > 0 ? " +\(info.extraCount) files" : ""
-        let icon = info.hasError ? "⚠️" : "✓"
-        return "\(info.verb) \(files)\(extra) \(icon)"
+        return TurnStatistics(
+            toolCountsByType: toolCounts,
+            totalToolCount: totalTools,
+            thinkingCount: thinkingCount,
+            duration: duration
+        )
     }
 }
