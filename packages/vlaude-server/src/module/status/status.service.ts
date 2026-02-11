@@ -144,14 +144,7 @@ export class StatusService implements OnModuleInit, OnModuleDestroy {
    * 检查指定 session 是否在 ETerm 中可用
    */
   async isSessionInEterm(sessionId: string): Promise<boolean> {
-    // 调试：打印所有已注册的 sessions
-    const snapshot = await this.statusManager.getSnapshot();
-    const allSessionIds = Object.values(snapshot.sessions).flat().map(s => s.sessionId);
-    this.logger.log(`🔍 [调试] 查询 sessionId: "${sessionId}" (长度: ${sessionId.length})`);
-    this.logger.log(`🔍 [调试] 已注册的 sessions: ${JSON.stringify(allSessionIds)}`);
-
     const info = await this.statusManager.getSessionInfo(sessionId);
-    this.logger.log(`🔍 [调试] getSessionInfo 结果: ${JSON.stringify(info)}`);
     return info?.deviceId === 'eterm';
   }
 

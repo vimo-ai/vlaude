@@ -493,7 +493,7 @@ export class DaemonGateway
     @MessageBody() data: { sessionId: string; projectPath?: string; message: any },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`Received new message for session ${data.sessionId} from daemon ${client.id}`);
+    // AppGateway.notifyNewMessage 已有日志，此处不重复
 
     // sync 模式下写入 DB
     if (this.dataSyncService.isSyncMode() && data.projectPath) {
@@ -1060,10 +1060,7 @@ export class DaemonGateway
     },
     @ConnectedSocket() client: Socket,
   ) {
-    // 调试：打印注册的 sessionId 详细信息
-    this.logger.log(`📝 [Status] Session 开始: "${data.sessionId}" (device: ${data.deviceId})`);
-    this.logger.log(`🔍 [调试] 注册 sessionId 长度: ${data.sessionId.length}`);
-    this.logger.log(`🔍 [调试] 注册 sessionId hex: ${Buffer.from(data.sessionId).toString('hex')}`);
+    this.logger.log(`📝 [Status] Session 开始: ${data.sessionId.substring(0, 8)} (device: ${data.deviceId})`);
 
     const sessionInfo: StatusSessionInfo = {
       sessionId: data.sessionId,

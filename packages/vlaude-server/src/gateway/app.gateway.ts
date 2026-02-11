@@ -140,13 +140,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    * 初始化 WebSocket 中间件（JWT 认证）
    */
   afterInit(server: Server) {
-    // 调试：监听所有进来的事件
-    server.on('connection', (socket) => {
-      socket.onAny((event, ...args) => {
-        this.logger.log(`🔔 [DEBUG] 收到事件: ${event}, 参数数量: ${args.length}`);
-      });
-    });
-
     // 如果没有配置 JWT，跳过认证
     if (!this.jwtPublicKey) {
       this.logger.warn('⚠️ JWT 认证未启用');
@@ -363,10 +356,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   ) {
     const { sessionId, clientType, projectPath } = data;
 
-    this.logger.log(`📱 [Join] 客户端加入: ${client.id}`);
-    this.logger.log(`   Session: ${sessionId}`);
-    this.logger.log(`   Type: ${clientType}`);
-    this.logger.log(`   Project: ${projectPath}`);
+    this.logger.log(`📱 [Join] ${client.id} ${clientType} → ${sessionId.substring(0, 8)}`);
 
     // 记录客户端信息
     this.clients.set(client.id, {
@@ -409,9 +399,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       }
     }
 
-    this.logger.log(`📊 [Join] Session ${sessionId} 客户端统计:`);
-    this.logger.log(`   CLI: ${sessionClientInfo.cli || 'none'}`);
-    this.logger.log(`   Swift: ${sessionClientInfo.swift.size} 个`);
+    this.logger.log(`📊 [Join] Session ${sessionId.substring(0, 8)} clients: CLI=${sessionClientInfo.cli || 'none'}, Swift=${sessionClientInfo.swift.size}`);
 
     // V2: 通知 Daemon 有新会话被发现（可能是新项目）
     this.eventEmitter.emit('daemon.sessionDiscovered', {
@@ -432,8 +420,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   ) {
     const { uuid, projectPath } = data;
 
-    this.logger.log(`🔑 [UUID 报告] CLI ${client.id} 报告 UUID: ${uuid.substring(0, 8)}...`);
-    this.logger.log(`   项目路径: ${projectPath}`);
+    this.logger.log(`🔑 [UUID 报告] CLI ${client.id} UUID=${uuid.substring(0, 8)}`);
 
     // 初始化或获取匹配状态
     if (!this.uuidMatching.has(projectPath)) {
@@ -463,8 +450,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   ) {
     const { projectPath } = data;
 
-    this.logger.log(`👀 [监听新Session] CLI 请求监听: ${client.id}`);
-    this.logger.log(`   项目路径: ${projectPath}`);
+    this.logger.log(`👀 [监听新Session] CLI ${client.id} watching ${projectPath}`);
 
     // 初始化 UUID 匹配状态
     if (!this.uuidMatching.has(projectPath)) {
@@ -494,8 +480,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   ) {
     const { projectPath } = data;
 
-    this.logger.log(`🔍 [查找新Session] CLI 请求查找: ${client.id}`);
-    this.logger.log(`   项目路径: ${projectPath}`);
+    this.logger.log(`🔍 [查找新Session] CLI ${client.id} searching ${projectPath}`);
 
     // 通知 Daemon 查找新 session
     this.eventEmitter.emit('daemon.findNewSession', {
@@ -516,8 +501,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   ) {
     const { sessionId, projectPath } = data;
 
-    this.logger.log(`📱 [Swift订阅] 客户端 ${client.id} 订阅会话 ${sessionId}`);
-    this.logger.log(`   项目路径: ${projectPath}`);
+    this.logger.log(`📱 [Subscribe] ${client.id} → ${sessionId.substring(0, 8)}`);
 
     // 记录订阅关系
     if (!this.sessionSubscriptions.has(sessionId)) {
@@ -531,10 +515,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const subscription = this.sessionSubscriptions.get(sessionId);
     const wasEmpty = subscription.subscribers.size === 0;
     subscription.subscribers.add(client.id);
-
-    this.logger.log(
-      `📊 [订阅统计] 会话 ${sessionId} 当前订阅数: ${subscription.subscribers.size}`,
-    );
 
     // 如果是第一个订阅者，通知 Daemon 开始监听该会话文件
     if (wasEmpty) {
@@ -568,17 +548,11 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   ) {
     const { sessionId } = data;
 
-    this.logger.log(
-      `📱 [Swift取消订阅] 客户端 ${client.id} 取消订阅会话 ${sessionId}`,
-    );
+    this.logger.log(`📱 [Unsubscribe] ${client.id} → ${sessionId.substring(0, 8)}`);
 
     const subscription = this.sessionSubscriptions.get(sessionId);
     if (subscription) {
       subscription.subscribers.delete(client.id);
-
-      this.logger.log(
-        `📊 [订阅统计] 会话 ${sessionId} 剩余订阅数: ${subscription.subscribers.size}`,
-      );
 
       // 如果没有订阅者了，通知 Daemon 停止监听
       if (subscription.subscribers.size === 0) {
@@ -608,18 +582,9 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   ) {
     const { sessionId, text, clientMessageId } = data;
 
-    this.logger.log(`📤 [消息发送] 收到来自 ${client.id} 的消息`);
-    this.logger.log(`   Session: ${sessionId}`);
-    this.logger.log(`   Text length: ${text.length}`);
-    this.logger.log(`   ClientMessageId: ${clientMessageId || 'N/A'}`);
-
-    // 优先检查 ETerm 路径（只需要 sessionId + text + clientMessageId）
-    // 调试日志：打印 sessionId 的详细信息
-    this.logger.log(`🔍 [调试] sessionId 长度: ${sessionId.length}, 原始值: "${sessionId}"`);
-    this.logger.log(`🔍 [调试] sessionId hex: ${Buffer.from(sessionId).toString('hex')}`);
+    this.logger.log(`📤 [Send] ${client.id} → ${sessionId.substring(0, 8)} (${text.length} chars)`);
 
     const inEterm = await this.daemonGateway.isSessionInEterm(sessionId);
-    this.logger.log(`🔍 [调试] isSessionInEterm 结果: ${inEterm}`);
 
     if (inEterm) {
       this.logger.log(`🖥️ [ETerm 注入] Session ${sessionId} 在 ETerm 中，使用注入方式`);
@@ -666,25 +631,20 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   notifyNewMessage(sessionId: string, message: any) {
     const subscription = this.sessionSubscriptions.get(sessionId);
 
-    // 调试日志：显示当前所有订阅
-    this.logger.log(`🔍 [调试] notifyNewMessage 被调用: sessionId=${sessionId}`);
-    this.logger.log(`🔍 [调试] 当前 sessionSubscriptions 大小: ${this.sessionSubscriptions.size}`);
-    this.logger.log(`🔍 [调试] 当前所有订阅的 session: ${Array.from(this.sessionSubscriptions.keys()).join(', ')}`);
-
     if (subscription && subscription.subscribers.size > 0) {
-      this.logger.log(`🔍 [调试] 找到订阅: ${subscription.subscribers.size} 个客户端`);
       subscription.subscribers.forEach((clientId) => {
-        this.logger.log(`🔍 [调试] 推送到客户端: ${clientId}`);
         this.server.to(clientId).emit('message:new', {
           sessionId,
           message,
         });
       });
-      this.logger.log(
-        `📨 推送新消息到 ${subscription.subscribers.size} 个客户端: ${sessionId}`,
-      );
+      const uuid = (message?.uuid || '?').substring(0, 8);
+      const type = message?.type || '?';
+      const now = new Date();
+      const ts = now.toTimeString().substring(0, 8) + '.' + String(now.getMilliseconds()).padStart(3, '0');
+      this.logger.log(`[DIAG] relay ts=${ts} sid=${sessionId.substring(0, 8)} uuid=${uuid} role=${type} subscribers=${subscription.subscribers.size}`);
     } else {
-      this.logger.warn(`⚠️ [警告] 没有找到会话订阅或订阅者为空: ${sessionId}`);
+      this.logger.warn(`⚠️ No subscribers for session: ${sessionId.substring(0, 8)}`);
     }
   }
 
@@ -708,9 +668,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    * Daemon 调用：通知 CLI 新 session 已创建
    */
   notifyNewSessionFound(clientId: string, sessionId: string, projectPath: string) {
-    this.logger.log(`✅ [新Session查找] 通知 CLI: ${clientId}`);
-    this.logger.log(`   SessionId: ${sessionId}`);
-    this.logger.log(`   ProjectPath: ${projectPath}`);
+    this.logger.log(`✅ [新Session查找] CLI=${clientId} session=${sessionId.substring(0, 8)}`);
 
     this.server.to(clientId).emit('new-session-found', {
       sessionId,
@@ -725,8 +683,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   notifyWatchStarted(clientId: string, projectPath: string) {
-    this.logger.log(`👀 [监听器启动] 通知 CLI: ${clientId}`);
-    this.logger.log(`   ProjectPath: ${projectPath}`);
+    this.logger.log(`👀 [监听器启动] CLI=${clientId} project=${projectPath}`);
 
     this.server.to(clientId).emit('watch-started', {
       projectPath,
@@ -734,9 +691,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   }
 
   notifyNewSessionCreated(clientId: string, sessionId: string, projectPath: string) {
-    this.logger.log(`🆕 [新Session创建] 通知 CLI: ${clientId}`);
-    this.logger.log(`   SessionId: ${sessionId}`);
-    this.logger.log(`   ProjectPath: ${projectPath}`);
+    this.logger.log(`🆕 [新Session创建] CLI=${clientId} session=${sessionId.substring(0, 8)}`);
 
     this.server.to(clientId).emit('new-session-created', {
       sessionId,
@@ -796,7 +751,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.notifyNewSessionFound')
   handleNotifyNewSessionFoundEvent(data: { clientId: string; sessionId: string; projectPath: string; encodedDirName: string }) {
-    this.logger.log(`📥 [事件监听] 收到新Session查找成功事件: ${data.sessionId}`);
     this.notifyNewSessionFound(data.clientId, data.sessionId, data.projectPath);
   }
 
@@ -805,7 +759,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.notifyNewSessionNotFound')
   handleNotifyNewSessionNotFoundEvent(data: { clientId: string; projectPath: string }) {
-    this.logger.log(`📥 [事件监听] 收到未找到新Session事件`);
     this.notifyNewSessionNotFound(data.clientId);
   }
 
@@ -814,7 +767,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.notifyWatchStarted')
   handleNotifyWatchStartedEvent(data: { clientId: string; projectPath: string }) {
-    this.logger.log(`📥 [事件监听] 收到监听器启动事件`);
     this.notifyWatchStarted(data.clientId, data.projectPath);
   }
 
@@ -823,8 +775,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.notifyNewSessionCreated')
   handleNotifyNewSessionCreatedEvent(data: { clientId: string; sessionId: string; projectPath: string }) {
-    this.logger.log(`📥 [事件监听] 收到新Session创建事件: ${data.sessionId.substring(0, 8)}...`);
-    this.logger.log(`   项目路径: ${data.projectPath}`);
 
     // 获取或初始化匹配状态
     if (!this.uuidMatching.has(data.projectPath)) {
@@ -849,9 +799,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const clientInfo = this.clients.get(clientId);
 
     if (clientInfo) {
-      this.logger.log(`🧹 [清理] 客户端断开: ${clientId}`);
-      this.logger.log(`   Type: ${clientInfo.clientType}`);
-      this.logger.log(`   Session: ${clientInfo.sessionId || 'none'}`);
+      this.logger.log(`🧹 [清理] ${clientId} (${clientInfo.clientType}, session=${clientInfo.sessionId?.substring(0, 8) || 'none'})`);
 
       // 清理 session clients
       if (clientInfo.sessionId) {
@@ -861,12 +809,10 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
             // CLI 断开
             if (sessionClientInfo.cli === clientId) {
               sessionClientInfo.cli = null;
-              this.logger.log(`   CLI 客户端已移除`);
             }
           } else if (clientInfo.clientType === 'swift') {
             // Swift 断开
             sessionClientInfo.swift.delete(clientId);
-            this.logger.log(`   Swift 客户端已移除，剩余: ${sessionClientInfo.swift.size}`);
 
             // 如果没有 Swift 客户端了，通知 CLI 恢复 local 模式
             if (sessionClientInfo.swift.size === 0 && sessionClientInfo.cli) {
@@ -878,7 +824,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
           // 如果 session 没有任何客户端了，删除记录
           if (!sessionClientInfo.cli && sessionClientInfo.swift.size === 0) {
             this.sessionClients.delete(clientInfo.sessionId);
-            this.logger.log(`   Session ${clientInfo.sessionId} 所有客户端已断开`);
           }
         }
       }
@@ -893,7 +838,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
 
       // 如果没有订阅者了，通知 Daemon 停止监听
       if (subscription.subscribers.size === 0) {
-        this.logger.log(`🧹 [清理] 停止监听会话: ${sessionId}`);
         this.eventEmitter.emit('daemon.stopWatching', { sessionId, projectPath: subscription.projectPath });
         this.sessionSubscriptions.delete(sessionId);
       }
@@ -908,7 +852,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.notifyNewMessage')
   handleNotifyNewMessageEvent(data: { sessionId: string; message: any }) {
-    this.logger.log(`📥 [事件监听] 收到新消息事件: ${data.sessionId}`);
     this.notifyNewMessage(data.sessionId, data.message);
   }
 
@@ -925,7 +868,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.notifyProjectUpdate')
   handleNotifyProjectUpdateEvent(data: { projectPath: string; metadata?: any }) {
-    this.logger.log(`📥 [事件监听] 收到项目更新事件: ${data.projectPath}`);
     this.notifyProjectUpdate(data.projectPath, data.metadata);
   }
 
@@ -934,7 +876,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.notifySessionUpdate')
   handleNotifySessionUpdateEvent(data: { sessionId: string; metadata: any }) {
-    this.logger.log(`📥 [事件监听] 收到会话更新事件: ${data.sessionId}`);
     this.notifySessionUpdate(data.sessionId, data.metadata);
   }
 
@@ -943,7 +884,6 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.notifySessionListUpdate')
   handleNotifySessionListUpdateEvent(data: { projectPath: string }) {
-    this.logger.log(`📥 [事件监听] 收到会话列表更新事件: ${data.projectPath}`);
     this.notifySessionListUpdate(data.projectPath);
   }
 
@@ -976,8 +916,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.etermSessionAvailable')
   handleEtermSessionAvailableEvent(data: { sessionId: string; projectPath: string; timestamp: string }) {
-    this.logger.log(`🖥️ [ETerm Session] 可用: ${data.sessionId}`);
-    this.logger.log(`   ProjectPath: ${data.projectPath}`);
+    this.logger.log(`🖥️ [ETerm Session] 可用: ${data.sessionId.substring(0, 8)}`);
 
     // 广播给所有连接的客户端（包含 projectPath 供 iOS 更新计数）
     this.server.emit('eterm:sessionAvailable', {
@@ -992,10 +931,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.etermSessionUnavailable')
   handleEtermSessionUnavailableEvent(data: { sessionId: string; projectPath?: string; timestamp: string }) {
-    this.logger.log(`🖥️ [ETerm Session] 不可用: ${data.sessionId}`);
-    if (data.projectPath) {
-      this.logger.log(`   ProjectPath: ${data.projectPath}`);
-    }
+    this.logger.log(`🖥️ [ETerm Session] 不可用: ${data.sessionId.substring(0, 8)}`);
 
     // 广播给所有连接的客户端（包含 projectPath 供 iOS 更新计数）
     this.server.emit('eterm:sessionUnavailable', {
@@ -1010,10 +946,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @OnEvent('app.etermSessionCreated')
   handleEtermSessionCreatedEvent(data: { requestId: string; sessionId: string; projectPath: string; timestamp: string }) {
-    this.logger.log(`🖥️ [ETerm Session] 创建完成:`);
-    this.logger.log(`   RequestId: ${data.requestId}`);
-    this.logger.log(`   SessionId: ${data.sessionId}`);
-    this.logger.log(`   ProjectPath: ${data.projectPath}`);
+    this.logger.log(`🖥️ [ETerm Session] 创建完成: requestId=${data.requestId} session=${data.sessionId.substring(0, 8)}`);
 
     // 广播给所有连接的客户端（iOS 会根据 requestId 匹配）
     this.server.emit('eterm:sessionCreated', {
@@ -1042,10 +975,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     const sessions = await this.daemonGateway.getEtermSessions();
     const sessionCounts = await this.daemonGateway.getEtermSessionCounts();
 
-    this.logger.log(`📱 [ETerm 状态查询] 客户端 ${client.id} 查询 ETerm 状态`);
-    this.logger.log(`   Online: ${online}`);
-    this.logger.log(`   Sessions: ${sessions.length} 个`);
-    this.logger.log(`   SessionCounts: ${JSON.stringify(sessionCounts)}`);
+    this.logger.log(`📱 [ETerm 状态查询] ${client.id} online=${online} sessions=${sessions.length}`);
 
     // 直接返回对象，NestJS 会作为 ACK 响应发送
     // 客户端 emitWithAck 收到的是 [{ online, sessions, sessionCounts, timestamp }]
@@ -1070,9 +1000,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     // 找到匹配的 sessionId（同时在 uuids 和 sessionIds 中）
     for (const sessionId of sessionIds) {
       if (uuids.has(sessionId)) {
-        this.logger.log(`✅ [UUID 匹配成功] ${sessionId.substring(0, 8)}...`);
-        this.logger.log(`   项目路径: ${projectPath}`);
-        this.logger.log(`   CLI: ${clientId}`);
+        this.logger.log(`✅ [UUID 匹配成功] ${sessionId.substring(0, 8)} CLI=${clientId}`);
 
         // 通知 CLI sessionId 已确认
         this.server.to(clientId).emit(ServerEvents.SESSION_CONFIRMED, { sessionId });
@@ -1084,10 +1012,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     }
 
     // 没有匹配，记录当前状态
-    this.logger.log(`⏳ [UUID 匹配中] 等待匹配...`);
-    this.logger.log(`   项目路径: ${projectPath}`);
-    this.logger.log(`   UUID 数量: ${uuids.size}`);
-    this.logger.log(`   SessionId 数量: ${sessionIds.size}`);
+    this.logger.log(`⏳ [UUID 匹配中] UUIDs=${uuids.size} sessionIds=${sessionIds.size}`);
   }
 
   // =================== 权限请求相关 ===================
@@ -1106,11 +1031,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     toolUseID: string;
     description: string;
   }) {
-    this.logger.log(`🔐 [权限请求] 广播给所有 iOS 客户端`);
-    this.logger.log(`   RequestId: ${data.requestId}`);
-    this.logger.log(`   SessionId: ${data.sessionId}`);
-    this.logger.log(`   Tool: ${data.toolName}`);
-    this.logger.log(`   Description: ${data.description}`);
+    this.logger.log(`🔐 [Approval] ${data.toolName} → ${data.sessionId.substring(0, 8)}`);
 
     // 广播给所有连接的客户端（iOS 会根据 sessionId 匹配）
     this.server.emit('approval-request', {
@@ -1133,12 +1054,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     @MessageBody() data: { requestId: string; sessionId: string; action: string; toolUseId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`✅ [权限响应] 收到 iOS 响应`);
-    this.logger.log(`   RequestId: ${data.requestId}`);
-    this.logger.log(`   SessionId: ${data.sessionId}`);
-    this.logger.log(`   ToolUseId: ${data.toolUseId}`);
-    this.logger.log(`   Action: ${data.action}`);
-    this.logger.log(`   ClientId: ${client.id}`);
+    this.logger.log(`✅ [Approval] ${data.action} toolUseId=${data.toolUseId.substring(0, 8)} session=${data.sessionId.substring(0, 8)}`);
 
     // 通过事件转发给 DaemonGateway
     this.eventEmitter.emit('daemon.sendApprovalResponse', data);
@@ -1155,9 +1071,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     sessionId: string;
     clientId: string;
   }) {
-    this.logger.log(`⏰ [权限超时] 通知 iOS 客户端`);
-    this.logger.log(`   RequestId: ${data.requestId}`);
-    this.logger.log(`   ClientId: ${data.clientId}`);
+    this.logger.log(`⏰ [权限超时] requestId=${data.requestId} client=${data.clientId}`);
 
     // 通过 WebSocket 发送给 iOS 客户端
     this.server.to(data.clientId).emit('approval-timeout', {
@@ -1174,8 +1088,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     requestId: string;
     message: string;
   }) {
-    this.logger.log(`⚠️ [延迟响应] 通知相关客户端`);
-    this.logger.log(`   RequestId: ${data.requestId}`);
+    this.logger.log(`⚠️ [延迟响应] requestId=${data.requestId}`);
 
     // 广播给所有客户端（因为不知道是哪个客户端发送的延迟响应）
     this.server.emit('approval-expired', {
@@ -1195,10 +1108,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     success: boolean;
     message?: string;
   }) {
-    this.logger.log(`✅ [审批确认] 转发给 iOS 客户端`);
-    this.logger.log(`   ToolUseId: ${data.toolUseId}`);
-    this.logger.log(`   SessionId: ${data.sessionId}`);
-    this.logger.log(`   Success: ${data.success}`);
+    this.logger.log(`✅ [审批确认] toolUseId=${data.toolUseId.substring(0, 8)} session=${data.sessionId.substring(0, 8)} success=${data.success}`);
 
     // 广播给所有客户端（iOS 会根据 sessionId/toolUseId 匹配）
     this.server.emit('approval-ack', {
@@ -1218,10 +1128,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     clientId: string;
     error: { type: string; message: string };
   }) {
-    this.logger.log(`❌ [SDK 错误] 通知 iOS 客户端`);
-    this.logger.log(`   SessionId: ${data.sessionId}`);
-    this.logger.log(`   ClientId: ${data.clientId}`);
-    this.logger.log(`   Error: ${data.error.message}`);
+    this.logger.log(`❌ [SDK 错误] session=${data.sessionId.substring(0, 8)} client=${data.clientId} error=${data.error.message}`);
 
     // 通过 WebSocket 发送给 iOS 客户端
     this.server.to(data.clientId).emit('sdk-error', {
@@ -1237,27 +1144,14 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
   @OnEvent('app.checkRemoteMode')
   handleCheckRemoteModeEvent(data: { sessionId: string; projectPath: string }) {
     const { sessionId } = data;
-    this.logger.log(`🔍 [检查Remote模式] Session: ${sessionId}`);
-
-    // 检查这个 session 是否有 CLI 和 Swift 客户端
     const sessionClientInfo = this.sessionClients.get(sessionId);
-    if (!sessionClientInfo) {
-      this.logger.log(`   没有客户端信息，跳过`);
-      return;
-    }
+    if (!sessionClientInfo) return;
 
     const { cli, swift } = sessionClientInfo;
 
-    // 如果有 CLI 在线且有 Swift 客户端
     if (cli && swift.size > 0) {
-      this.logger.log(`   CLI 在线，Swift 客户端数: ${swift.size}`);
-      this.logger.log(`   重新发送 remote-connect 给 CLI`);
-
-      // 重新发送 remote-connect，让 CLI 进入 remote mode
+      this.logger.log(`🔍 [检查Remote模式] session=${sessionId.substring(0, 8)} CLI在线 Swift=${swift.size} → 发送remote-connect`);
       this.server.to(cli).emit('remote-connect', { sessionId });
-    } else {
-      this.logger.log(`   CLI: ${cli || 'none'}, Swift: ${swift.size}`);
-      this.logger.log(`   不需要触发 remote-connect`);
     }
   }
 
@@ -1320,11 +1214,8 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
    */
   @SubscribeMessage('app:queryDaemons')
   async handleQueryDaemons(@ConnectedSocket() client: Socket) {
-    this.logger.log(`📱 [Daemon 列表查询] 客户端 ${client.id} 查询 Daemon 列表`);
-
     const daemons = await this.registryService.getDaemons();
-
-    this.logger.log(`   找到 ${daemons.length} 个在线 Daemon`);
+    this.logger.log(`📱 [Daemon 查询] ${client.id} → ${daemons.length} 个在线`);
 
     // 返回 Daemon 列表
     return {
@@ -1356,9 +1247,7 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`📱 [页面订阅] ${client.id} 订阅 ${data.page}`);
-    if (data.projectPath) this.logger.log(`   projectPath: ${data.projectPath}`);
-    if (data.sessionId) this.logger.log(`   sessionId: ${data.sessionId}`);
+    this.logger.log(`📱 [页面订阅] ${client.id} → ${data.page}`);
 
     this.pageSubscriptions.set(client.id, data);
 
@@ -1373,14 +1262,9 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       };
     } else if (data.page === 'sessions' && data.projectPath) {
       const sessions = await this.statusService.getSessionsByDevice('eterm');
-      this.logger.log(`   📊 getSessionsByDevice('eterm') 返回 ${sessions.length} 个 session`);
-      if (sessions.length > 0) {
-        this.logger.log(`   📊 sessions: ${sessions.map(s => s.sessionId.substring(0, 8)).join(', ')}`);
-      }
       const onlineSessions = sessions
         .filter((s) => s.projectPath === data.projectPath)
         .map((s) => s.sessionId);
-      this.logger.log(`   📊 过滤后 onlineSessions: ${onlineSessions.length} 个`);
       return {
         success: true,
         onlineSessions,
