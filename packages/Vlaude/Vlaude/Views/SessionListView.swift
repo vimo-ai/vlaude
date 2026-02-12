@@ -281,6 +281,30 @@ struct SessionRow: View {
                         .help("已连接到 ETerm")
                 }
 
+                // Session Chain 标记
+                if session.sessionType == "subagent" {
+                    HStack(spacing: 2) {
+                        Image(systemName: "cpu")
+                            .font(.system(size: 9))
+                        Text("子代理")
+                            .font(.system(size: 9))
+                    }
+                    .foregroundColor(.indigo)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 1)
+                    .background(Color.indigo.opacity(0.1))
+                    .cornerRadius(3)
+                }
+                if let count = session.childrenCount, count > 0 {
+                    HStack(spacing: 2) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 9))
+                        Text("\(count)")
+                            .font(.system(size: 9))
+                    }
+                    .foregroundColor(.secondary)
+                }
+
                 Spacer(minLength: 8)
                 // 时间（优先用 lastModified，兼容 createdAt）
                 if let ts = session.lastModified {

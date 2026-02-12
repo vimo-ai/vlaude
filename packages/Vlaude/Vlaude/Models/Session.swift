@@ -38,6 +38,11 @@ struct Session: Identifiable, Codable, Hashable {
     var lastMessage: Message?
     var inEterm: Bool?
 
+    // V6: Session Chain 关系
+    let sessionType: String?       // "main" / "subagent"
+    let childrenCount: Int?        // 子会话数量
+    let parentSessionId: String?   // 父会话 ID（subagent 时有值）
+
     // V4: 使用 sessionId 或 rawId 作为唯一标识
     var id: String {
         sessionId ?? rawId ?? path ?? UUID().uuidString
@@ -49,6 +54,7 @@ struct Session: Identifiable, Codable, Hashable {
         case lastMessageType, lastMessagePreview, lastMessageTimestamp
         case projectId, messageCount, lastMessageAt, createdAt, updatedAt
         case project, lastMessage, inEterm
+        case sessionType, childrenCount, parentSessionId
     }
 
     // Hashable
@@ -87,7 +93,10 @@ struct Session: Identifiable, Codable, Hashable {
             updatedAt: self.updatedAt,
             project: self.project,
             lastMessage: self.lastMessage,
-            inEterm: self.inEterm
+            inEterm: self.inEterm,
+            sessionType: self.sessionType,
+            childrenCount: self.childrenCount,
+            parentSessionId: self.parentSessionId
         )
     }
 }
