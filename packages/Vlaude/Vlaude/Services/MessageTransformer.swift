@@ -592,7 +592,28 @@ class MessageTransformer {
             displayMsg.textContent = texts.joined(separator: "\n")
             displayMsg.images = images
         } else if case .string(let text) = message.content {
-            displayMsg.textContent = text
+            // 尝试解析 JSON 数组字符串（VlaudeKit 将 user 消息的 content 数组序列化为 JSON 字符串推送）
+            if text.hasPrefix("["),
+               let data = text.data(using: .utf8),
+               let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                var texts: [String] = []
+                for block in jsonArray {
+                    guard let type = block["type"] as? String else { continue }
+                    if type == "text", let blockText = block["text"] as? String {
+                        texts.append(blockText)
+                        if blockText.contains("[Request interrupted by user for tool use]") {
+                            displayMsg.isInterrupted = true
+                        }
+                    }
+                }
+                if !texts.isEmpty {
+                    displayMsg.textContent = texts.joined(separator: "\n")
+                } else {
+                    displayMsg.textContent = text
+                }
+            } else {
+                displayMsg.textContent = text
+            }
         }
 
         // 思考元数据

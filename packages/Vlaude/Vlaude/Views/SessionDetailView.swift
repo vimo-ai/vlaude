@@ -599,7 +599,7 @@ struct ToolExecutionBubble: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                 }
-                if execution.approvalStatus == .rejected || execution.approvalStatus == .timeout {
+                if execution.approvalStatus == .rejected || execution.approvalStatus == .timeout || execution.approvalStatus == .cancelled {
                     ApprovalButtonsView(status: execution.approvalStatus, onApprove: { _ in })
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)

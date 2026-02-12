@@ -48,6 +48,18 @@ class TurnBuilder: ObservableObject {
         if message.isVisibleInTranscriptOnly == true { return }
         if message.isMeta == true { return }
 
+        // 0. 中断消息 → 标记当前 Turn 为 interrupted，不开新 Turn
+        if message.type == "user", looksLikeInterrupt(message) {
+            if let turn = currentTurn {
+                turn.status = .interrupted
+                // "for tool use" → 标记最后一个未完成的 tool 为 cancelled
+                if message.content.contains("for tool use") {
+                    markLastPendingToolInterrupted(in: turn)
+                }
+            }
+            return
+        }
+
         // 1. user_text → 开启新 Turn
         let isUserText = message.eventType == "user_text" ||
             (message.type == "user" && !looksLikeToolResult(message) && !looksLikeCommandOutput(message))
@@ -743,6 +755,36 @@ class TurnBuilder: ObservableObject {
         return false
     }
 
+    /// 判断 user 消息是否是中断消息
+    private func looksLikeInterrupt(_ message: Message) -> Bool {
+        let text = message.content
+        return text.contains("[Request interrupted by user")
+    }
+
+    /// 标记 Turn 中最后一个未完成的 tool 为 interrupted
+    private func markLastPendingToolInterrupted(in turn: Turn) {
+        for i in stride(from: turn.events.count - 1, through: 0, by: -1) {
+            if case .toolUse(var execution) = turn.events[i].content,
+               execution.result == nil {
+                // 设置 error result 表示被中断
+                execution.result = ToolExecution.ToolResult(
+                    content: "用户中断",
+                    isError: true,
+                    timestamp: Date()
+                )
+                let updated = TurnEvent(
+                    id: turn.events[i].id,
+                    eventType: turn.events[i].eventType,
+                    timestamp: turn.events[i].timestamp,
+                    content: .toolUse(execution: execution),
+                    isFinal: turn.events[i].isFinal
+                )
+                turn.replaceEvent(at: i, with: updated)
+                break
+            }
+        }
+    }
+
     private func transformToDisplayMessage(_ message: Message) -> DisplayMessage {
         var displayMsg = DisplayMessage(
             id: message.uuid ?? UUID().uuidString,
@@ -752,7 +794,22 @@ class TurnBuilder: ObservableObject {
         // 提取文本内容和图片
         if let msg = message.message {
             if case .string(let text) = msg.content {
-                displayMsg.textContent = text
+                // 尝试解析 JSON 数组字符串（VlaudeKit 推送的 user 消息可能将 content 数组序列化为字符串）
+                if text.hasPrefix("["),
+                   let data = text.data(using: .utf8),
+                   let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                    var texts: [String] = []
+                    for block in jsonArray {
+                        if let type = block["type"] as? String,
+                           type == "text",
+                           let blockText = block["text"] as? String {
+                            texts.append(blockText)
+                        }
+                    }
+                    displayMsg.textContent = texts.isEmpty ? text : texts.joined(separator: "\n")
+                } else {
+                    displayMsg.textContent = text
+                }
             } else if case .array(let items) = msg.content {
                 var texts: [String] = []
                 for item in items {

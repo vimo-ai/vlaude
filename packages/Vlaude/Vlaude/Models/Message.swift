@@ -26,8 +26,8 @@ enum ContentBlock: Codable {
         let id: String
         let name: String
         let input: [String: JSONValue]?
-        let displayText: String  // 人类可读描述，如"读取文件: config.json"
-        let iconName: String     // SF Symbol 名称
+        let displayText: String?  // 人类可读描述，如"读取文件: config.json"
+        let iconName: String?     // SF Symbol 名称
     }
 
     struct ToolResultBlock: Codable {
@@ -263,7 +263,7 @@ struct Message: Identifiable, Codable {
 
             case .toolUse(let toolBlock):
                 // 使用服务端生成的人类可读描述
-                parts.append("🔧 \(toolBlock.displayText)")
+                parts.append("🔧 \(toolBlock.displayText ?? toolBlock.name)")
 
             case .toolResult(let resultBlock):
                 let prefix = resultBlock.isError ? "❌ " : "✅ "
@@ -389,6 +389,7 @@ public enum ToolApprovalStatus: Equatable {
     case completed                 // 执行完成（有 tool_result）
     case rejected                  // 用户拒绝
     case timeout                   // 审批超时
+    case cancelled                 // ETerm Interrupt/PromptSubmit 导致审批取消
 }
 
 // 工具执行信息
@@ -561,6 +562,19 @@ struct MessageInner: Codable {
     var extractedContent: String {
         switch content {
         case .string(let str):
+            // 尝试解析 JSON 数组字符串（VlaudeKit 推送的 user 消息可能将 content 数组序列化为字符串）
+            if str.hasPrefix("["),
+               let data = str.data(using: .utf8),
+               let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                let texts = jsonArray.compactMap { block -> String? in
+                    guard (block["type"] as? String) == "text",
+                          let text = block["text"] as? String else { return nil }
+                    return text
+                }
+                if !texts.isEmpty {
+                    return texts.joined(separator: "\n")
+                }
+            }
             return str
         case .array(let items):
             return extractTextFromContent(items)

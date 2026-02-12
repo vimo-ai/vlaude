@@ -26,7 +26,7 @@ struct MCPToolView: View {
     private var toolName: String {
         let parts = execution.name.components(separatedBy: "__")
         if parts.count >= 3 {
-            return parts[2]
+            return parts.dropFirst(2).joined(separator: "__")
         }
         return execution.name
     }

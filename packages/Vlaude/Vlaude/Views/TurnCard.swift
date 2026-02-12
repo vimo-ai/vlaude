@@ -278,7 +278,7 @@ struct TurnCard: View {
         // 按工具类型细分
         let sortedTools = stats.toolCountsByType.sorted { $0.value > $1.value }
         for (name, count) in sortedTools {
-            let label = name.lowercased()
+            let label = Self.shortToolName(name)
             parts.append("\(count) \(label)")
         }
 
@@ -287,6 +287,20 @@ struct TurnCard: View {
         }
 
         return parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// MCP 工具名短化：mcp__server__tool → server:tool，内置工具直接小写
+    private static func shortToolName(_ name: String) -> String {
+        guard name.hasPrefix("mcp__") else { return name.lowercased() }
+        let parts = name.components(separatedBy: "__")
+        if parts.count >= 3 {
+            // mcp__server__tool → server:tool
+            // mcp__mcp-router__sub__tool → mcp-router:tool（取最后一段）
+            let server = parts[1]
+            let tool = parts.last ?? parts[2]
+            return "\(server):\(tool)"
+        }
+        return name.lowercased()
     }
 
     private func formatDuration(_ seconds: TimeInterval) -> String {

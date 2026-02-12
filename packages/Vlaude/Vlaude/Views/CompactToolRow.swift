@@ -14,6 +14,20 @@ struct CompactToolRow: View {
     var onApprovalAction: ((String, String) -> Void)? = nil
     @State private var isExpanded = false
 
+    // MCP 工具名解析
+    private var isMCP: Bool { execution.name.hasPrefix("mcp__") }
+    private var mcpParts: (server: String, tool: String) {
+        let parts = execution.name.components(separatedBy: "__")
+        guard parts.count >= 3 else {
+            return (parts.count >= 2 ? parts[1] : "mcp", execution.name)
+        }
+        let server = parts[1]
+        // mcp__server__tool → 直接取 tool
+        // mcp__mcp-router__subserver__tool → 取最后一段 tool（sub-server 冗余）
+        let toolPart = parts.last ?? parts[2]
+        return (server, toolPart)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             // 折叠头：一行摘要
@@ -24,9 +38,24 @@ struct CompactToolRow: View {
                         .foregroundColor(toolColor)
                         .frame(width: 16)
 
-                    Text(execution.name)
-                        .font(.system(size: 13, design: .monospaced))
-                        .foregroundColor(.primary)
+                    if isMCP {
+                        // MCP: server 标签 + tool 名
+                        Text(mcpParts.server)
+                            .font(.system(size: 10))
+                            .foregroundColor(.teal)
+                            .padding(.horizontal, 4)
+                            .padding(.vertical, 1)
+                            .background(Color.teal.opacity(0.12))
+                            .cornerRadius(3)
+
+                        Text(mcpParts.tool)
+                            .font(.system(size: 13, design: .monospaced))
+                            .foregroundColor(.primary)
+                    } else {
+                        Text(execution.name)
+                            .font(.system(size: 13, design: .monospaced))
+                            .foregroundColor(.primary)
+                    }
 
                     Text(compactSummary)
                         .font(.system(size: 12))
@@ -132,7 +161,10 @@ struct CompactToolRow: View {
                 return desc
             }
         default:
-            break
+            // MCP 工具：提取最有意义的参数作为摘要
+            if isMCP {
+                return mcpCompactSummary
+            }
         }
         // Fallback: 使用 Rust 端生成的 displayText（summary 模式下 input 被裁剪时）
         if let displayText = execution.displayText, !displayText.isEmpty {
@@ -142,9 +174,30 @@ struct CompactToolRow: View {
         return formatted.isEmpty ? "" : formatted
     }
 
+    /// MCP 工具摘要：从 input 里挑最有意义的字段
+    private var mcpCompactSummary: String {
+        let input = execution.input
+        // 常见有意义的参数名，按优先级排列
+        let meaningfulKeys = ["query", "url", "command", "text", "path", "file_path",
+                              "pattern", "description", "prompt", "action", "skill"]
+        for key in meaningfulKeys {
+            if let value = input[key], !value.isEmpty {
+                let firstLine = value.components(separatedBy: .newlines).first ?? value
+                return String(firstLine.prefix(50))
+            }
+        }
+        // fallback: 取第一个非 tabId 参数
+        if let first = input.first(where: { $0.key != "tabId" && $0.key != "ref_id" }) {
+            let val = String(first.value.prefix(40))
+            return "\(first.key): \(val)"
+        }
+        return ""
+    }
+
     // MARK: - 图标/颜色
 
     private var iconName: String {
+        if isMCP { return "puzzlepiece.extension" }
         switch execution.name {
         case "Edit": return "pencil"
         case "Write": return "square.and.pencil"
@@ -164,6 +217,7 @@ struct CompactToolRow: View {
     }
 
     private var toolColor: Color {
+        if isMCP { return .teal }
         switch execution.name {
         case "Edit", "Write": return .blue
         case "Read": return .teal

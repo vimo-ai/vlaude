@@ -110,8 +110,8 @@ struct BashToolView: View {
                 .background(Color.black.opacity(0.85))
             }
 
-            // 被拒绝或超时状态
-            if execution.approvalStatus == .rejected || execution.approvalStatus == .timeout {
+            // 被拒绝、超时或取消状态
+            if execution.approvalStatus == .rejected || execution.approvalStatus == .timeout || execution.approvalStatus == .cancelled {
                 ApprovalButtonsView(status: execution.approvalStatus, onApprove: { _ in })
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
@@ -130,7 +130,7 @@ struct BashToolView: View {
         switch execution.approvalStatus {
         case .awaitingPermission:
             return .orange.opacity(0.5)
-        case .rejected, .timeout:
+        case .rejected, .timeout, .cancelled:
             return .red.opacity(0.5)
         default:
             return isError ? Color.red.opacity(0.5) : Color.green.opacity(0.3)
