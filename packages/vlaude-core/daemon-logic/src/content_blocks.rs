@@ -327,8 +327,8 @@ pub fn enrich_messages_with_content_blocks(messages: &mut [Value]) {
 ///
 /// 裁剪规则：
 /// - Thinking: `thinking` 字段清空为 ""，添加 `hasThinking: true`
-/// - ToolResult: `content` 字段清空（保留 preview/hasMore/sizeDescription）
-/// - ToolUse: `input` 字段清空为 {}（保留 id/name/displayText/iconName）
+/// - ToolResult: `content` 裁剪到 500 字符（短内容保留完整）
+/// - ToolUse: `input` 字段值裁剪到 200 字符（保留参数名和摘要值）
 /// - Text: 保持不变
 ///
 /// 同时处理 `contentBlocks` 数组和 `message.content` 数组
@@ -360,14 +360,19 @@ fn trim_message_for_summary(message: &mut Value) {
                     }
                 }
                 "tool_result" => {
-                    item.as_object_mut().map(|obj| {
-                        obj.insert("content".to_string(), Value::String(String::new()));
-                    });
+                    if let Some(content) = item.get("content").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+                        if content.len() > 500 {
+                            let truncated = &content[..content.floor_char_boundary(500)];
+                            item.as_object_mut().map(|obj| {
+                                obj.insert("content".to_string(), Value::String(format!("{}…", truncated)));
+                            });
+                        }
+                    }
                 }
                 "tool_use" => {
-                    item.as_object_mut().map(|obj| {
-                        obj.insert("input".to_string(), Value::Object(serde_json::Map::new()));
-                    });
+                    if let Some(input) = item.get_mut("input").and_then(|v| v.as_object_mut()) {
+                        trim_object_values(input, 200);
+                    }
                 }
                 _ => {}
             }
@@ -392,16 +397,21 @@ fn trim_message_for_summary(message: &mut Value) {
                             }
                         }
                         "tool_result" => {
-                            item.as_object_mut().map(|obj| {
-                                obj.insert("content".to_string(), Value::String(String::new()));
-                            });
-                            changed = true;
+                            if let Some(content) = item.get("content").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+                                if content.len() > 500 {
+                                    let truncated = &content[..content.floor_char_boundary(500)];
+                                    item.as_object_mut().map(|obj| {
+                                        obj.insert("content".to_string(), Value::String(format!("{}…", truncated)));
+                                    });
+                                    changed = true;
+                                }
+                            }
                         }
                         "tool_use" => {
-                            item.as_object_mut().map(|obj| {
-                                obj.insert("input".to_string(), Value::Object(serde_json::Map::new()));
-                            });
-                            changed = true;
+                            if let Some(input) = item.get_mut("input").and_then(|v| v.as_object_mut()) {
+                                trim_object_values(input, 200);
+                                changed = true;
+                            }
                         }
                         _ => {}
                     }
@@ -431,18 +441,35 @@ fn trim_content_block(block: &mut Value) {
             }
         }
         "tool_result" => {
-            // 清空 content，保留 preview/hasMore/sizeDescription
-            block.as_object_mut().map(|obj| {
-                obj.insert("content".to_string(), Value::String(String::new()));
-            });
+            // 裁剪 content 到 500 字符（保留足够预览），而非完全清空
+            if let Some(content) = block.get("content").and_then(|v| v.as_str()).map(|s| s.to_string()) {
+                if content.len() > 500 {
+                    let truncated = &content[..content.floor_char_boundary(500)];
+                    block.as_object_mut().map(|obj| {
+                        obj.insert("content".to_string(), Value::String(format!("{}…", truncated)));
+                    });
+                }
+            }
         }
         "tool_use" => {
-            // 清空 input，保留 id/name/displayText/iconName
-            block.as_object_mut().map(|obj| {
-                obj.insert("input".to_string(), Value::Object(serde_json::Map::new()));
-            });
+            // 裁剪 input 中过长的字段值（保留前 200 字符），而非完全清空
+            if let Some(input) = block.get_mut("input").and_then(|v| v.as_object_mut()) {
+                trim_object_values(input, 200);
+            }
         }
         _ => {}
+    }
+}
+
+/// 裁剪 JSON 对象中过长的字符串值
+fn trim_object_values(obj: &mut serde_json::Map<String, Value>, max_len: usize) {
+    for (_key, value) in obj.iter_mut() {
+        if let Some(s) = value.as_str() {
+            if s.len() > max_len {
+                let truncated = &s[..s.floor_char_boundary(max_len)];
+                *value = Value::String(format!("{}…", truncated));
+            }
+        }
     }
 }
 
