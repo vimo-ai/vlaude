@@ -1031,7 +1031,9 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
     toolUseID: string;
     description: string;
   }) {
-    this.logger.log(`🔐 [Approval] ${data.toolName} → ${data.sessionId.substring(0, 8)}`);
+    const ts = new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+    const subscribers = (this.server as any)?.sockets?.size ?? 0;
+    this.logger.log(`[DIAG] hook-relay ts=${ts} event=PermissionRequest sid=${data.sessionId.substring(0, 8)} tool=${data.toolName} toolUseId=${data.toolUseID?.substring(0, 12) || '?'} subscribers=${subscribers}`);
 
     // 广播给所有连接的客户端（iOS 会根据 sessionId 匹配）
     this.server.emit('approval-request', {
@@ -1116,6 +1118,40 @@ export class AppGateway implements OnGatewayInit, OnGatewayConnection, OnGateway
       sessionId: data.sessionId,
       success: data.success,
       message: data.message,
+    });
+  }
+
+  /**
+   * iOS 查询指定 session 的 pending approvals
+   */
+  @SubscribeMessage('app:getApprovalState')
+  handleGetApprovalState(
+    @MessageBody() data: { sessionId: string },
+    @ConnectedSocket() client: Socket,
+  ) {
+    const pending = this.daemonGateway.getPendingApprovals(data.sessionId);
+    this.logger.log(`📋 [审批状态查询] session=${data.sessionId.substring(0, 8)} pending=${pending.length}`);
+
+    return {
+      sessionId: data.sessionId,
+      approvals: pending,
+    };
+  }
+
+  /**
+   * 监听来自 DaemonGateway 的审批取消事件
+   */
+  @OnEvent('app.sendApprovalCancelled')
+  handleSendApprovalCancelledEvent(data: {
+    sessionId: string;
+    toolUseIds: string[];
+  }) {
+    this.logger.log(`🚫 [审批取消] session=${data.sessionId.substring(0, 8)} tools=${data.toolUseIds.length}`);
+
+    // 广播给所有客户端（iOS 会根据 sessionId 匹配）
+    this.server.emit('approval-cancelled', {
+      sessionId: data.sessionId,
+      toolUseIds: data.toolUseIds,
     });
   }
 

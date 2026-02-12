@@ -16,6 +16,8 @@ import { StatusService } from '../status';
 import { DataSyncService, DaemonMessage } from '../data-sync';
 import { StatusDaemonInfo, StatusSessionInfo } from '@vimo-ai/vlaude-shared-core';
 import { DaemonEvents, ServerEvents } from '../../shared/events';
+import { ToolUseCorrelator } from './tool-use-correlator';
+import { ApprovalStateStore } from './approval-state.store';
 
 
 /**
@@ -54,8 +56,23 @@ export class DaemonGateway
     timer: NodeJS.Timeout;
   }>();
 
+  // PreToolUse ↔ PermissionRequest 关联器
+  private readonly toolUseCorrelator = new ToolUseCorrelator();
+
+  // 审批状态存储（支持 iOS 查询 pending approvals）
+  private readonly approvalStateStore = new ApprovalStateStore();
+
   // ETerm 状态已迁移到 Redis，通过 RegistryService 读取
   // 详见 PLAN_REDIS_STATE_SYNC.md
+
+  /** 统一 DIAG 日志 */
+  private diagLog(tag: string, event: string, sessionId: string, tool?: string, toolUseId?: string) {
+    const ts = new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit', fractionalSecondDigits: 3 });
+    const parts = [`[DIAG] ${tag} ts=${ts} event=${event} sid=${sessionId.substring(0, 8)}`];
+    if (tool) parts.push(`tool=${tool}`);
+    if (toolUseId?.trim()) parts.push(`toolUseId=${toolUseId.substring(0, 12)}`);
+    this.logger.log(parts.join(' '));
+  }
 
   constructor(
     private readonly eventEmitter: EventEmitter2,
@@ -780,7 +797,23 @@ export class DaemonGateway
   }
 
   /**
-   * 接收 Daemon 的权限请求（转发给 AppGateway）
+   * 接收 PreToolUse 事件（缓存 toolUseId 供 PermissionRequest 关联）
+   */
+  @SubscribeMessage(DaemonEvents.PRE_TOOL_USE)
+  handlePreToolUse(
+    @MessageBody() data: {
+      sessionId: string;
+      toolName: string;
+      toolUseId: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.toolUseCorrelator.onPreToolUse(data.sessionId, data.toolUseId, data.toolName);
+    this.diagLog('hook-in', 'PreToolUse', data.sessionId, data.toolName, data.toolUseId);
+  }
+
+  /**
+   * 接收 Daemon 的权限请求（关联 toolUseId 后转发给 AppGateway）
    */
   @SubscribeMessage(DaemonEvents.PERMISSION_REQUEST)
   handleApprovalRequest(
@@ -795,12 +828,26 @@ export class DaemonGateway
     },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`🔐 [权限请求] 收到 Daemon 的权限请求`);
-    this.logger.log(`   RequestId: ${data.requestId}`);
-    this.logger.log(`   Tool: ${data.toolName}`);
-    this.logger.log(`   ClientId: ${data.clientId}`);
+    // 关联 toolUseId（PreToolUse 已缓存，PermissionRequest by design 不含 toolUseId）
+    if (!data.toolUseID?.trim()) {
+      const resolved = this.toolUseCorrelator.resolveToolUseId(data.sessionId, data.toolName);
+      if (resolved) {
+        data.toolUseID = resolved;
+      }
+    }
+
+    // 存储审批状态
+    this.approvalStateStore.onApprovalRequest({
+      requestId: data.requestId,
+      sessionId: data.sessionId,
+      toolName: data.toolName,
+      toolUseId: data.toolUseID || '',
+      input: data.input,
+      description: data.description,
+    });
 
     // 通过事件转发给 AppGateway，让它推送给 iOS 客户端
+    this.diagLog('hook-in', 'PermissionRequest', data.sessionId, data.toolName, data.toolUseID);
     this.eventEmitter.emit('app.sendApprovalRequest', data);
   }
 
@@ -809,11 +856,11 @@ export class DaemonGateway
    */
   @OnEvent('daemon.sendApprovalResponse')
   handleSendApprovalResponse(data: { requestId: string; sessionId: string; action: string; toolUseId: string }) {
-    this.logger.log(`✅ [权限响应] 转发给 Daemon`);
-    this.logger.log(`   RequestId: ${data.requestId}`);
-    this.logger.log(`   SessionId: ${data.sessionId}`);
-    this.logger.log(`   ToolUseId: ${data.toolUseId}`);
-    this.logger.log(`   Action: ${data.action}`);
+    this.logger.log(`✅ [权限响应] ${data.action} → session=${data.sessionId.substring(0, 8)} toolUseId=${data.toolUseId?.substring(0, 8) || '?'}`);
+
+    // 更新审批状态
+    const status = data.action === 'n' ? 'rejected' as const : 'approved' as const;
+    this.approvalStateStore.onApprovalResolved(data.sessionId, { toolUseId: data.toolUseId, requestId: data.requestId }, status);
 
     const daemons = Array.from(this.connectedDaemons.values());
     if (daemons.length === 0) {
@@ -840,6 +887,9 @@ export class DaemonGateway
     this.logger.log(`⏰ [权限超时] 收到 Daemon 的超时通知`);
     this.logger.log(`   RequestId: ${data.requestId}`);
     this.logger.log(`   ClientId: ${data.clientId}`);
+
+    // 更新审批状态
+    this.approvalStateStore.onApprovalResolved(data.sessionId, { requestId: data.requestId }, 'timeout');
 
     // 通过事件转发给 AppGateway，让它通知 iOS 客户端
     this.eventEmitter.emit('app.sendApprovalTimeout', data);
@@ -882,8 +932,41 @@ export class DaemonGateway
     this.logger.log(`   SessionId: ${data.sessionId}`);
     this.logger.log(`   Success: ${data.success}`);
 
+    // 更新审批状态（ack = 已执行）
+    this.approvalStateStore.onApprovalResolved(data.sessionId, { toolUseId: data.toolUseId }, 'approved');
+
     // 通过事件转发给 AppGateway，让它通知 iOS 客户端
     this.eventEmitter.emit('app.sendApprovalAck', data);
+  }
+
+  /**
+   * 接收 ETerm 的权限取消通知（Interrupt/PromptSubmit/ResponseComplete 导致审批过期）
+   */
+  @SubscribeMessage(DaemonEvents.PERMISSION_CANCELLED)
+  handlePermissionCancelled(
+    @MessageBody() data: {
+      sessionId: string;
+      toolUseIds: string[];
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🚫 [权限取消] session=${data.sessionId.substring(0, 8)} tools=${data.toolUseIds.length}`);
+
+    // 更新审批状态
+    const cancelled = this.approvalStateStore.cancelSession(data.sessionId);
+
+    // 通过事件转发给 AppGateway，让它通知 iOS 客户端
+    this.eventEmitter.emit('app.sendApprovalCancelled', {
+      sessionId: data.sessionId,
+      toolUseIds: data.toolUseIds,
+    });
+  }
+
+  /**
+   * 查询指定 session 的 pending approvals（供 AppGateway 使用）
+   */
+  getPendingApprovals(sessionId: string) {
+    return this.approvalStateStore.getPendingApprovals(sessionId);
   }
 
   /**
@@ -1060,7 +1143,7 @@ export class DaemonGateway
     },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`📝 [Status] Session 开始: ${data.sessionId.substring(0, 8)} (device: ${data.deviceId})`);
+    this.diagLog('hook-in', 'SessionStart', data.sessionId);
 
     const sessionInfo: StatusSessionInfo = {
       sessionId: data.sessionId,
@@ -1082,7 +1165,11 @@ export class DaemonGateway
     @MessageBody() data: { deviceId: string; sessionId: string },
     @ConnectedSocket() client: Socket,
   ) {
-    this.logger.log(`🗑️ [Status] Session 结束: ${data.sessionId}`);
+    this.diagLog('hook-in', 'SessionEnd', data.sessionId);
+
+    // 清理 Correlator 缓存 + 审批状态
+    this.toolUseCorrelator.cleanup(data.sessionId);
+    this.approvalStateStore.cleanup(data.sessionId);
 
     await this.statusService.handleSessionEnd(data.deviceId, data.sessionId);
 

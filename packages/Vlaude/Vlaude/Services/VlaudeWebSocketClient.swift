@@ -237,6 +237,7 @@ class VlaudeWebSocketClient: ObservableObject {
         registerEvent("approval-timeout", client: client)
         registerEvent("approval-expired", client: client)
         registerEvent("approval-ack", client: client)
+        registerEvent("approval-cancelled", client: client)
         registerEvent("sdk-error", client: client)
         registerEvent("statusline:metricsUpdate", client: client)
         registerEvent("eterm:sessionCreated", client: client)
@@ -499,6 +500,22 @@ class VlaudeWebSocketClient: ObservableObject {
 
     // MARK: - Approval
 
+    /// 查询指定 session 的 pending approvals（进入 session 时调用）
+    func getApprovalState(sessionId: String) async -> [[String: Any]] {
+        guard let client = client, isConnected else { return [] }
+
+        do {
+            let response = try await client.emitWithAck("app:getApprovalState", data: [
+                "sessionId": sessionId
+            ], timeout: 5)
+
+            return response["approvals"] as? [[String: Any]] ?? []
+        } catch {
+            print("⚠️ [VlaudeWebSocketClient] 查询审批状态失败: \(error)")
+            return []
+        }
+    }
+
     func sendApprovalResponse(requestId: String, sessionId: String, action: String, toolUseId: String = "") {
         guard isConnected else { return }
 
@@ -589,6 +606,9 @@ class VlaudeWebSocketClient: ObservableObject {
 
         case "approval-ack":
             handleApprovalAck(payload)
+
+        case "approval-cancelled":
+            handleApprovalCancelled(payload)
 
         case "sdk-error":
             handleSDKError(payload)
@@ -753,6 +773,16 @@ class VlaudeWebSocketClient: ObservableObject {
 
         NotificationCenter.default.post(
             name: NSNotification.Name("ApprovalAck"),
+            object: nil,
+            userInfo: dict
+        )
+    }
+
+    private func handleApprovalCancelled(_ payload: Any) {
+        guard let dict = payload as? [String: Any] else { return }
+
+        NotificationCenter.default.post(
+            name: NSNotification.Name("ApprovalCancelled"),
             object: nil,
             userInfo: dict
         )

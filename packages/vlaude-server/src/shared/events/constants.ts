@@ -68,6 +68,10 @@ export const DaemonEvents = {
   /** @payload { clientId: string, sessionId: string, projectPath: string } */
   NEW_SESSION_CREATED: 'daemon:newSessionCreated',
 
+  // === 工具生命周期 ===
+  /** @payload { sessionId: string, toolName: string, toolUseId: string, toolInput?: any } */
+  PRE_TOOL_USE: 'daemon:preToolUse',
+
   // === 权限请求 ===
   /** @payload { requestId: string, sessionId: string, clientId: string, toolName: string, input: any, toolUseId: string, description: string } */
   PERMISSION_REQUEST: 'daemon:permissionRequest',
@@ -77,6 +81,8 @@ export const DaemonEvents = {
   PERMISSION_EXPIRED: 'daemon:permissionExpired',
   /** @payload { toolUseId: string, sessionId: string, success: boolean, message?: string } */
   APPROVAL_ACK: 'daemon:approvalAck',
+  /** @payload { sessionId: string, toolUseIds: string[] } */
+  PERMISSION_CANCELLED: 'daemon:permissionCancelled',
 
   // === ETerm 状态 ===
   /** @payload { deviceId: string, timestamp: string } */

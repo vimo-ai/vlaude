@@ -61,6 +61,7 @@ class SessionDetailViewModel: ObservableObject {
     private var approvalTimeoutObserver: NSObjectProtocol?
     private var approvalExpiredObserver: NSObjectProtocol?
     private var approvalAckObserver: NSObjectProtocol?
+    private var approvalCancelledObserver: NSObjectProtocol?
     private var statuslineMetricsObserver: NSObjectProtocol?
 
     // WebSocket 事件 token（用于精确移除，不影响其他 ViewModel）
@@ -123,6 +124,33 @@ class SessionDetailViewModel: ObservableObject {
         // 只有在发送消息时才会触发 join（通知 CLI 进入 remote 模式）
         wsClient.subscribeToSession(sessionId, projectPath: currentProjectPath)
 
+        // 查询当前 session 的 pending approvals（解决离开页面后审批丢失的问题）
+        Task { @MainActor in
+            let pendingApprovalStates = await wsClient.getApprovalState(sessionId: sessionId)
+            for approvalDict in pendingApprovalStates {
+                guard let requestId = approvalDict["requestId"] as? String,
+                      let toolUseId = approvalDict["toolUseId"] as? String,
+                      !toolUseId.isEmpty,
+                      let toolName = approvalDict["toolName"] as? String else {
+                    continue
+                }
+                let description = approvalDict["description"] as? String ?? toolName
+                let input = approvalDict["input"] as? [String: Any] ?? [:]
+
+                let approval = PendingApproval(
+                    requestId: requestId,
+                    sessionId: sessionId,
+                    toolUseId: toolUseId,
+                    toolName: toolName,
+                    input: input,
+                    description: description,
+                    timestamp: Date()
+                )
+                self.pendingApprovals[toolUseId] = approval
+                self.updateToolExecutionStatus(toolUseId: toolUseId, status: .awaitingPermission, requestId: requestId)
+            }
+        }
+
         // 移除旧的 messageNew 监听（避免叠加）
         if let token = messageNewToken {
             wsClient.off(token: token)
@@ -140,6 +168,11 @@ class SessionDetailViewModel: ObservableObject {
             Task { @MainActor in
                 let df = DateFormatter(); df.dateFormat = "HH:mm:ss.SSS"
                 print("[DIAG] recv ts=\(df.string(from: Date())) sid=\(sessionId.prefix(8)) uuid=\(newMessage.id.prefix(8)) role=\(newMessage.type)")
+
+                // 检测 interrupted 消息 → 取消当前 session 所有 pending 审批
+                if newMessage.content.contains("interrupted") {
+                    self.cancelAllPendingApprovals()
+                }
 
                 self.bufferMessage(newMessage)
             }
@@ -241,6 +274,9 @@ class SessionDetailViewModel: ObservableObject {
             let rawToolUseId = userInfo["toolUseID"] as? String ?? ""
             var effectiveToolUseId = rawToolUseId.trimmingCharacters(in: .whitespacesAndNewlines)
 
+            let df = DateFormatter(); df.dateFormat = "HH:mm:ss.SSS"
+            print("[DIAG] hook-recv ts=\(df.string(from: Date())) event=PermissionRequest sid=\(trimmedSessionId.prefix(8)) tool=\(toolName) toolUseId=\(effectiveToolUseId.isEmpty ? "?" : String(effectiveToolUseId.prefix(12)))")
+
             // 如果 toolUseId 为空，尝试从 TurnBuilder/displayMessages 中查找匹配的 ToolExecution
             if effectiveToolUseId.isEmpty {
                 if let matchedId = self.findPendingToolUseId(toolName: toolName) {
@@ -338,6 +374,29 @@ class SessionDetailViewModel: ObservableObject {
             // 清理 pending
             self.pendingApprovals.removeValue(forKey: toolUseId)
         }
+
+        // 监听 approval-cancelled（ETerm Interrupt/PromptSubmit/ResponseComplete 导致审批过期）
+        approvalCancelledObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("ApprovalCancelled"),
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let self = self,
+                  let userInfo = notification.userInfo,
+                  let cancelledSessionId = userInfo["sessionId"] as? String,
+                  cancelledSessionId == sessionId else {
+                return
+            }
+
+            let toolUseIds = userInfo["toolUseIds"] as? [String] ?? []
+
+            for toolUseId in toolUseIds {
+                self.updateToolExecutionStatus(toolUseId: toolUseId, status: .cancelled, requestId: nil)
+                self.pendingApprovals.removeValue(forKey: toolUseId)
+            }
+            // 同时清理 unmatchedApprovals
+            self.unmatchedApprovals.removeAll()
+        }
     }
 
     private func removeApprovalObservers() {
@@ -357,9 +416,34 @@ class SessionDetailViewModel: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
             approvalAckObserver = nil
         }
+        if let observer = approvalCancelledObserver {
+            NotificationCenter.default.removeObserver(observer)
+            approvalCancelledObserver = nil
+        }
     }
 
     /// 更新 ToolExecution 的审批状态
+    /// 取消当前 session 所有 pending 审批（检测到 interrupted 消息时调用）
+    private func cancelAllPendingApprovals() {
+        // 清理 TurnBuilder 中的 pending 工具
+        for turn in turnBuilder.turns {
+            for (i, event) in turn.events.enumerated() {
+                if case .toolUse(var exec) = event.content, exec.approvalStatus == .awaitingPermission {
+                    exec.approvalStatus = .cancelled
+                    turn.replaceEvent(at: i, with: TurnEvent(
+                        id: event.id, eventType: event.eventType,
+                        timestamp: event.timestamp,
+                        content: .toolUse(execution: exec),
+                        isFinal: event.isFinal
+                    ))
+                }
+            }
+        }
+        // 清理本地 pending 状态
+        pendingApprovals.removeAll()
+        unmatchedApprovals.removeAll()
+    }
+
     private func updateToolExecutionStatus(toolUseId: String, status: ToolApprovalStatus, requestId: String?) {
         // Timeline 模式：通过 TurnBuilder 更新
         if !turnBuilder.turns.isEmpty {
@@ -707,9 +791,13 @@ class SessionDetailViewModel: ObservableObject {
             newMessages.append(msg)
         }
 
-        // Timeline 模式：跳过 MessageTransformer（TurnBuilder 是渲染数据源）
+        // 先处理新消息，让 tool_use 进入 TurnBuilder
+        if !newMessages.isEmpty {
+            turnBuilder.processMessages(newMessages)
+        }
+
+        // 再应用审批状态（此时 tool_use 已在 TurnBuilder 中，能正确匹配）
         if !turnBuilder.turns.isEmpty {
-            // 仅在有待审批时通过 TurnBuilder 应用
             if !pendingApprovals.isEmpty {
                 turnBuilder.applyPendingApprovals(pendingApprovals)
             }
@@ -717,11 +805,6 @@ class SessionDetailViewModel: ObservableObject {
             // Legacy 模式：保留原有 transform 逻辑
             displayMessages = messageTransformer.transform(messages: rawMessages)
             applyPendingApprovals()
-        }
-
-        // 批量更新 TurnBuilder（单次 objectWillChange）
-        if !newMessages.isEmpty {
-            turnBuilder.processMessages(newMessages)
         }
 
         // 延迟匹配：tool_use 消息到达后，匹配之前无法关联的审批请求
@@ -783,6 +866,9 @@ class SessionDetailViewModel: ObservableObject {
             NotificationCenter.default.removeObserver(observer)
         }
         if let observer = approvalAckObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        if let observer = approvalCancelledObserver {
             NotificationCenter.default.removeObserver(observer)
         }
 

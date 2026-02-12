@@ -112,6 +112,17 @@ struct ApprovalButtonsView: View {
                         .foregroundColor(.orange)
                 }
                 .padding(.top, 8)
+
+            case .cancelled:
+                // 已取消（ETerm Interrupt）
+                HStack(spacing: 4) {
+                    Image(systemName: "minus.circle.fill")
+                        .foregroundColor(.secondary)
+                    Text("已取消")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 8)
             }
         }
     }
@@ -169,6 +180,15 @@ struct ApprovalStatusBadge: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Color.orange.opacity(0.15))
+                .cornerRadius(4)
+
+        case .cancelled:
+            Label("已取消", systemImage: "minus.circle")
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.secondary.opacity(0.15))
                 .cornerRadius(4)
         }
     }

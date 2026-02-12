@@ -70,6 +70,10 @@ pub mod daemon_events {
     /// @payload { clientId: String, sessionId: String, projectPath: String }
     pub const NEW_SESSION_CREATED: &str = "daemon:newSessionCreated";
 
+    // 工具生命周期
+    /// @payload { sessionId: String, toolName: String, toolUseId: String }
+    pub const PRE_TOOL_USE: &str = "daemon:preToolUse";
+
     // 权限请求
     /// @payload { requestId: String, sessionId: String, clientId: String, toolName: String, input: Value, toolUseId: String, description: String }
     pub const PERMISSION_REQUEST: &str = "daemon:permissionRequest";
@@ -79,6 +83,8 @@ pub mod daemon_events {
     pub const PERMISSION_EXPIRED: &str = "daemon:permissionExpired";
     /// @payload { toolUseId: String, sessionId: String, success: bool, message: Option<String> }
     pub const APPROVAL_ACK: &str = "daemon:approvalAck";
+    /// @payload { sessionId: String, toolUseIds: Vec<String> }
+    pub const PERMISSION_CANCELLED: &str = "daemon:permissionCancelled";
 
     // ETerm 状态
     /// @payload { deviceId: String, timestamp: String }
