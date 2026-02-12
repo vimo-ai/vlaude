@@ -207,20 +207,17 @@ class MessageTransformer {
         }
     }
 
-    /// 将字符串状态转换为枚举
+    /// 将字符串状态转换为枚举（仅终态，活跃态由 ViewModel 管理）
     /// Server 状态 -> iOS 状态映射:
-    /// - "pending" -> awaitingPermission: 等待用户审批
-    /// - "approved" -> executing: 用户已批准，正在执行（tool_result 到达后由 UI 显示完成状态）
+    /// - "pending" -> none: 活跃态不存储在 ToolExecution
+    /// - "approved" -> none: 已批准即正常执行
     /// - "rejected" -> rejected: 用户已拒绝
     /// - "timeout" -> timeout: 审批超时
     private func parseApprovalStatus(_ status: String) -> ToolApprovalStatus {
         switch status.lowercased() {
-        case "pending":
-            return .awaitingPermission
-        case "approved":
-            // 用户已批准，映射为 executing（正在执行）
-            // 注：如果已有 tool_result，result 字段会非空，UI 会显示结果
-            return .executing
+        case "pending", "approved":
+            // 活跃态不存储在 ToolExecution，由 ViewModel 层 ApprovalResponseState 管理
+            return .none
         case "rejected":
             return .rejected
         case "timeout":

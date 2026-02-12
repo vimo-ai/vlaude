@@ -264,13 +264,27 @@ class TurnBuilder: ObservableObject {
 
     // MARK: - Approval Status Management
 
-    /// 更新工具执行的审批状态（供 ViewModel 调用，替代原来依赖 displayMessages 的逻辑）
-    func updateToolApproval(toolUseId: String, status: ToolApprovalStatus, requestId: String?) {
+    /// 查找当前 active turn 最后一个无 result 的指定名称工具
+    /// 用于 pending approval 的 toolUseId 为空时的 fallback 匹配
+    func findLastUnresultedToolId(name: String) -> String? {
+        guard let turn = turns.last, turn.status != .completed else { return nil }
+        for event in turn.events.reversed() {
+            if case .toolUse(let exec) = event.content,
+               exec.name == name, exec.result == nil {
+                return exec.id
+            }
+        }
+        return nil
+    }
+
+    /// 标记工具的终态（仅 timeout/rejected/cancelled）
+    /// 活跃态由 ViewModel 层 ApprovalResponseState 管理，不再写入 ToolExecution
+    func markToolTerminalStatus(toolUseId: String, status: ToolApprovalStatus) {
+        guard status == .timeout || status == .rejected || status == .cancelled else { return }
         for turn in turns {
             for (i, event) in turn.events.enumerated() {
                 if case .toolUse(var exec) = event.content, exec.id == toolUseId {
                     exec.approvalStatus = status
-                    if let reqId = requestId { exec.approvalRequestId = reqId }
                     turn.replaceEvent(at: i, with: TurnEvent(
                         id: event.id, eventType: event.eventType,
                         timestamp: event.timestamp,
@@ -285,7 +299,6 @@ class TurnBuilder: ObservableObject {
                 for (i, event) in sub.events.enumerated() {
                     if case .toolUse(var exec) = event.content, exec.id == toolUseId {
                         exec.approvalStatus = status
-                        if let reqId = requestId { exec.approvalRequestId = reqId }
                         sub.replaceEvent(at: i, with: TurnEvent(
                             id: event.id, eventType: event.eventType,
                             timestamp: event.timestamp,
@@ -293,45 +306,6 @@ class TurnBuilder: ObservableObject {
                             isFinal: event.isFinal
                         ))
                         return
-                    }
-                }
-            }
-        }
-    }
-
-    /// 查找最近的待审批工具执行（toolName 匹配 + approvalStatus == .none）
-    func findPendingToolUseId(toolName: String) -> String? {
-        for turn in turns.reversed() {
-            for event in turn.events.reversed() {
-                if case .toolUse(let exec) = event.content,
-                   exec.name == toolName,
-                   exec.approvalStatus == .none {
-                    return exec.id
-                }
-            }
-        }
-        return nil
-    }
-
-    /// 应用缓存的 pending approvals（permission_request 可能先于 tool_use 到达）
-    func applyPendingApprovals(_ pendingApprovals: [String: PendingApproval]) {
-        guard !pendingApprovals.isEmpty else { return }
-        for (toolUseId, approval) in pendingApprovals {
-            for turn in turns {
-                for (i, event) in turn.events.enumerated() {
-                    if case .toolUse(var exec) = event.content, exec.id == toolUseId {
-                        let needsStatusUpdate = exec.approvalStatus == .none
-                        let needsRequestIdUpdate = exec.approvalStatus == .awaitingPermission && exec.approvalRequestId == nil
-                        if needsStatusUpdate || needsRequestIdUpdate {
-                            if needsStatusUpdate { exec.approvalStatus = .awaitingPermission }
-                            exec.approvalRequestId = approval.requestId
-                            turn.replaceEvent(at: i, with: TurnEvent(
-                                id: event.id, eventType: event.eventType,
-                                timestamp: event.timestamp,
-                                content: .toolUse(execution: exec),
-                                isFinal: event.isFinal
-                            ))
-                        }
                     }
                 }
             }

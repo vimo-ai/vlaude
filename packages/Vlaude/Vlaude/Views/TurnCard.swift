@@ -17,7 +17,9 @@ struct TurnCard: View {
     @ObservedObject var turn: Turn
     let sessionId: String
     var turnIndex: Int = 1
-    var onApprovalAction: ((String, String) -> Void)? = nil
+    var pendingApprovalToolId: String? = nil
+    var approvalResponseState: ApprovalResponseState = .none
+    var onApprovalAction: ((String) -> Void)? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -173,7 +175,9 @@ struct TurnCard: View {
                             execution: execution,
                             sessionId: sessionId,
                             isActive: turn.status != .completed,
-                            onApprovalAction: onApprovalAction
+                            isActiveApproval: execution.id == pendingApprovalToolId,
+                            approvalResponseState: execution.id == pendingApprovalToolId ? approvalResponseState : .none,
+                            onApprovalAction: execution.id == pendingApprovalToolId ? onApprovalAction : nil
                         )
                     }
                 case .thinking:
@@ -342,8 +346,8 @@ struct TurnCard: View {
             // 审批按钮
             if let handler = onApprovalAction {
                 ApprovalButtonsView(
-                    status: .awaitingPermission,
-                    onApprove: { action in handler(execution.id, action) }
+                    responseState: approvalResponseState,
+                    onApprove: handler
                 )
             }
         }

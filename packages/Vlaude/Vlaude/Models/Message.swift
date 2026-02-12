@@ -380,16 +380,12 @@ struct Message: Identifiable, Codable {
     }
 }
 
-// 工具执行审批状态
+// 工具执行审批状态（仅终态，活跃态由 ViewModel 层 ApprovalResponseState 管理）
 public enum ToolApprovalStatus: Equatable {
-    case none                      // 不需要审批或未知
-    case awaitingPermission        // 等待用户审批
-    case pendingAck                // 用户已审批，等待 ETerm 确认
-    case executing                 // ETerm 确认收到，正在执行
-    case completed                 // 执行完成（有 tool_result）
+    case none                      // 正常（不需要审批/已自动通过）
+    case timeout                   // 审批超时或工具被中断
     case rejected                  // 用户拒绝
-    case timeout                   // 审批超时
-    case cancelled                 // ETerm Interrupt/PromptSubmit 导致审批取消
+    case cancelled                 // session 中断导致取消
 }
 
 // 工具执行信息

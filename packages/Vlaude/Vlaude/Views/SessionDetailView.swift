@@ -136,8 +136,10 @@ struct SessionDetailView: View {
                         SessionTimelineView(
                             turnBuilder: viewModel.turnBuilder,
                             sessionId: sessionId,
-                            onApprovalAction: { toolUseId, action in
-                                viewModel.sendApprovalResponse(toolUseId: toolUseId, action: action)
+                            pendingApprovalToolId: viewModel.pendingApprovalToolId(),
+                            approvalResponseState: viewModel.approvalResponseState,
+                            onApprovalAction: { action in
+                                viewModel.sendApprovalResponse(action: action)
                             }
                         )
                     }
@@ -231,8 +233,10 @@ struct SessionDetailView: View {
             DisplayMessageBubble(
                 message: message,
                 sessionId: sessionId,
-                onApprovalAction: { toolUseId, action in
-                    viewModel.sendApprovalResponse(toolUseId: toolUseId, action: action)
+                pendingApprovalToolId: viewModel.pendingApprovalToolId(),
+                approvalResponseState: viewModel.approvalResponseState,
+                onApprovalAction: { action in
+                    viewModel.sendApprovalResponse(action: action)
                 }
             )
             .id(message.id)
@@ -270,6 +274,20 @@ struct SessionDetailView: View {
                     Image(systemName: "terminal.fill")
                         .font(.system(size: 12))
                         .foregroundColor(.green)
+                }
+                if viewModel.session?.sessionType == "subagent" {
+                    Image(systemName: "cpu")
+                        .font(.system(size: 12))
+                        .foregroundColor(.indigo)
+                }
+                if let count = viewModel.session?.childrenCount, count > 0 {
+                    HStack(spacing: 2) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 10))
+                        Text("\(count)")
+                            .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(.indigo)
                 }
             }
         }
@@ -384,7 +402,9 @@ private struct ApprovalErrorModifiers: ViewModifier {
 struct DisplayMessageBubble: View {
     let message: DisplayMessage
     let sessionId: String
-    var onApprovalAction: ((String, String) -> Void)? = nil  // (toolUseId, action)
+    var pendingApprovalToolId: String? = nil
+    var approvalResponseState: ApprovalResponseState = .none
+    var onApprovalAction: ((String) -> Void)? = nil
     @State private var isExpanded = false
 
     private var isUser: Bool {
@@ -464,7 +484,9 @@ struct DisplayMessageBubble: View {
                         ToolExecutionBubble(
                             execution: toolExecution,
                             sessionId: sessionId,
-                            onApprovalAction: onApprovalAction
+                            isActiveApproval: toolExecution.id == pendingApprovalToolId,
+                            approvalResponseState: toolExecution.id == pendingApprovalToolId ? approvalResponseState : .none,
+                            onApprovalAction: toolExecution.id == pendingApprovalToolId ? onApprovalAction : nil
                         )
                     }
                 }
@@ -550,17 +572,20 @@ struct DisplayMessageBubble: View {
 struct ToolExecutionBubble: View {
     let execution: ToolExecution
     let sessionId: String
-    var onApprovalAction: ((String, String) -> Void)? = nil  // (toolUseId, action)
+    var isActiveApproval: Bool = false
+    var approvalResponseState: ApprovalResponseState = .none
+    var onApprovalAction: ((String) -> Void)? = nil
 
     var body: some View {
-        let approvalHandler: ((String) -> Void)? = onApprovalAction.map { handler in
-            { action in handler(execution.id, action) }
-        }
-
         VStack(alignment: .leading, spacing: 0) {
             switch execution.name {
             case "Bash":
-                BashToolView(execution: execution, onApprovalAction: approvalHandler)
+                BashToolView(
+                    execution: execution,
+                    isActiveApproval: isActiveApproval,
+                    approvalResponseState: approvalResponseState,
+                    onApprovalAction: onApprovalAction
+                )
             case "Read":
                 ReadToolView(execution: execution)
             case "Grep":
@@ -587,20 +612,16 @@ struct ToolExecutionBubble: View {
                 GenericToolView(execution: execution)
             }
 
-            // 通用审批按钮（Bash 已内置，其他工具在此统一处理）
-            if execution.name != "Bash", let onApprove = approvalHandler {
-                if execution.approvalStatus == .awaitingPermission {
-                    ApprovalButtonsView(status: execution.approvalStatus, onApprove: onApprove)
+            // 通用审批（Bash 已内置，其他工具在此统一处理）
+            if execution.name != "Bash" {
+                if isActiveApproval, let onApprove = onApprovalAction {
+                    // 活跃审批：按钮/spinner
+                    ApprovalButtonsView(responseState: approvalResponseState, onApprove: onApprove)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                }
-                if execution.approvalStatus == .pendingAck || execution.approvalStatus == .executing {
-                    ApprovalButtonsView(status: execution.approvalStatus, onApprove: { _ in })
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                }
-                if execution.approvalStatus == .rejected || execution.approvalStatus == .timeout || execution.approvalStatus == .cancelled {
-                    ApprovalButtonsView(status: execution.approvalStatus, onApprove: { _ in })
+                } else if execution.approvalStatus != .none {
+                    // 终态 badge
+                    ApprovalStatusBadge(status: execution.approvalStatus)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                 }

@@ -19,6 +19,14 @@ struct PendingApproval {
     let timestamp: Date
 }
 
+/// 审批响应状态（Session 级唯一，由 ViewModel 管理）
+enum ApprovalResponseState: Equatable {
+    case none           // 无审批
+    case awaiting       // 等待用户决定
+    case pendingAck     // 已批准，等待 ETerm ACK
+    case executing      // ETerm ACK 收到，执行中
+}
+
 @MainActor
 class SessionDetailViewModel: ObservableObject {
     @Published var session: Session?
@@ -40,10 +48,9 @@ class SessionDetailViewModel: ObservableObject {
         timestamp: Date()
     )
 
-    // 权限审批状态管理 (toolUseId -> PendingApproval)
-    @Published var pendingApprovals: [String: PendingApproval] = [:]
-    // 未匹配的审批请求（tool_use_id 为空，等待 tool_use 消息到达后匹配）
-    private var unmatchedApprovals: [PendingApproval] = []
+    // Session 级单一审批状态（同一时刻只有一个 pending permission）
+    @Published var currentPendingApproval: PendingApproval? = nil
+    @Published var approvalResponseState: ApprovalResponseState = .none
 
     private let client = VlaudeClient.shared
     private let wsClient = VlaudeWebSocketClient.shared
@@ -127,28 +134,31 @@ class SessionDetailViewModel: ObservableObject {
         // 查询当前 session 的 pending approvals（解决离开页面后审批丢失的问题）
         Task { @MainActor in
             let pendingApprovalStates = await wsClient.getApprovalState(sessionId: sessionId)
-            for approvalDict in pendingApprovalStates {
-                guard let requestId = approvalDict["requestId"] as? String,
-                      let toolUseId = approvalDict["toolUseId"] as? String,
-                      !toolUseId.isEmpty,
-                      let toolName = approvalDict["toolName"] as? String else {
-                    continue
-                }
-                let description = approvalDict["description"] as? String ?? toolName
-                let input = approvalDict["input"] as? [String: Any] ?? [:]
-
-                let approval = PendingApproval(
-                    requestId: requestId,
-                    sessionId: sessionId,
-                    toolUseId: toolUseId,
-                    toolName: toolName,
-                    input: input,
-                    description: description,
-                    timestamp: Date()
-                )
-                self.pendingApprovals[toolUseId] = approval
-                self.updateToolExecutionStatus(toolUseId: toolUseId, status: .awaitingPermission, requestId: requestId)
+            // 取第一个（session 同一时刻最多一个 pending）
+            guard let approvalDict = pendingApprovalStates.first,
+                  let requestId = approvalDict["requestId"] as? String,
+                  let toolName = approvalDict["toolName"] as? String else {
+                return
             }
+
+            // requestId 去重：如果当前已经在处理同一个请求，跳过
+            if self.currentPendingApproval?.requestId == requestId { return }
+
+            let toolUseId = approvalDict["toolUseId"] as? String ?? ""
+            let description = approvalDict["description"] as? String ?? toolName
+            let input = approvalDict["input"] as? [String: Any] ?? [:]
+
+            let approval = PendingApproval(
+                requestId: requestId,
+                sessionId: sessionId,
+                toolUseId: toolUseId,
+                toolName: toolName,
+                input: input,
+                description: description,
+                timestamp: Date()
+            )
+            self.currentPendingApproval = approval
+            self.approvalResponseState = .awaiting
         }
 
         // 移除旧的 messageNew 监听（避免叠加）
@@ -169,9 +179,9 @@ class SessionDetailViewModel: ObservableObject {
                 let df = DateFormatter(); df.dateFormat = "HH:mm:ss.SSS"
                 print("[DIAG] recv ts=\(df.string(from: Date())) sid=\(sessionId.prefix(8)) uuid=\(newMessage.id.prefix(8)) role=\(newMessage.type)")
 
-                // 检测 interrupted 消息 → 取消当前 session 所有 pending 审批
+                // 检测 interrupted 消息 → 取消当前 pending 审批
                 if newMessage.content.contains("interrupted") {
-                    self.cancelAllPendingApprovals()
+                    self.clearCurrentApproval(terminalStatus: .cancelled)
                 }
 
                 self.bufferMessage(newMessage)
@@ -226,66 +236,39 @@ class SessionDetailViewModel: ObservableObject {
         // 移除旧的观察者
         removeApprovalObservers()
 
-        // 监听权限请求
+        // 监听权限请求 → 直接设置 session 级单一审批
         approvalRequestObserver = NotificationCenter.default.addObserver(
             forName: NSNotification.Name("ApprovalRequest"),
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self = self else {
+            guard let self = self,
+                  let userInfo = notification.userInfo,
+                  let requestSessionId = userInfo["sessionId"] as? String else {
                 return
             }
 
-            guard let userInfo = notification.userInfo else {
-                return
-            }
-
-            // 调试日志：打印所有字段
-
-            guard let requestSessionId = userInfo["sessionId"] as? String else {
-                return
-            }
-
-            // trim 空白字符（包括换行符）后再比较
             let trimmedRequestSessionId = requestSessionId.trimmingCharacters(in: .whitespacesAndNewlines)
             let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmedRequestSessionId == trimmedSessionId else { return }
 
-            guard trimmedRequestSessionId == trimmedSessionId else {
+            guard let requestId = userInfo["requestId"] as? String,
+                  let rawToolName = userInfo["toolName"] as? String,
+                  let rawDescription = userInfo["description"] as? String else {
                 return
             }
 
-            guard let requestId = userInfo["requestId"] as? String else {
-                return
-            }
-
-            guard let rawToolName = userInfo["toolName"] as? String else {
-                return
-            }
             let toolName = rawToolName.trimmingCharacters(in: .whitespacesAndNewlines)
-
-            guard let rawDescription = userInfo["description"] as? String else {
-                return
-            }
             let description = rawDescription.trimmingCharacters(in: .whitespacesAndNewlines)
-
             let input = userInfo["input"] as? [String: Any] ?? [:]
-
-            // toolUseID 可能为空（Claude Code SDK 限制）
             let rawToolUseId = userInfo["toolUseID"] as? String ?? ""
-            var effectiveToolUseId = rawToolUseId.trimmingCharacters(in: .whitespacesAndNewlines)
+            let effectiveToolUseId = rawToolUseId.trimmingCharacters(in: .whitespacesAndNewlines)
 
             let df = DateFormatter(); df.dateFormat = "HH:mm:ss.SSS"
             print("[DIAG] hook-recv ts=\(df.string(from: Date())) event=PermissionRequest sid=\(trimmedSessionId.prefix(8)) tool=\(toolName) toolUseId=\(effectiveToolUseId.isEmpty ? "?" : String(effectiveToolUseId.prefix(12)))")
 
-            // 如果 toolUseId 为空，尝试从 TurnBuilder/displayMessages 中查找匹配的 ToolExecution
-            if effectiveToolUseId.isEmpty {
-                if let matchedId = self.findPendingToolUseId(toolName: toolName) {
-                    effectiveToolUseId = matchedId
-                }
-            }
-
-            // 存储 pending approval
-            let approval = PendingApproval(
+            // Session 级单一审批：直接设置
+            self.currentPendingApproval = PendingApproval(
                 requestId: requestId,
                 sessionId: trimmedRequestSessionId,
                 toolUseId: effectiveToolUseId,
@@ -294,17 +277,10 @@ class SessionDetailViewModel: ObservableObject {
                 description: description,
                 timestamp: Date()
             )
-
-            if effectiveToolUseId.isEmpty {
-                // tool_use 消息尚未到达，存入未匹配队列，等 processMessages 后延迟匹配
-                self.unmatchedApprovals.append(approval)
-            } else {
-                self.pendingApprovals[effectiveToolUseId] = approval
-                self.updateToolExecutionStatus(toolUseId: effectiveToolUseId, status: .awaitingPermission, requestId: requestId)
-            }
+            self.approvalResponseState = .awaiting
         }
 
-        // 监听审批超时
+        // 监听审批超时 → 标记终态，清空审批
         approvalTimeoutObserver = NotificationCenter.default.addObserver(
             forName: NSNotification.Name("ApprovalTimeout"),
             object: nil,
@@ -312,21 +288,14 @@ class SessionDetailViewModel: ObservableObject {
         ) { [weak self] notification in
             guard let self = self,
                   let userInfo = notification.userInfo,
-                  let requestId = userInfo["requestId"] as? String else {
+                  let requestId = userInfo["requestId"] as? String,
+                  self.currentPendingApproval?.requestId == requestId else {
                 return
             }
-
-
-            // 找到对应的 toolUseId 并更新状态
-            if let (toolUseId, _) = self.pendingApprovals.first(where: { $0.value.requestId == requestId }) {
-                self.updateToolExecutionStatus(toolUseId: toolUseId, status: .timeout, requestId: nil)
-                self.pendingApprovals.removeValue(forKey: toolUseId)
-            }
-            // 同时清理 unmatchedApprovals 中的对应条目
-            self.unmatchedApprovals.removeAll { $0.requestId == requestId }
+            self.clearCurrentApproval(terminalStatus: .timeout)
         }
 
-        // 监听审批过期（延迟响应）
+        // 监听审批过期（延迟响应）→ 标记终态，清空审批
         approvalExpiredObserver = NotificationCenter.default.addObserver(
             forName: NSNotification.Name("ApprovalExpired"),
             object: nil,
@@ -334,18 +303,11 @@ class SessionDetailViewModel: ObservableObject {
         ) { [weak self] notification in
             guard let self = self,
                   let userInfo = notification.userInfo,
-                  let requestId = userInfo["requestId"] as? String else {
+                  let requestId = userInfo["requestId"] as? String,
+                  self.currentPendingApproval?.requestId == requestId else {
                 return
             }
-
-
-            // 找到对应的 toolUseId 并更新状态
-            if let (toolUseId, _) = self.pendingApprovals.first(where: { $0.value.requestId == requestId }) {
-                self.updateToolExecutionStatus(toolUseId: toolUseId, status: .timeout, requestId: nil)
-                self.pendingApprovals.removeValue(forKey: toolUseId)
-            }
-            // 同时清理 unmatchedApprovals 中的对应条目
-            self.unmatchedApprovals.removeAll { $0.requestId == requestId }
+            self.clearCurrentApproval(terminalStatus: .timeout)
         }
 
         // 监听 approval-ack（ETerm 确认收到审批响应）
@@ -356,23 +318,18 @@ class SessionDetailViewModel: ObservableObject {
         ) { [weak self] notification in
             guard let self = self,
                   let userInfo = notification.userInfo,
-                  let toolUseId = userInfo["toolUseId"] as? String,
                   let success = userInfo["success"] as? Bool else {
                 return
             }
 
-
             if success {
-                // ETerm 确认收到，更新为 executing
-                self.updateToolExecutionStatus(toolUseId: toolUseId, status: .executing, requestId: nil)
+                // ETerm 确认收到 → 进入 executing 状态，下一条消息到来时清空
+                self.approvalResponseState = .executing
             } else {
-                // ETerm 处理失败，显示错误
-                let message = userInfo["message"] as? String ?? "处理失败"
-                // 可以考虑回退状态或显示错误
+                // ETerm 处理失败 → 清空审批
+                self.currentPendingApproval = nil
+                self.approvalResponseState = .none
             }
-
-            // 清理 pending
-            self.pendingApprovals.removeValue(forKey: toolUseId)
         }
 
         // 监听 approval-cancelled（ETerm Interrupt/PromptSubmit/ResponseComplete 导致审批过期）
@@ -387,15 +344,7 @@ class SessionDetailViewModel: ObservableObject {
                   cancelledSessionId == sessionId else {
                 return
             }
-
-            let toolUseIds = userInfo["toolUseIds"] as? [String] ?? []
-
-            for toolUseId in toolUseIds {
-                self.updateToolExecutionStatus(toolUseId: toolUseId, status: .cancelled, requestId: nil)
-                self.pendingApprovals.removeValue(forKey: toolUseId)
-            }
-            // 同时清理 unmatchedApprovals
-            self.unmatchedApprovals.removeAll()
+            self.clearCurrentApproval(terminalStatus: .cancelled)
         }
     }
 
@@ -422,236 +371,71 @@ class SessionDetailViewModel: ObservableObject {
         }
     }
 
-    /// 更新 ToolExecution 的审批状态
-    /// 取消当前 session 所有 pending 审批（检测到 interrupted 消息时调用）
-    private func cancelAllPendingApprovals() {
-        // 清理 TurnBuilder 中的 pending 工具
-        for turn in turnBuilder.turns {
-            for (i, event) in turn.events.enumerated() {
-                if case .toolUse(var exec) = event.content, exec.approvalStatus == .awaitingPermission {
-                    exec.approvalStatus = .cancelled
-                    turn.replaceEvent(at: i, with: TurnEvent(
-                        id: event.id, eventType: event.eventType,
-                        timestamp: event.timestamp,
-                        content: .toolUse(execution: exec),
-                        isFinal: event.isFinal
-                    ))
+    /// 清空当前审批并标记终态到对应的 ToolExecution
+    private func clearCurrentApproval(terminalStatus: ToolApprovalStatus? = nil) {
+        if let status = terminalStatus, let pending = currentPendingApproval {
+            // 标记终态到 ToolExecution（用于历史显示）
+            let toolId = pendingApprovalToolId()
+            if let toolId = toolId {
+                if !turnBuilder.turns.isEmpty {
+                    turnBuilder.markToolTerminalStatus(toolUseId: toolId, status: status)
+                } else {
+                    // Legacy 模式
+                    markLegacyToolTerminalStatus(toolUseId: toolId, status: status)
                 }
             }
         }
-        // 清理本地 pending 状态
-        pendingApprovals.removeAll()
-        unmatchedApprovals.removeAll()
+        currentPendingApproval = nil
+        approvalResponseState = .none
     }
 
-    private func updateToolExecutionStatus(toolUseId: String, status: ToolApprovalStatus, requestId: String?) {
-        // Timeline 模式：通过 TurnBuilder 更新
-        if !turnBuilder.turns.isEmpty {
-            turnBuilder.updateToolApproval(toolUseId: toolUseId, status: status, requestId: requestId)
-            return
-        }
-
-        // Legacy 模式：原有逻辑
+    /// Legacy 模式下标记 displayMessages 中工具的终态
+    private func markLegacyToolTerminalStatus(toolUseId: String, status: ToolApprovalStatus) {
         for i in 0..<displayMessages.count {
             for j in 0..<displayMessages[i].toolExecutions.count {
                 if displayMessages[i].toolExecutions[j].id == toolUseId {
-                    // 创建更新后的 toolExecution
                     var updatedExecution = displayMessages[i].toolExecutions[j]
                     updatedExecution.approvalStatus = status
-                    if let reqId = requestId {
-                        updatedExecution.approvalRequestId = reqId
-                    }
-
-                    // 创建更新后的 toolExecutions 数组
                     var updatedToolExecutions = displayMessages[i].toolExecutions
                     updatedToolExecutions[j] = updatedExecution
-
-                    // 创建更新后的 displayMessage
                     var updatedMessage = displayMessages[i]
                     updatedMessage.toolExecutions = updatedToolExecutions
-
-                    // 替换整个 displayMessage 以触发 SwiftUI 更新
                     displayMessages[i] = updatedMessage
-
                     return
                 }
             }
         }
-
-        // 如果没找到，可能是 tool_use 消息还没到达，pending approval 已缓存
     }
 
-    /// 查找最近的、状态为 none 的 ToolExecution（用于 toolUseId 为空时的匹配）
-    /// - Parameter toolName: 工具名称
-    /// - Returns: 匹配的 toolUseId，如果没找到返回 nil
-    private func findPendingToolUseId(toolName: String) -> String? {
-        // Timeline 模式：通过 TurnBuilder 查找
-        if !turnBuilder.turns.isEmpty {
-            return turnBuilder.findPendingToolUseId(toolName: toolName)
-        }
-
-        // Legacy 模式：原有逻辑
-        // 倒序查找最近的消息
-        for (msgIndex, message) in displayMessages.reversed().enumerated() {
-            if !message.toolExecutions.isEmpty {
-                for execution in message.toolExecutions {
-                    // 匹配工具名称，且状态为 none（未处理）
-                    if execution.name == toolName && execution.approvalStatus == .none {
-                        return execution.id
-                    }
-                }
-            }
-        }
-        return nil
+    /// 判断某个 tool 是否是当前活跃审批的目标，返回其 toolUseId
+    func pendingApprovalToolId() -> String? {
+        guard let pending = currentPendingApproval else { return nil }
+        if !pending.toolUseId.isEmpty { return pending.toolUseId }
+        // fallback: 当前 active Turn 的最后一个无 result 的同名 tool
+        return turnBuilder.findLastUnresultedToolId(name: pending.toolName)
     }
 
-    /// 应用缓存的 pending approvals 到新到达的 ToolExecutions
-    /// 处理时序问题：permission_request 可能先于 tool_use 消息到达
-    /// Phase 4: 也处理 MessageTransformer 已设置状态但缺少 requestId 的情况
-    private func applyPendingApprovals() {
-        guard !pendingApprovals.isEmpty else { return }
+    /// 发送审批响应（不再需要 toolUseId 参数，session 只有一个审批）
+    func sendApprovalResponse(action: String) {
+        guard let approval = currentPendingApproval else { return }
 
-        // Timeline 模式：委托给 TurnBuilder
-        if !turnBuilder.turns.isEmpty {
-            turnBuilder.applyPendingApprovals(pendingApprovals)
-            return
-        }
+        let toolId = pendingApprovalToolId() ?? ""
 
-        // Legacy 模式：原有逻辑
-        var hasUpdates = false
-
-        for (toolUseId, approval) in pendingApprovals {
-            // 尝试找到对应的 ToolExecution
-            for i in 0..<displayMessages.count {
-                for j in 0..<displayMessages[i].toolExecutions.count {
-                    if displayMessages[i].toolExecutions[j].id == toolUseId {
-                        let currentStatus = displayMessages[i].toolExecutions[j].approvalStatus
-                        let currentRequestId = displayMessages[i].toolExecutions[j].approvalRequestId
-
-                        // 更新条件：
-                        // 1. 状态是 none（需要设置状态和 requestId）
-                        // 2. 状态是 awaitingPermission 但缺少 requestId（来自 Messages，需要补充 requestId）
-                        let needsStatusUpdate = currentStatus == .none
-                        let needsRequestIdUpdate = currentStatus == .awaitingPermission && currentRequestId == nil
-
-                        if needsStatusUpdate || needsRequestIdUpdate {
-                            // 创建更新后的 toolExecution
-                            var updatedExecution = displayMessages[i].toolExecutions[j]
-                            if needsStatusUpdate {
-                                updatedExecution.approvalStatus = .awaitingPermission
-                            }
-                            updatedExecution.approvalRequestId = approval.requestId
-
-                            // 创建更新后的 toolExecutions 数组
-                            var updatedToolExecutions = displayMessages[i].toolExecutions
-                            updatedToolExecutions[j] = updatedExecution
-
-                            // 创建更新后的 displayMessage
-                            var updatedMessage = displayMessages[i]
-                            updatedMessage.toolExecutions = updatedToolExecutions
-
-                            // 替换整个 displayMessage 以触发 SwiftUI 更新
-                            displayMessages[i] = updatedMessage
-                            hasUpdates = true
-                        }
-                    }
-                }
-            }
-        }
-
-        if hasUpdates {
-        }
-    }
-
-    /// 延迟匹配：审批请求先于 tool_use 消息到达时，等 processMessages 后重试匹配
-    /// 典型场景：Claude Code PermissionRequest hook 不提供 tool_use_id，且直接 socket 路径比 DB 采集快
-    private func matchDeferredApprovals() {
-        guard !unmatchedApprovals.isEmpty else { return }
-
-        var matched: [Int] = []
-        for (index, approval) in unmatchedApprovals.enumerated() {
-            // 按工具名查找最近一个未审批的 tool_use 事件
-            if let toolUseId = findPendingToolUseId(toolName: approval.toolName) {
-                let updatedApproval = PendingApproval(
-                    requestId: approval.requestId,
-                    sessionId: approval.sessionId,
-                    toolUseId: toolUseId,
-                    toolName: approval.toolName,
-                    input: approval.input,
-                    description: approval.description,
-                    timestamp: approval.timestamp
-                )
-                pendingApprovals[toolUseId] = updatedApproval
-                updateToolExecutionStatus(toolUseId: toolUseId, status: .awaitingPermission, requestId: approval.requestId)
-                matched.append(index)
-            }
-        }
-
-        // 移除已匹配的条目（倒序删除保持索引正确）
-        for index in matched.reversed() {
-            unmatchedApprovals.remove(at: index)
-        }
-
-        // 清理过期的未匹配审批（超过 60 秒）
-        let cutoff = Date().addingTimeInterval(-60)
-        unmatchedApprovals.removeAll { $0.timestamp < cutoff }
-    }
-
-    /// 发送审批响应
-    func sendApprovalResponse(toolUseId: String, action: String) {
-        guard let approval = pendingApprovals[toolUseId] else {
-            return
-        }
-
-
-        // 根据 action 更新状态
         if action == "n" {
-            // 拒绝
-            updateToolExecutionStatus(toolUseId: toolUseId, status: .rejected, requestId: nil)
-            pendingApprovals.removeValue(forKey: toolUseId)
+            // 拒绝 → 标记终态，清空审批
+            clearCurrentApproval(terminalStatus: .rejected)
         } else {
-            // 允许（y 或 a），等待 ETerm 确认
-            updateToolExecutionStatus(toolUseId: toolUseId, status: .pendingAck, requestId: nil)
+            // 允许（y 或 a）→ 等待 ETerm 确认
+            approvalResponseState = .pendingAck
         }
 
-        // 发送响应到服务器（包含 toolUseId 供 ETerm 返回 ack）
+        // 发送响应到服务器
         wsClient.sendApprovalResponse(
             requestId: approval.requestId,
             sessionId: approval.sessionId,
             action: action,
-            toolUseId: toolUseId
+            toolUseId: toolId
         )
-    }
-
-    /// 获取 tool 的审批状态（供 ToolView 使用）
-    func getApprovalStatus(for toolUseId: String) -> ToolApprovalStatus {
-        // 先检查 pending approvals
-        if pendingApprovals[toolUseId] != nil {
-            return .awaitingPermission
-        }
-
-        // Timeline 模式：从 TurnBuilder 查找
-        if !turnBuilder.turns.isEmpty {
-            for turn in turnBuilder.turns {
-                for event in turn.events {
-                    if case .toolUse(let exec) = event.content, exec.id == toolUseId {
-                        return exec.approvalStatus
-                    }
-                }
-            }
-            return .none
-        }
-
-        // Legacy 模式：从 displayMessages 查找
-        for message in displayMessages {
-            for execution in message.toolExecutions {
-                if execution.id == toolUseId {
-                    return execution.approvalStatus
-                }
-            }
-        }
-
-        return .none
     }
 
     // MARK: - 发送消息
@@ -791,24 +575,21 @@ class SessionDetailViewModel: ObservableObject {
             newMessages.append(msg)
         }
 
-        // 先处理新消息，让 tool_use 进入 TurnBuilder
+        // 处理新消息
         if !newMessages.isEmpty {
             turnBuilder.processMessages(newMessages)
         }
 
-        // 再应用审批状态（此时 tool_use 已在 TurnBuilder 中，能正确匹配）
-        if !turnBuilder.turns.isEmpty {
-            if !pendingApprovals.isEmpty {
-                turnBuilder.applyPendingApprovals(pendingApprovals)
-            }
-        } else {
-            // Legacy 模式：保留原有 transform 逻辑
-            displayMessages = messageTransformer.transform(messages: rawMessages)
-            applyPendingApprovals()
+        // 新消息到达且处于 executing 状态 → 审批流结束，清空
+        if approvalResponseState == .executing && !newMessages.isEmpty {
+            currentPendingApproval = nil
+            approvalResponseState = .none
         }
 
-        // 延迟匹配：tool_use 消息到达后，匹配之前无法关联的审批请求
-        matchDeferredApprovals()
+        // Legacy 模式：保留 transform 逻辑
+        if turnBuilder.turns.isEmpty {
+            displayMessages = messageTransformer.transform(messages: rawMessages)
+        }
 
         // 收到 assistant 响应，隐藏 loading
         if messages.contains(where: { $0.type == "assistant" }) {
@@ -831,7 +612,8 @@ class SessionDetailViewModel: ObservableObject {
             statuslineMetricsObserver = nil
         }
         removeApprovalObservers()
-        pendingApprovals.removeAll()
+        currentPendingApproval = nil
+        approvalResponseState = .none
         // S4: 切换 session 时清空 TurnBuilder 和 pendingMessages，避免残留旧数据
         pendingMessages.removeAll()
         turnBuilder.clear()

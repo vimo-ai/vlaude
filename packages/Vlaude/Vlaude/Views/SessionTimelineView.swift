@@ -11,7 +11,9 @@ import SwiftUI
 struct SessionTimelineView: View {
     @ObservedObject var turnBuilder: TurnBuilder
     let sessionId: String
-    var onApprovalAction: ((String, String) -> Void)? = nil
+    var pendingApprovalToolId: String? = nil
+    var approvalResponseState: ApprovalResponseState = .none
+    var onApprovalAction: ((String) -> Void)? = nil
 
     var body: some View {
         ForEach(Array(turnBuilder.turns.enumerated()), id: \.element.id) { index, turn in
@@ -22,6 +24,8 @@ struct SessionTimelineView: View {
                 turn: turn,
                 sessionId: sessionId,
                 turnIndex: index + 1,
+                pendingApprovalToolId: pendingApprovalToolId,
+                approvalResponseState: approvalResponseState,
                 onApprovalAction: onApprovalAction
             )
             .id(turn.id)

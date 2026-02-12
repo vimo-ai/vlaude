@@ -11,7 +11,9 @@ struct CompactToolRow: View {
     let execution: ToolExecution
     let sessionId: String
     var isActive: Bool = false
-    var onApprovalAction: ((String, String) -> Void)? = nil
+    var isActiveApproval: Bool = false              // 是否是当前审批目标
+    var approvalResponseState: ApprovalResponseState = .none
+    var onApprovalAction: ((String) -> Void)? = nil  // 简化：不再需要 toolUseId
     @State private var isExpanded = false
 
     // MCP 工具名解析
@@ -78,10 +80,10 @@ struct CompactToolRow: View {
             .buttonStyle(.plain)
 
             // 审批按钮直接展示（不需要展开详情）
-            if execution.approvalStatus == .awaitingPermission, let handler = onApprovalAction {
+            if isActiveApproval, let handler = onApprovalAction {
                 ApprovalButtonsView(
-                    status: .awaitingPermission,
-                    onApprove: { action in handler(execution.id, action) }
+                    responseState: approvalResponseState,
+                    onApprove: handler
                 )
                 .padding(.horizontal, 8)
                 .padding(.bottom, 6)
@@ -92,6 +94,8 @@ struct CompactToolRow: View {
                 ToolExecutionBubble(
                     execution: execution,
                     sessionId: sessionId,
+                    isActiveApproval: isActiveApproval,
+                    approvalResponseState: approvalResponseState,
                     onApprovalAction: onApprovalAction
                 )
                 .padding(.top, 4)
@@ -108,13 +112,27 @@ struct CompactToolRow: View {
 
     @ViewBuilder
     private var statusIndicator: some View {
-        if execution.approvalStatus == .awaitingPermission {
-            ApprovalStatusBadge(status: .awaitingPermission)
+        if isActiveApproval {
+            // 当前审批目标：根据 responseState 显示
+            switch approvalResponseState {
+            case .awaiting:
+                Image(systemName: "exclamationmark.shield.fill")
+                    .font(.system(size: 11))
+                    .foregroundColor(.orange)
+            case .pendingAck, .executing:
+                ProgressView()
+                    .scaleEffect(0.5)
+                    .frame(width: 14, height: 14)
+            case .none:
+                EmptyView()
+            }
         } else if execution.approvalStatus == .timeout && execution.result == nil {
-            // 中断的工具调用（无 tool_result）
-            Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 11))
-                .foregroundColor(.orange)
+            // 终态：中断的工具调用
+            ApprovalStatusBadge(status: .timeout)
+        } else if execution.approvalStatus == .rejected {
+            ApprovalStatusBadge(status: .rejected)
+        } else if execution.approvalStatus == .cancelled {
+            ApprovalStatusBadge(status: .cancelled)
         } else if isActive && execution.result == nil {
             ProgressView()
                 .scaleEffect(0.5)

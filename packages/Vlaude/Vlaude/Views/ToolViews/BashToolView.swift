@@ -10,7 +10,9 @@ import SwiftUI
 /// Bash 工具视图 - 终端风格
 struct BashToolView: View {
     let execution: ToolExecution
-    var onApprovalAction: ((String) -> Void)? = nil  // 审批回调
+    var isActiveApproval: Bool = false
+    var approvalResponseState: ApprovalResponseState = .none
+    var onApprovalAction: ((String) -> Void)? = nil
     @State private var isExpanded = false
 
     private var command: String {
@@ -62,26 +64,19 @@ struct BashToolView: View {
 
                 Spacer()
 
-                // 审批状态标签
-                ApprovalStatusBadge(status: execution.approvalStatus)
+                // 审批终态标签
+                if !isActiveApproval {
+                    ApprovalStatusBadge(status: execution.approvalStatus)
+                }
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(Color.black.opacity(0.9))
 
-            // 审批按钮（如果需要）
-            if execution.approvalStatus == .awaitingPermission, let onApprove = onApprovalAction {
-                ApprovalButtonsView(status: execution.approvalStatus, onApprove: onApprove)
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.black.opacity(0.9))
-            }
-
-            // 等待状态提示
-            if execution.approvalStatus == .pendingAck || execution.approvalStatus == .executing {
-                ApprovalButtonsView(status: execution.approvalStatus, onApprove: { _ in })
+            // 审批按钮/spinner（仅当此工具是当前审批目标时）
+            if isActiveApproval, let onApprove = onApprovalAction {
+                ApprovalButtonsView(responseState: approvalResponseState, onApprove: onApprove)
                     .padding(.horizontal, 12)
                     .padding(.bottom, 8)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -110,14 +105,6 @@ struct BashToolView: View {
                 .background(Color.black.opacity(0.85))
             }
 
-            // 被拒绝、超时或取消状态
-            if execution.approvalStatus == .rejected || execution.approvalStatus == .timeout || execution.approvalStatus == .cancelled {
-                ApprovalButtonsView(status: execution.approvalStatus, onApprove: { _ in })
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.black.opacity(0.9))
-            }
         }
         .cornerRadius(8)
         .overlay(
@@ -127,12 +114,13 @@ struct BashToolView: View {
     }
 
     private var borderColor: Color {
-        switch execution.approvalStatus {
-        case .awaitingPermission:
+        if isActiveApproval {
             return .orange.opacity(0.5)
+        }
+        switch execution.approvalStatus {
         case .rejected, .timeout, .cancelled:
             return .red.opacity(0.5)
-        default:
+        case .none:
             return isError ? Color.red.opacity(0.5) : Color.green.opacity(0.3)
         }
     }
