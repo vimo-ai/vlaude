@@ -580,8 +580,9 @@ class SessionDetailViewModel: ObservableObject {
             turnBuilder.processMessages(newMessages)
         }
 
-        // 新消息到达且处于 executing 状态 → 审批流结束，清空
-        if approvalResponseState == .executing && !newMessages.isEmpty {
+        // 新消息到达且有活跃审批 → 审批流结束，清空
+        // 无论是 awaiting/pendingAck/executing，只要有新消息就说明 ETerm 侧已通过
+        if approvalResponseState != .none && !newMessages.isEmpty {
             currentPendingApproval = nil
             approvalResponseState = .none
         }

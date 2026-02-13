@@ -22,6 +22,7 @@ struct SessionDetailView: View {
     @State private var showTimeoutError = false
     @State private var showExpiredError = false
     @State private var errorMessage = ""
+    @State private var navigateToChildSession: String?
 
     var body: some View {
         mainContent
@@ -41,6 +42,9 @@ struct SessionDetailView: View {
                 sessionId: sessionId,
                 viewModel: viewModel
             ))
+            .navigationDestination(item: $navigateToChildSession) { childId in
+                SessionDetailView(sessionId: childId, projectPath: projectPath)
+            }
     }
 
     // MARK: - 主内容区域
@@ -286,6 +290,27 @@ struct SessionDetailView: View {
                             .font(.system(size: 10))
                         Text("\(count)")
                             .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(.indigo)
+                }
+            }
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            if let childIds = viewModel.session?.childSessionIds, !childIds.isEmpty {
+                Menu {
+                    ForEach(childIds, id: \.self) { childId in
+                        Button {
+                            navigateToChildSession = childId
+                        } label: {
+                            Label(String(childId.prefix(8)), systemImage: "cpu")
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 12))
+                        Text("\(childIds.count)")
+                            .font(.system(size: 12, weight: .medium))
                     }
                     .foregroundColor(.indigo)
                 }
