@@ -57,17 +57,38 @@ export class SessionController {
   }
 
   /**
-   * 创建新对话（不支持，Daemon 数据只读）
+   * 创建新对话（通过 ETerm 创建）
    * POST /sessions
    */
   @Post()
   async createSession(
     @Body() body: { projectPath: string; prompt?: string; requestId?: string }
   ) {
-    return {
-      success: false,
-      message: 'Daemon 数据是只读的，请使用 ETerm 创建会话',
-    };
+    const { projectPath, prompt, requestId } = body;
+
+    if (!projectPath) {
+      return { success: false, message: '缺少 projectPath 参数' };
+    }
+
+    const trackingId = requestId || crypto.randomUUID();
+
+    const sent = await this.daemonGateway.requestEtermCreateSession(
+      projectPath, prompt, trackingId,
+    );
+
+    if (sent) {
+      return {
+        success: true,
+        mode: 'eterm',
+        message: '已通知 ETerm 创建会话',
+        requestId: trackingId,
+      };
+    } else {
+      return {
+        success: false,
+        message: 'ETerm 未在线，无法创建会话',
+      };
+    }
   }
 
   /**

@@ -46,6 +46,9 @@ export class DaemonGateway
   private pendingSessionRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout; startTime: number }>();
   private pendingMessageRequests = new Map<string, { resolve: Function; timer: NodeJS.Timeout; startTime: number }>();
 
+  // iOS 创建会话请求的 pending Map（requestId → projectPath，用于 result 回调时补充 projectPath）
+  private pendingCreateRequests = new Map<string, { projectPath: string; createdAt: number }>();
+
   // 分段传输缓冲区
   // Key: transferId, Value: { event, chunks, total, receivedCount, timer }
   private chunkBuffers = new Map<string, {
@@ -970,6 +973,41 @@ export class DaemonGateway
   }
 
   /**
+   * 接收 ETerm 的会话创建结果（转发给 AppGateway → iOS）
+   */
+  @SubscribeMessage(DaemonEvents.SESSION_CREATED_RESULT)
+  handleSessionCreatedResult(
+    @MessageBody() data: {
+      requestId: string;
+      success: boolean;
+      sessionId?: string;
+      encodedDirName?: string;
+      transcriptPath?: string;
+      error?: string;
+    },
+    @ConnectedSocket() client: Socket,
+  ) {
+    this.logger.log(`🖥️ [ETerm] Session 创建结果: requestId=${data.requestId} success=${data.success} sessionId=${data.sessionId || 'N/A'}`);
+
+    // 从 pending Map 取出 projectPath
+    const pending = this.pendingCreateRequests.get(data.requestId);
+    this.pendingCreateRequests.delete(data.requestId);
+    const projectPath = pending?.projectPath || '';
+
+    if (data.success && data.sessionId) {
+      // 通知 AppGateway 广播给 iOS
+      this.eventEmitter.emit('app.etermSessionCreated', {
+        requestId: data.requestId,
+        sessionId: data.sessionId,
+        projectPath,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return { success: true };
+  }
+
+  /**
    * 接收 Daemon 的 SDK 错误通知（转发给 AppGateway）
    */
   @SubscribeMessage(DaemonEvents.SDK_ERROR)
@@ -1241,11 +1279,16 @@ export class DaemonGateway
       return false;
     }
 
-    // 广播给所有 daemon，VlaudeKit 会处理
-    this.server.emit(ServerEvents.CREATE_SESSION_IN_ETERM, {
+    // 存入 pending Map，供 sessionCreatedResult 回调时取出 projectPath
+    if (requestId) {
+      this.pendingCreateRequests.set(requestId, { projectPath, createdAt: Date.now() });
+    }
+
+    // 使用 CREATE_SESSION 事件（VlaudeKit 的 didReceiveCreateSessionNew handler）
+    this.server.emit(ServerEvents.CREATE_SESSION, {
       projectPath,
       prompt,
-      requestId,  // 透传 requestId
+      requestId,
     });
 
     this.logger.log(`🖥️ [ETerm] 广播创建会话请求: projectPath=${projectPath}, requestId=${requestId || 'N/A'}`);
