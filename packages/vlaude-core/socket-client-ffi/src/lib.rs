@@ -922,6 +922,7 @@ pub unsafe extern "C" fn socket_client_free_string(s: *mut c_char) {
 /// - `url` 必须是有效的 UTF-8 C 字符串
 /// - `namespace` 可为 null
 /// - `redis_host` 可为 null（不启用 Redis）
+/// - `ca_cert_path` 可为 null（不加载 CA 证书，退回 danger_accept_invalid_certs）
 /// - `device_id`, `device_name`, `platform`, `version` 启用 Redis 时必填
 /// - 返回的句柄需要通过 `socket_client_destroy` 释放
 #[no_mangle]
@@ -931,6 +932,7 @@ pub unsafe extern "C" fn socket_client_create_with_redis(
     redis_host: *const c_char,
     redis_port: u16,
     redis_password: *const c_char,
+    ca_cert_path: *const c_char,
     device_id: *const c_char,
     device_name: *const c_char,
     platform: *const c_char,
@@ -956,9 +958,24 @@ pub unsafe extern "C" fn socket_client_create_with_redis(
                 .to_string()
         };
 
-        // TLS 配置
+        // TLS 配置：优先用传入的 CA cert path，否则 fallback 到 ~/.eterm/certs/ca.crt
+        let ca_path = if !ca_cert_path.is_null() {
+            let path_str = CStr::from_ptr(ca_cert_path)
+                .to_str()
+                .map_err(|_| SocketClientError::InvalidUtf8)?;
+            Some(std::path::PathBuf::from(path_str))
+        } else {
+            // Swift 配置可能未传入，自动查找默认位置
+            let fallback = std::env::var("HOME").ok()
+                .map(|h| std::path::PathBuf::from(h).join(".eterm/certs/ca.crt"))
+                .filter(|p| p.exists());
+            fallback
+        };
+        // 有 CA cert 时走正常验证，没有时 fallback 到跳过验证
+        let skip_verify = ca_path.is_none();
         let tls = TlsConfig {
-            danger_accept_invalid_certs: true,
+            ca_cert_path: ca_path,
+            danger_accept_invalid_certs: skip_verify,
             ..Default::default()
         };
 
