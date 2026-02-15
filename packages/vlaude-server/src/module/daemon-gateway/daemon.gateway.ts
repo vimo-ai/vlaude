@@ -13,7 +13,6 @@ import { Logger, OnModuleDestroy, Inject, forwardRef } from '@nestjs/common';
 import { OnEvent, EventEmitter2 } from '@nestjs/event-emitter';
 import { RegistryService } from '../registry/registry.service';
 import { StatusService } from '../status';
-import { DataSyncService, DaemonMessage } from '../data-sync';
 import { StatusDaemonInfo, StatusSessionInfo } from '@vimo-ai/vlaude-shared-core';
 import { DaemonEvents, ServerEvents } from '../../shared/events';
 import { ToolUseCorrelator } from './tool-use-correlator';
@@ -82,7 +81,6 @@ export class DaemonGateway
     @Inject(forwardRef(() => RegistryService))
     private readonly registryService: RegistryService,
     private readonly statusService: StatusService,
-    private readonly dataSyncService: DataSyncService,
   ) {}
 
   afterInit(server: Server) {
@@ -503,47 +501,12 @@ export class DaemonGateway
 
   /**
    * Daemon 推送新消息（转发给 AppGateway）
-   *
-   * V5 (Phase 3):
-   * - sync 模式下同时写入 Server DB
-   * - 然后转发给 iOS 客户端
    */
   @SubscribeMessage(DaemonEvents.NEW_MESSAGE)
   async handleNewMessage(
     @MessageBody() data: { sessionId: string; projectPath?: string; message: any },
     @ConnectedSocket() client: Socket,
   ) {
-    // AppGateway.notifyNewMessage 已有日志，此处不重复
-
-    // sync 模式下写入 DB
-    if (this.dataSyncService.isSyncMode() && data.projectPath) {
-      try {
-        // 确保 Project 和 Session 存在
-        const projectId = await this.dataSyncService.ensureProject(data.projectPath);
-        const sessionDbId = await this.dataSyncService.ensureSession(data.sessionId, projectId, data.projectPath);
-
-        // 写入消息
-        const msg = data.message;
-        const daemonMessage: DaemonMessage = {
-          uuid: msg.uuid || `${data.sessionId}-${msg.sequence}`,
-          role: msg.role,
-          content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
-          metadata: msg.metadata,
-          sequence: msg.sequence,
-          timestamp: msg.timestamp,
-          toolCallId: msg.toolCallId,
-          approvalStatus: msg.approvalStatus,
-          approvalResolvedAt: msg.approvalResolvedAt,
-        };
-
-        await this.dataSyncService.writeMessage(sessionDbId, daemonMessage);
-        this.logger.log(`📝 [Sync] 消息已写入 Server DB: ${daemonMessage.uuid}`);
-      } catch (error) {
-        this.logger.error(`❌ [Sync] 写入消息失败: ${error.message}`);
-        // 写入失败不影响转发
-      }
-    }
-
     // 通过事件转发给 AppGateway，推送到订阅了该会话的 Swift 客户端
     this.eventEmitter.emit('app.notifyNewMessage', data);
   }

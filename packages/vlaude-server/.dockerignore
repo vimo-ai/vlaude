@@ -8,11 +8,14 @@ dist
 .env.*
 !.env.example
 *.tgz
+!*shared-core*.tgz
 .DS_Store
 .cursor
 .vlaude
 .rules
 coverage
 test
+prisma
+src/generated
 *.spec.ts
 *.test.ts

@@ -17,7 +17,7 @@ export interface JwtPayload {
 @Injectable()
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
-  private readonly privateKey: string;
+  private readonly privateKey: string | null = null;
 
   constructor(
     private configService: ConfigService,
@@ -26,7 +26,8 @@ export class AuthService {
     const privateKeyPath = this.configService.get<string>('JWT_PRIVATE_KEY_PATH');
 
     if (!privateKeyPath) {
-      throw new Error('JWT_PRIVATE_KEY_PATH 未配置');
+      this.logger.warn('⚠️ JWT_PRIVATE_KEY_PATH 未配置，JWT 认证已禁用');
+      return;
     }
 
     try {
@@ -34,7 +35,7 @@ export class AuthService {
       this.privateKey = readFileSync(fullPath, 'utf-8');
       this.logger.log(`✅ JWT 私钥已加载: ${privateKeyPath}`);
     } catch (error) {
-      throw new Error(`无法加载 JWT 私钥: ${error.message}`);
+      this.logger.error(`❌ 无法加载 JWT 私钥: ${error.message}，JWT 认证已禁用`);
     }
   }
 
@@ -46,6 +47,10 @@ export class AuthService {
     clientType: 'daemon' | 'ios',
     deviceName?: string,
   ): Promise<{ success: boolean; token?: string; reason?: string }> {
+    if (!this.privateKey) {
+      return { success: false, reason: 'jwt_not_configured' };
+    }
+
     // 默认永不过期（100年），安全依赖设备白名单撤销机制
     const expiresIn = this.configService.get<string>('JWT_EXPIRES_IN', '100y');
 
@@ -86,7 +91,7 @@ export class AuthService {
       deviceName,
     };
 
-    const token = jwt.sign(payload, this.privateKey, {
+    const token = jwt.sign(payload, this.privateKey!, {
       algorithm: 'RS256',
       expiresIn,
     });

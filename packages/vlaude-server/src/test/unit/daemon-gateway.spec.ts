@@ -19,7 +19,6 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DaemonGateway } from '../../module/daemon-gateway/daemon.gateway';
 import { StatusService } from '../../module/status';
 import { RegistryService } from '../../module/registry/registry.service';
-import { DataSyncService } from '../../module/data-sync';
 
 // =================== Mock 数据 ===================
 
@@ -60,18 +59,6 @@ function createMockRegistryService() {
   };
 }
 
-function createMockDataSyncService() {
-  return {
-    getSyncMode: vi.fn().mockReturnValue('forward'),
-    isForwardMode: vi.fn().mockReturnValue(true),
-    isSyncMode: vi.fn().mockReturnValue(false),
-    getMessagesFromDb: vi.fn().mockResolvedValue(null),
-    ensureProject: vi.fn().mockResolvedValue(1),
-    ensureSession: vi.fn().mockResolvedValue(1),
-    syncMessages: vi.fn().mockResolvedValue(undefined),
-    writeMessage: vi.fn().mockResolvedValue(undefined),
-  };
-}
 
 function createMockSocket() {
   return {
@@ -112,8 +99,6 @@ describe('DaemonGateway', () => {
           useValue: mockEventEmitter,
         },
         {
-          provide: DataSyncService,
-          useValue: createMockDataSyncService(),
         },
       ],
     }).compile();
@@ -390,8 +375,6 @@ describe('DaemonGateway 场景测试', () => {
           useValue: { emit: vi.fn() },
         },
         {
-          provide: DataSyncService,
-          useValue: createMockDataSyncService(),
         },
       ],
     }).compile();
@@ -493,7 +476,6 @@ describe('DaemonGateway Chunk 组装', () => {
         { provide: StatusService, useValue: mockStatusService },
         { provide: RegistryService, useValue: createMockRegistryService() },
         { provide: EventEmitter2, useValue: { emit: vi.fn() } },
-        { provide: DataSyncService, useValue: createMockDataSyncService() },
       ],
     }).compile();
 

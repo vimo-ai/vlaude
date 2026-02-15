@@ -2,10 +2,9 @@
 # 构建命令: docker build --platform linux/amd64 -t vlaude-server .
 # 架构: amd64 (群晖 NAS x86_64)
 #
-# V4 架构: 纯代理模式
-# - 移除 SQLite/Prisma 依赖
-# - 数据源: Daemon (通过 WebSocket)
-# - Server 可部署到云端/NAS
+# 纯 forward 代理模式
+# - 无数据库依赖，所有请求透传到 Daemon
+# - Server 部署在 NAS，Daemon/VlaudeKit 运行在 Mac
 
 # ================================
 # Builder Stage
@@ -25,11 +24,15 @@ WORKDIR /app
 # 安装 pnpm
 RUN npm install -g pnpm@9.15.0
 
-# 复制 package.json
-COPY package.json ./
+# shared-core tarball（由 docker-build.sh 预先打包）
+ARG SHARED_CORE_TGZ=vimo-ai-vlaude-shared-core-0.0.1-beta.1.tgz
 
-# 移除 workspace 依赖（如果有的话）
-RUN sed -i 's/"@vimo-ai\/vlaude-shared-core": "workspace:\*"/"@vimo-ai\/vlaude-shared-core": "^0.0.1-beta.1"/g' package.json || true
+# 复制 package.json + shared-core tarball
+COPY package.json ./
+COPY ${SHARED_CORE_TGZ} ./shared-core.tgz
+
+# workspace 依赖替换为本地 tarball
+RUN sed -i 's/"@vimo-ai\/vlaude-shared-core": "workspace:\*"/"@vimo-ai\/vlaude-shared-core": "file:shared-core.tgz"/g' package.json
 
 # 安装依赖
 RUN pnpm install
@@ -37,7 +40,7 @@ RUN pnpm install
 # 复制源码
 COPY . .
 
-# 构建 (V4: 移除 Prisma generate)
+# 构建
 RUN pnpm build
 
 # ================================
@@ -45,7 +48,6 @@ RUN pnpm build
 # ================================
 FROM --platform=linux/amd64 node:22-alpine
 
-# 安装运行时依赖
 RUN apk add --no-cache \
     curl \
     bash \
@@ -53,34 +55,30 @@ RUN apk add --no-cache \
 
 WORKDIR /app
 
-# 从 builder 复制构建产物 (V4: 移除 Prisma 相关文件)
+# 从 builder 复制构建产物
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./
 
-# 创建必要的目录
+# 创建证书目录（mTLS 可选）
 RUN mkdir -p /app/certs
 
-# 暴露端口
 EXPOSE 10005
 
-# 环境变量说明:
-# - PORT: 服务端口 (默认 10005)
-# - NODE_ENV: 环境 (production)
-# - JWT_PUBLIC_KEY / JWT_PRIVATE_KEY: JWT 密钥
-# - IP_WHITELIST: IP 白名单
-# - ENABLE_MTLS: 是否启用 mTLS (可选)
-# - REDIS_HOST / REDIS_PORT: Redis 配置 (服务发现)
-#
-# V4 注意: 数据来自 Daemon，Server 不需要本地数据库
+# 环境变量:
+# PORT            服务端口 (默认 10005)
+# NODE_ENV        环境 (production)
+# IP_WHITELIST    IP 白名单 (逗号分隔 CIDR)
+# REDIS_HOST      Redis 地址 (服务发现/状态管理)
+# REDIS_PORT      Redis 端口
+# REDIS_PASSWORD  Redis 密码
+# JWT_PUBLIC_KEY  JWT 公钥 (可选)
+# ENABLE_MTLS     启用 mTLS (可选)
 
-# 设置默认环境变量
 ENV NODE_ENV=production
 ENV PORT=10005
 
-# 健康检查
 HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
     CMD curl -f http://localhost:10005/health || exit 1
 
-# 启动命令
 CMD ["node", "dist/main.js"]

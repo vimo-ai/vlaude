@@ -12,13 +12,7 @@
     "test:unit": "vitest run src/test/unit",
     "test:e2e": "vitest run src/test/e2e",
     "test:watch": "vitest watch",
-    "test:coverage": "vitest run --coverage",
-    "prisma:generate": "prisma generate",
-    "prisma:push": "prisma db push",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio",
-    "prisma:generate:test": "prisma generate --schema=prisma/test-db/prisma/schema.prisma",
-    "prisma:push:test": "prisma db push --schema=prisma/test-db/prisma/schema.prisma"
+    "test:coverage": "vitest run --coverage"
   },
   "repository": {},
   "dependencies": {
@@ -32,7 +26,6 @@
     "@nestjs/platform-fastify": "10.4.13",
     "@nestjs/platform-socket.io": "^10.4.20",
     "@nestjs/websockets": "^10.4.20",
-    "@prisma/client": "^5.22.0",
     "@vimo-ai/vlaude-shared-core": "workspace:*",
     "axios": "^1.13.2",
     "cache-manager": "5.7.6",
@@ -40,7 +33,6 @@
     "dayjs": "^1.11.13",
     "jsonwebtoken": "^9.0.2",
     "nestjs-minio": "^2.6.2",
-    "prisma-json-types-generator": "^3.1.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "socket.io": "^4.8.1",
@@ -57,7 +49,6 @@
     "class-transformer": "^0.5.1",
     "fastify": "4.28.1",
     "minio": "^8.0.2",
-    "prisma": "^5.22.0",
     "supertest": "^7.0.0"
   },
   "license": "ISC"

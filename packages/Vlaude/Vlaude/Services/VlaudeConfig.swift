@@ -10,7 +10,7 @@ import Foundation
 /// Vlaude 配置
 enum VlaudeConfig {
     /// 服务器地址（修改这一处即可）
-    static let serverHost = "10.0.0.1"
+    static let serverHost = "***REMOVED-domain***"
     static let serverPort = 10005
 
     static var serverURL: String { "\(serverHost):\(serverPort)" }

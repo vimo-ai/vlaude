@@ -43,6 +43,9 @@ struct Session: Identifiable, Codable, Hashable {
     let childrenCount: Int?        // 子会话数量
     let parentSessionId: String?   // 父会话 ID（subagent 时有值）
     let childSessionIds: [String]? // 子会话 ID 列表
+    // V7: Continuation chain 导航
+    let continuationPrevId: String?    // 前一个续接会话 ID
+    let continuationNextIds: [String]? // 后续续接会话 ID 列表
 
     // V4: 使用 sessionId 或 rawId 作为唯一标识
     var id: String {
@@ -56,6 +59,7 @@ struct Session: Identifiable, Codable, Hashable {
         case projectId, messageCount, lastMessageAt, createdAt, updatedAt
         case project, lastMessage, inEterm
         case sessionType, childrenCount, parentSessionId, childSessionIds
+        case continuationPrevId, continuationNextIds
     }
 
     // Hashable
@@ -98,7 +102,9 @@ struct Session: Identifiable, Codable, Hashable {
             sessionType: self.sessionType,
             childrenCount: self.childrenCount,
             parentSessionId: self.parentSessionId,
-            childSessionIds: self.childSessionIds
+            childSessionIds: self.childSessionIds,
+            continuationPrevId: self.continuationPrevId,
+            continuationNextIds: self.continuationNextIds
         )
     }
 }

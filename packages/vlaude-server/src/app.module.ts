@@ -21,7 +21,6 @@ import { DeviceModule } from './device/device.module';
 import { RegistryModule } from './module/registry/registry.module';
 import { StatusModule } from './module/status';
 import { DataSyncModule } from './module/data-sync';
-import { PrismaModule } from './shared/database/prisma.module';
 // @feature:minio:start
 // import { MinioModule } from './module/minio/minio.module';
 // @feature:minio:end
@@ -35,9 +34,6 @@ import { PrismaModule } from './shared/database/prisma.module';
       isGlobal: true,
       envFilePath: ['.env', 'env/.env.dev', 'env/.env.local', 'env/.env.nas', 'env/.env.prod', 'env/.env'],
     }),
-    // Prisma 数据库模块（Phase 3：sync 模式需要）
-    PrismaModule.forRoot(),
-    // 数据同步模块（Phase 3：支持 forward/sync 两种模式）
     DataSyncModule,
     // Vlaude 核心模块
     GatewayModule,

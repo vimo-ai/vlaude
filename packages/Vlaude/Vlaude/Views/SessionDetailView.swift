@@ -296,23 +296,65 @@ struct SessionDetailView: View {
             }
         }
         ToolbarItem(placement: .topBarTrailing) {
-            if let childIds = viewModel.session?.childSessionIds, !childIds.isEmpty {
-                Menu {
-                    ForEach(childIds, id: \.self) { childId in
+            HStack(spacing: 8) {
+                // Continuation chain: prev/next
+                if let prevId = viewModel.session?.continuationPrevId {
+                    Button {
+                        navigateToChildSession = prevId
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.orange)
+                    }
+                }
+                if let nextIds = viewModel.session?.continuationNextIds, !nextIds.isEmpty {
+                    if nextIds.count == 1 {
                         Button {
-                            navigateToChildSession = childId
+                            navigateToChildSession = nextIds[0]
                         } label: {
-                            Label(String(childId.prefix(8)), systemImage: "cpu")
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .semibold))
+                                .foregroundColor(.orange)
+                        }
+                    } else {
+                        Menu {
+                            ForEach(nextIds, id: \.self) { nextId in
+                                Button {
+                                    navigateToChildSession = nextId
+                                } label: {
+                                    Label(String(nextId.prefix(8)), systemImage: "arrow.right")
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 1) {
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                Text("\(nextIds.count)")
+                                    .font(.system(size: 10, weight: .medium))
+                            }
+                            .foregroundColor(.orange)
                         }
                     }
-                } label: {
-                    HStack(spacing: 2) {
-                        Image(systemName: "arrow.triangle.branch")
-                            .font(.system(size: 12))
-                        Text("\(childIds.count)")
-                            .font(.system(size: 12, weight: .medium))
+                }
+                // Subagent children
+                if let childIds = viewModel.session?.childSessionIds, !childIds.isEmpty {
+                    Menu {
+                        ForEach(childIds, id: \.self) { childId in
+                            Button {
+                                navigateToChildSession = childId
+                            } label: {
+                                Label(String(childId.prefix(8)), systemImage: "cpu")
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 2) {
+                            Image(systemName: "arrow.triangle.branch")
+                                .font(.system(size: 12))
+                            Text("\(childIds.count)")
+                                .font(.system(size: 12, weight: .medium))
+                        }
+                        .foregroundColor(.indigo)
                     }
-                    .foregroundColor(.indigo)
                 }
             }
         }
