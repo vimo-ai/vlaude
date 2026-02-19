@@ -263,6 +263,7 @@ struct SessionListView: View {
 
 struct SessionRow: View {
     let session: Session
+    @ObservedObject private var approvalManager = ApprovalManager.shared
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -272,6 +273,14 @@ struct SessionRow: View {
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .foregroundColor(.primary)
                     .lineLimit(1)
+
+                // 待审批指示器
+                if approvalManager.pendingCount(for: session.id) > 0 {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .font(.system(size: 10))
+                        .foregroundColor(.orange)
+                        .symbolEffect(.pulse)
+                }
 
                 // ETerm 状态指示器
                 if session.inEterm == true {

@@ -24,6 +24,9 @@ struct VlaudeApp: App {
     }()
 
     init() {
+        // 初始化全局审批管理器（开始监听审批事件）
+        _ = ApprovalManager.shared
+
         // 启动认证流程
         Self.ensureAuthenticated()
 

@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @ObservedObject private var wsClient = VlaudeWebSocketClient.shared
+    @ObservedObject private var approvalManager = ApprovalManager.shared
     @State private var isReconnecting = false
     @State private var hasConnectedOnce = false  // 是否曾经连接成功过
 
@@ -28,7 +29,28 @@ struct ContentView: View {
                     onReconnect: reconnect
                 )
             }
+
+            // 全局审批 Banner（最高层，仅在连接状态下显示）
+            if wsClient.isConnected, let approval = approvalManager.bannerApproval {
+                VStack {
+                    GlobalApprovalBannerView(
+                        approval: approval,
+                        responseState: approvalManager.bannerResponseState,
+                        onAction: { action in
+                            approvalManager.sendBannerApprovalResponse(action: action)
+                        },
+                        onDismiss: {
+                            approvalManager.dismissBanner()
+                        }
+                    )
+                    Spacer()
+                }
+                .zIndex(999)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .animation(.spring(response: 0.4, dampingFraction: 0.8), value: approval.requestId)
+            }
         }
+        .animation(.easeInOut(duration: 0.3), value: approvalManager.bannerApproval?.requestId)
         .onChange(of: wsClient.isConnected) { _, isConnected in
             if isConnected {
                 hasConnectedOnce = true

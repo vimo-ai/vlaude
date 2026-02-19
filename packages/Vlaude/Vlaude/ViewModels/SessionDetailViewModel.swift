@@ -127,6 +127,9 @@ class SessionDetailViewModel: ObservableObject {
 
         currentSessionId = sessionId
 
+        // 通知全局审批管理器：当前页面正在查看此 session（抑制全局 banner）
+        ApprovalManager.shared.registerSessionPageActive(sessionId)
+
         // 注意：这里只订阅消息推送，不加入会话
         // 只有在发送消息时才会触发 join（通知 CLI 进入 remote 模式）
         wsClient.subscribeToSession(sessionId, projectPath: currentProjectPath)
@@ -134,6 +137,10 @@ class SessionDetailViewModel: ObservableObject {
         // 查询当前 session 的 pending approvals（解决离开页面后审批丢失的问题）
         Task { @MainActor in
             let pendingApprovalStates = await wsClient.getApprovalState(sessionId: sessionId)
+
+            // 同步到全局审批管理器
+            ApprovalManager.shared.syncFromServer(sessionId: sessionId, approvals: pendingApprovalStates)
+
             // 取第一个（session 同一时刻最多一个 pending）
             guard let approvalDict = pendingApprovalStates.first,
                   let requestId = approvalDict["requestId"] as? String,
@@ -600,6 +607,8 @@ class SessionDetailViewModel: ObservableObject {
 
     func unsubscribeFromCurrentSession() {
         if let sessionId = currentSessionId {
+            // 通知全局审批管理器：离开此 session 页面（如有 pending 审批将显示全局 banner）
+            ApprovalManager.shared.registerSessionPageInactive(sessionId)
             wsClient.unsubscribeFromSession(sessionId)
         }
         // 使用 token 精确移除，不影响其他 ViewModel 的监听
