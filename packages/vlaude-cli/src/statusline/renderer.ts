@@ -1,6 +1,6 @@
 import chalk from 'chalk';
 import type { ClaudeStatusJSON, VlaudeStatus } from './types';
-import { formatTokens, type TokenMetrics } from './tokens';
+import type { TokenMetrics } from './tokens';
 import type { GitChanges } from './git';
 
 /**
@@ -78,67 +78,35 @@ export function renderStatusLine(
     parts.push(renderProgressBar(percentage) + ' ' + chalk.gray(`${percentage.toFixed(1)}%`));
   }
 
-  // 3. Token 使用情况
-  if (tokenMetrics) {
-    const tokenParts = [
-      chalk.blue(`↑${formatTokens(tokenMetrics.inputTokens)}`),
-      chalk.cyan(`↓${formatTokens(tokenMetrics.outputTokens)}`)
-    ];
-    // Cache tokens - 按健康度变色
-    if (tokenMetrics.cacheReadTokens > 0 || tokenMetrics.cacheWriteTokens > 0) {
-      // Cache Read: <10M 绿, 10-50M 黄, >50M 红
-      const rValue = formatTokens(tokenMetrics.cacheReadTokens);
-      let rColor;
-      if (tokenMetrics.cacheReadTokens < 10_000_000) {
-        rColor = chalk.green;
-      } else if (tokenMetrics.cacheReadTokens < 50_000_000) {
-        rColor = chalk.yellow;
-      } else {
-        rColor = chalk.red;
-      }
-      tokenParts.push(rColor(`R${rValue}`));
+  // 3. 效率倍率 ×N
+  if (tokenMetrics?.costMultiplier !== null && tokenMetrics?.costMultiplier !== undefined) {
+    const x = tokenMetrics.costMultiplier;
+    const xStr = `×${x < 10 ? x.toFixed(1) : Math.round(x).toString()}`;
 
-      // Cache Write: <1M 绿, 1-5M 黄, >5M 红
-      const wValue = formatTokens(tokenMetrics.cacheWriteTokens);
-      let wColor;
-      if (tokenMetrics.cacheWriteTokens < 1_000_000) {
-        wColor = chalk.green;
-      } else if (tokenMetrics.cacheWriteTokens < 5_000_000) {
-        wColor = chalk.yellow;
-      } else {
-        wColor = chalk.red;
-      }
-      tokenParts.push(wColor(`W${wValue}`));
-
-      // 千分比估算: (cacheRead + cacheWrite) / 2.5M = ‰
-      // 基于分析: 25M tokens ≈ 1%, 所以 2.5M ≈ 1‰
-      const TOKENS_PER_PERMILLE = 2_500_000;
-      const totalCache = tokenMetrics.cacheReadTokens + tokenMetrics.cacheWriteTokens;
-      const permille = totalCache / TOKENS_PER_PERMILLE;
-      const permilleStr = permille < 10 ? permille.toFixed(1) : Math.round(permille).toString();
-
-      // 健康度: <5‰ 绿, 5-20‰ 黄, >20‰ 红
-      let permilleColor;
-      if (permille < 5) {
-        permilleColor = chalk.green;
-      } else if (permille < 20) {
-        permilleColor = chalk.yellow;
-      } else {
-        permilleColor = chalk.red;
-      }
-      tokenParts.push(permilleColor(`~${permilleStr}‰`));
+    // 颜色：灰(冷启动) → 绿(甜蜜区) → 黄(快出了) → 红(贵了) → 深红(很贵)
+    let xColor;
+    if (tokenMetrics.roundCount <= 5 && x > 1.3) {
+      xColor = chalk.gray;
+    } else if (x <= 1.2) {
+      xColor = chalk.green;
+    } else if (x <= 1.5) {
+      xColor = chalk.yellow;
+    } else if (x <= 2.0) {
+      xColor = chalk.red;
+    } else {
+      xColor = chalk.rgb(180, 0, 0);
     }
-    parts.push(tokenParts.join(' '));
+    parts.push(xColor(xStr));
   }
 
-  // 4. Git 变更
-  if (gitChanges) {
-    parts.push(chalk.yellow(`(+${gitChanges.insertions},-${gitChanges.deletions})`));
-  }
-
-  // 5. Session ID
+  // 4. Session ID
   if (data.session_id) {
     parts.push(chalk.gray(data.session_id));
+  }
+
+  // 5. Git 变更
+  if (gitChanges) {
+    parts.push(chalk.yellow(`(+${gitChanges.insertions},-${gitChanges.deletions})`));
   }
 
   // 用 | 分隔各部分
