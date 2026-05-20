@@ -1,7 +1,65 @@
 import chalk from 'chalk';
+import { readFileSync, existsSync } from 'fs';
+import { join } from 'path';
 import type { ClaudeStatusJSON, VlaudeStatus } from './types';
 import type { TokenMetrics } from './tokens';
 import type { GitChanges } from './git';
+
+/**
+ * 加权冲刺预测 — 与面板 SprintPredictor 同算法
+ * 读取 usage_history.json，取当前 cycle 最近 5 个变化区间，加权平均
+ */
+function weightedSprintDelta(remaining: number, remainingMs: number): number | null {
+  const historyPath = join(process.env.HOME || '', '.vimo/eterm/plugins/claude-monitor/usage_history.json');
+  if (!existsSync(historyPath)) return null;
+
+  try {
+    const raw = JSON.parse(readFileSync(historyPath, 'utf-8')) as Array<{
+      timestamp: string; utilization: number; cycleId: string;
+    }>;
+
+    if (raw.length < 2) return null;
+
+    const currentCycleId = raw[raw.length - 1].cycleId;
+    const points = raw
+      .filter(p => p.cycleId === currentCycleId)
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+    if (points.length < 2) return null;
+
+    // 提取用量增加的区间
+    const intervals: Array<{ timePerPercent: number; ts: number }> = [];
+    for (let i = 1; i < points.length; i++) {
+      const pctChange = points[i].utilization - points[i - 1].utilization;
+      if (pctChange <= 0) continue;
+      const duration = new Date(points[i].timestamp).getTime() - new Date(points[i - 1].timestamp).getTime();
+      if (duration < 60_000) continue;
+      intervals.push({ timePerPercent: duration / pctChange, ts: new Date(points[i].timestamp).getTime() });
+    }
+
+    if (intervals.length === 0) return null;
+
+    // 最近的在前，取 5 个
+    intervals.sort((a, b) => b.ts - a.ts);
+    const recent = intervals.slice(0, 5);
+
+    // 加权平均 (0.40, 0.25, 0.20, 0.10, 0.05)
+    const weights = [0.40, 0.25, 0.20, 0.10, 0.05];
+    let weightedTpp = 0;
+    let totalWeight = 0;
+    for (let i = 0; i < recent.length; i++) {
+      const w = i < weights.length ? weights[i] : 0.05;
+      weightedTpp += recent[i].timePerPercent * w;
+      totalWeight += w;
+    }
+    weightedTpp /= totalWeight;
+
+    const predictFinishMs = weightedTpp * remaining;
+    return remainingMs - predictFinishMs;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * 渲染进度条
@@ -107,6 +165,86 @@ export function renderStatusLine(
   // 5. Git 变更
   if (gitChanges) {
     parts.push(chalk.yellow(`(+${gitChanges.insertions},-${gitChanges.deletions})`));
+  }
+
+  // 6. 7天用量：余量 + 剩余时间 + 预计速率（与面板 SprintPredictor 同逻辑）
+  if (data.rate_limits?.seven_day) {
+    const sd = data.rate_limits.seven_day;
+    const resetMs = sd.resets_at * 1000;
+    const startMs = resetMs - 7 * 24 * 3600 * 1000;
+    const now = Date.now();
+
+    const usageProgress = sd.used_percentage / 100;
+    const timeProgress = Math.min(1, Math.max(0, (now - startMs) / (resetMs - startMs)));
+    const remaining = Math.max(0, 100 - sd.used_percentage);
+    const remainingMs = Math.max(0, resetMs - now);
+
+    // 加权冲刺预测（与面板 SprintPredictor 同算法）
+    let sprintStr = '';
+    const sprintDeltaMs = weightedSprintDelta(remaining, remainingMs);
+    if (sprintDeltaMs !== null) {
+      const deltaHours = sprintDeltaMs / 3600000;
+      const sign = deltaHours >= 0 ? '+' : '-';
+      const absH = Math.abs(deltaHours);
+      const hStr = absH >= 1 ? `${Math.floor(absH)}h` : `${Math.round(absH * 60)}m`;
+      const color = deltaHours > 2 ? chalk.green : deltaHours < -2 ? chalk.red : chalk.yellow;
+      sprintStr = color(` ${sign}${hStr}`);
+    }
+
+    // 颜色与面板一致：领先→蓝/绿，落后→黄/红
+    const delta = usageProgress - timeProgress;
+    let color;
+    if (delta >= 0.10) color = chalk.cyan;
+    else if (delta >= 0) color = chalk.green;
+    else if (delta >= -0.10) color = chalk.yellow;
+    else color = chalk.red;
+
+    const hoursLeft = remainingMs / 3600000;
+    const timeStr = hoursLeft >= 24
+      ? `${Math.floor(hoursLeft / 24)}d${Math.floor(hoursLeft % 24)}h`
+      : `${Math.floor(hoursLeft)}h`;
+
+    parts.push(color(`余${remaining.toFixed(0)}%`) + chalk.gray(` ${timeStr}`) + sprintStr);
+
+    // 速度指示：基于 token 公式 (1% ≈ output×5 + cache_write×1.25 ≈ 2190K)
+    const COST_PER_PCT = 2_190_000;
+    const awakeMs = Math.max(0, remainingMs - 6 * 3600000);
+    const targetMinPerPct = remaining > 0 ? awakeMs / 60000 / remaining : 0;
+
+    if (tokenMetrics && tokenMetrics.roundCount >= 2 && targetMinPerPct > 0) {
+      const sessionCost = tokenMetrics.outputTokens * 5 + tokenMetrics.cacheWriteTokens * 1.25;
+      const sessionPct = sessionCost / COST_PER_PCT;
+
+      if (sessionPct > 0.1) {
+        // 从 rate_limits 的变化推算会话时长
+        // 用 usage_history 里的时间间隔做 fallback
+        const sprintDeltaRaw = weightedSprintDelta(remaining, remainingMs);
+        if (sprintDeltaRaw !== null) {
+          const predictFinishMs = remainingMs - sprintDeltaRaw;
+          const currentMinPerPct = remaining > 0 ? predictFinishMs / 60000 / remaining : 0;
+          const arrow = currentMinPerPct <= targetMinPerPct * 0.8 ? '▲' :
+                        currentMinPerPct >= targetMinPerPct * 1.2 ? '▼' : '≈';
+          const arrowColor = arrow === '▲' ? chalk.green :
+                             arrow === '▼' ? chalk.red : chalk.yellow;
+          parts.push(chalk.white(`${Math.round(currentMinPerPct)}'`) + arrowColor(arrow) + chalk.gray(`${Math.round(targetMinPerPct)}'`));
+        }
+
+        // 显示本会话消耗的估算 %
+        parts.push(chalk.gray(`~${sessionPct.toFixed(1)}%`));
+      }
+    } else {
+      // token 数据不足时 fallback 到纯时间间隔
+      const sprintDeltaRaw = weightedSprintDelta(remaining, remainingMs);
+      if (sprintDeltaRaw !== null && targetMinPerPct > 0) {
+        const predictFinishMs = remainingMs - sprintDeltaRaw;
+        const currentMinPerPct = remaining > 0 ? predictFinishMs / 60000 / remaining : 0;
+        const arrow = currentMinPerPct <= targetMinPerPct * 0.8 ? '▲' :
+                      currentMinPerPct >= targetMinPerPct * 1.2 ? '▼' : '≈';
+        const arrowColor = arrow === '▲' ? chalk.green :
+                           arrow === '▼' ? chalk.red : chalk.yellow;
+        parts.push(chalk.white(`${Math.round(currentMinPerPct)}'`) + arrowColor(arrow) + chalk.gray(`${Math.round(targetMinPerPct)}'`));
+      }
+    }
   }
 
   // 用 | 分隔各部分

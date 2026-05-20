@@ -68,6 +68,52 @@ function detectSessionSwitch(currentSessionId: string | undefined) {
 }
 
 /**
+ * 持久化 rate_limits 到 ~/.vimo/rate-limits.json
+ * ClaudeMonitorKit 读取此文件替代调用 /api/oauth/usage
+ */
+function persistRateLimits(data: ClaudeStatusJSON) {
+  if (!data.rate_limits?.seven_day) return;
+
+  const vimoDir = join(process.env.HOME || '', '.vimo');
+  const rateLimitsFile = join(vimoDir, 'rate-limits.json');
+
+  try {
+    if (!existsSync(vimoDir)) {
+      mkdirSync(vimoDir, { recursive: true });
+    }
+
+    const newSevenDay = Math.round(data.rate_limits.seven_day.used_percentage);
+    const newFiveHour = data.rate_limits.five_hour
+      ? Math.round(data.rate_limits.five_hour.used_percentage) : null;
+
+    if (existsSync(rateLimitsFile)) {
+      const old = JSON.parse(readFileSync(rateLimitsFile, 'utf-8'));
+      if (old.sevenDay?.utilization === newSevenDay
+        && (old.fiveHour?.utilization ?? null) === newFiveHour) {
+        return;
+      }
+    }
+
+    const payload = {
+      fiveHour: data.rate_limits.five_hour ? {
+        utilization: newFiveHour,
+        resetsAt: data.rate_limits.five_hour.resets_at,
+      } : null,
+      sevenDay: {
+        utilization: newSevenDay,
+        resetsAt: data.rate_limits.seven_day.resets_at,
+      },
+      sessionId: data.session_id,
+      updatedAt: Date.now(),
+    };
+
+    writeFileSync(rateLimitsFile, JSON.stringify(payload), 'utf-8');
+  } catch {
+    // 写入失败不影响 statusline 渲染
+  }
+}
+
+/**
  * 主函数
  */
 async function main() {
@@ -91,6 +137,29 @@ async function main() {
 
     // 3. 检测 session 切换（内部 /resume 命令）
     detectSessionSwitch(data.session_id);
+
+    // 3.5. 持久化 rate_limits 到本地文件供 ClaudeMonitorKit 读取
+    persistRateLimits(data);
+
+    // 追加 usage log（rate_limits 变化时记录，兜底 ETerm 插件记录断档）
+    if (data.rate_limits?.seven_day) {
+      try {
+        const logDir = join(process.env.HOME || '', '.vimo');
+        const logFile = join(logDir, 'usage-log.jsonl');
+        const sd = data.rate_limits.seven_day;
+        const fh = data.rate_limits.five_hour;
+        const line = JSON.stringify({
+          ts: Date.now(),
+          sid: data.session_id,
+          sd: Math.round(sd.used_percentage),
+          fh: fh ? Math.round(fh.used_percentage) : null,
+          resetsAt: sd.resets_at,
+        }) + '\n';
+        const { appendFileSync } = await import('fs');
+        appendFileSync(logFile, line, 'utf-8');
+      } catch {}
+    }
+
 
     // 4. 获取 vlaude 状态
     const vlaudeStatus = await getVlaudeStatus(data.session_id || null);

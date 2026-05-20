@@ -34,6 +34,16 @@ export interface ClaudeStatusJSON {
     total_lines_removed?: number;
   };
   context_window?: ContextWindow;
+  rate_limits?: {
+    five_hour?: {
+      used_percentage: number;
+      resets_at: number;
+    };
+    seven_day?: {
+      used_percentage: number;
+      resets_at: number;
+    };
+  };
   [key: string]: any;
 }
 
