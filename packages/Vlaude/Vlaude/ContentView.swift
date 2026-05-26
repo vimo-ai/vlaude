@@ -15,7 +15,17 @@ struct ContentView: View {
 
     var body: some View {
         ZStack {
-            ProjectListView()
+            TabView {
+                ProjectListView()
+                    .tabItem {
+                        Label("Sessions", systemImage: "list.bullet")
+                    }
+
+                TerminalDemoView()
+                    .tabItem {
+                        Label("Terminal", systemImage: "terminal")
+                    }
+            }
 
             // 首次连接中 - 显示 loading（仅当未失败时）
             if !wsClient.isConnected && !hasConnectedOnce && !wsClient.connectionFailed {
