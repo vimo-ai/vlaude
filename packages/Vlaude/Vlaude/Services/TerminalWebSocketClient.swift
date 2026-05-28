@@ -198,7 +198,6 @@ class TerminalWebSocketClient: ObservableObject {
     @Published private(set) var attachedSessionId: String?
     @Published private(set) var attachedCols: UInt16 = 80
     @Published private(set) var attachedRows: UInt16 = 24
-    @Published private(set) var isTakingOver: Bool = false
 
     // MARK: - Callbacks
 
@@ -223,9 +222,6 @@ class TerminalWebSocketClient: ObservableObject {
     private let reconnectBaseDelay: TimeInterval = 1.0
     private var pingTimer: Timer?
     private var intentionalDisconnect = false
-
-    /// Pending takeover: after Detach succeeds, auto-send Attach for this session
-    private var pendingTakeoverSessionId: String?
 
     // MARK: - Connection
 
@@ -252,8 +248,6 @@ class TerminalWebSocketClient: ObservableObject {
         webSocketTask = nil
         connectionState = .disconnected
         attachedSessionId = nil
-        isTakingOver = false
-        pendingTakeoverSessionId = nil
     }
 
     // MARK: - Control Commands
@@ -277,55 +271,6 @@ class TerminalWebSocketClient: ObservableObject {
     func detachSession() {
         guard let sid = attachedSessionId else { return }
         sendControl(.detach(sessionId: sid, cols: attachedCols, rows: attachedRows))
-    }
-
-    /// Update terminal window size
-    func updateWinsize(cols: UInt16, rows: UInt16) {
-        guard let sid = attachedSessionId else { return }
-        attachedCols = cols
-        attachedRows = rows
-        sendControl(.winsizeUpdate(sessionId: sid, cols: cols, rows: rows))
-    }
-
-    // MARK: - Take Over / Release
-
-    /// Force-detach a session from its current owner (ETerm) then attach from this client.
-    ///
-    /// The daemon's Detach handler has no ownership check, so any client can detach
-    /// any session. Flow: Detach → wait for Detached response → Attach → AttachReady.
-    /// During the takeover, `isTakingOver` is true for UI loading indicators.
-    func takeOverSession(sessionId: String) {
-        guard !isTakingOver else {
-            NSLog("[TerminalWS] takeover already in progress")
-            return
-        }
-        guard case .connected = connectionState else {
-            NSLog("[TerminalWS] must be connected (not attached) to initiate takeover")
-            return
-        }
-
-        isTakingOver = true
-        pendingTakeoverSessionId = sessionId
-        NSLog("[TerminalWS] initiating takeover for session %@", sessionId)
-
-        // Step 1: Force-detach the session.
-        // cols/rows = 0 tells daemon to preserve the original PTY dimensions.
-        // iPhone renders at the original size and scale-to-fit on screen.
-        sendControl(.detach(sessionId: sessionId, cols: 0, rows: 0))
-    }
-
-    /// Voluntarily release (detach) the currently attached session so that ETerm
-    /// or another client can re-attach.
-    func releaseSession(sessionId: String? = nil) {
-        let sid = sessionId ?? attachedSessionId
-        guard let sid = sid else {
-            NSLog("[TerminalWS] no session to release")
-            return
-        }
-
-        NSLog("[TerminalWS] releasing session %@", sid)
-        // cols/rows = 0 tells daemon to preserve the original PTY dimensions
-        sendControl(.detach(sessionId: sid, cols: 0, rows: 0))
     }
 
     /// Send keyboard input bytes to the attached PTY
@@ -400,8 +345,6 @@ class TerminalWebSocketClient: ObservableObject {
         pingTimer = nil
         webSocketTask = nil
         attachedSessionId = nil
-        isTakingOver = false
-        pendingTakeoverSessionId = nil
 
         if intentionalDisconnect {
             connectionState = .disconnected
@@ -493,23 +436,10 @@ class TerminalWebSocketClient: ObservableObject {
             attachedCols = cols
             attachedRows = rows
             connectionState = .attached(sessionId: sessionId)
-
-            // Takeover complete — clear loading state
-            if isTakingOver && pendingTakeoverSessionId == sessionId {
-                isTakingOver = false
-                pendingTakeoverSessionId = nil
-                NSLog("[TerminalWS] takeover complete for session %@, %dx%d", sessionId, cols, rows)
-            } else {
-                NSLog("[TerminalWS] attached to session %@, %dx%d", sessionId, cols, rows)
-            }
+            NSLog("[TerminalWS] attached to session %@, %dx%d", sessionId, cols, rows)
 
         case .detached(let sessionId):
-            // Takeover step 2: Detach succeeded, now send Attach
-            if let pending = pendingTakeoverSessionId, pending == sessionId {
-                NSLog("[TerminalWS] detach confirmed for takeover, attaching to %@", sessionId)
-                sendControl(.attach(sessionId: sessionId))
-            } else if attachedSessionId == sessionId {
-                // Normal detach (we were the attached client)
+            if attachedSessionId == sessionId {
                 attachedSessionId = nil
                 connectionState = .connected
             }
@@ -525,21 +455,10 @@ class TerminalWebSocketClient: ObservableObject {
             onSessionEnded?(sessionId)
 
         case .attachDeny(let sessionId, let reason):
-            // If takeover attach was denied, abort the takeover
-            if isTakingOver && pendingTakeoverSessionId == sessionId {
-                NSLog("[TerminalWS] takeover attach denied for %@: %@", sessionId, reason)
-                isTakingOver = false
-                pendingTakeoverSessionId = nil
-            }
+            NSLog("[TerminalWS] attach denied for %@: %@", sessionId, reason)
 
         case .error(let msg):
             NSLog("[TerminalWS] server error: %@", msg)
-            // If a takeover is in progress, any error aborts it
-            if isTakingOver {
-                NSLog("[TerminalWS] takeover aborted due to error")
-                isTakingOver = false
-                pendingTakeoverSessionId = nil
-            }
 
         default:
             break

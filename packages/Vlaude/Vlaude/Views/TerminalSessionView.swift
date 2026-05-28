@@ -20,13 +20,10 @@ import Combine
 
 struct TerminalSessionView: View {
     @StateObject private var wsClient = TerminalWebSocketClient()
-    @State private var hostInput: String = ""
+    @State private var hostInput: String = "10.0.0.1"
     @State private var portInput: String = "7685"
     @State private var errorMessage: String?
     @State private var showSessionPicker = false
-
-    /// Tracks whether the current attach was via takeover (for status display)
-    @State private var didTakeOver = false
 
     /// Bridge for sending PTY output data to the terminal renderer
     private let terminalBridge = TerminalViewBridge()
@@ -226,13 +223,8 @@ struct TerminalSessionView: View {
                             ForEach(wsClient.availableSessions) { session in
                                 PTYSessionRow(
                                     session: session,
-                                    isTakingOver: wsClient.isTakingOver,
                                     onAttach: {
-                                        didTakeOver = false
                                         wsClient.attachSession(sessionId: session.id)
-                                    },
-                                    onTakeOver: {
-                                        takeOverSession(sessionId: session.id)
                                     }
                                 )
                             }
@@ -290,33 +282,7 @@ struct TerminalSessionView: View {
                     .font(.caption)
                     .foregroundColor(.white.opacity(0.6))
 
-                // Takeover indicator
-                if didTakeOver {
-                    Text("已接管 from ETerm")
-                        .font(.caption2)
-                        .fontWeight(.medium)
-                        .foregroundColor(.orange)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Color.orange.opacity(0.2))
-                        .cornerRadius(4)
-                }
-
                 Spacer()
-
-                // Release button when session was taken over
-                if didTakeOver {
-                    Button(action: releaseCurrentSession) {
-                        HStack(spacing: 4) {
-                            Image(systemName: "arrow.uturn.backward")
-                                .font(.caption2)
-                            Text("释放")
-                                .font(.caption2)
-                        }
-                        .foregroundColor(.yellow)
-                    }
-                    .padding(.trailing, 4)
-                }
 
                 Button(action: { wsClient.detachSession() }) {
                     Image(systemName: "rectangle.portrait.and.arrow.right")
@@ -344,21 +310,11 @@ struct TerminalSessionView: View {
                 ProgressView()
                     .scaleEffect(0.7)
             case .connected:
-                if wsClient.isTakingOver {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                } else {
-                    Image(systemName: "wifi")
-                        .foregroundColor(.yellow)
-                }
+                Image(systemName: "wifi")
+                    .foregroundColor(.yellow)
             case .attached:
-                if didTakeOver {
-                    Image(systemName: "wifi.circle.fill")
-                        .foregroundColor(.orange)
-                } else {
-                    Image(systemName: "wifi")
-                        .foregroundColor(.green)
-                }
+                Image(systemName: "wifi")
+                    .foregroundColor(.green)
             }
         }
     }
@@ -386,19 +342,14 @@ struct TerminalSessionView: View {
         wsClient.onControlResponse = { response in
             switch response {
             case .attachReady(_, let cols, let rows, _, let snapshot):
-                // 1. Set grid to correct dimensions
+                // Use ETerm's cols/rows for rendering, iOS adapts visually via pinch-to-zoom
                 bridge.resizeGrid(cols: UInt32(cols), rows: UInt32(rows))
-                // 2. Replay ring buffer history to reconstruct terminal state
+                // Replay ring buffer history to reconstruct terminal state
                 if let snapshot = snapshot,
                    let data = Data(base64Encoded: snapshot) {
                     bridge.writePtyData(data)
                 }
-                // 3. Force SIGWINCH so running programs redraw
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    self.wsClient.updateWinsize(cols: cols, rows: rows)
-                }
-            case .winsizeUpdated:
-                break
+                // No updateWinsize — iOS does not change the PTY size
             case .error(let msg):
                 NSLog("[TerminalSession] control error: %@", msg)
             default:
@@ -433,62 +384,19 @@ struct TerminalSessionView: View {
         }
     }
 
-    /// Force-detach ETerm from the session and attach iPhone instead
-    private func takeOverSession(sessionId: String) {
-        let bridge = terminalBridge
-        let client = wsClient
-
-        client.onControlResponse = { response in
-            switch response {
-            case .attachReady(_, let cols, let rows, _, let snapshot):
-                // 1. Set grid to correct dimensions
-                bridge.resizeGrid(cols: UInt32(cols), rows: UInt32(rows))
-                // 2. Replay ring buffer history to reconstruct terminal state
-                if let snapshot = snapshot,
-                   let data = Data(base64Encoded: snapshot) {
-                    bridge.writePtyData(data)
-                }
-                self.didTakeOver = true
-                // 3. Force SIGWINCH so running programs redraw
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    client.updateWinsize(cols: cols, rows: rows)
-                }
-            case .error(let msg):
-                NSLog("[TerminalSession] takeover error: %@", msg)
-            default:
-                break
-            }
-        }
-
-        client.takeOverSession(sessionId: sessionId)
-    }
-
-    /// Release a taken-over session back (detach iPhone, let ETerm re-attach)
-    private func releaseCurrentSession() {
-        guard let sid = wsClient.attachedSessionId else { return }
-        didTakeOver = false
-        wsClient.releaseSession(sessionId: sid)
-    }
 }
 
 // MARK: - Session Row
 
 private struct PTYSessionRow: View {
     let session: PTYSessionInfo
-    let isTakingOver: Bool
     let onAttach: () -> Void
-    let onTakeOver: () -> Void
-
-    /// Whether this session is occupied by ETerm (or another local client)
-    private var isAttached: Bool {
-        session.state == "Attached"
-    }
 
     /// State display info: (label, color, icon)
     private var stateDisplay: (label: String, color: Color, icon: String) {
         switch session.state {
         case "Attached":
-            return ("ETerm 占用中", .orange, "person.fill")
+            return ("ETerm 使用中", .blue, "person.fill")
         case "Active":
             return ("活跃", .green, "bolt.fill")
         case "Idle":
@@ -500,7 +408,7 @@ private struct PTYSessionRow: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            // State icon replaces simple circle
+            // State icon
             Image(systemName: stateDisplay.icon)
                 .font(.caption)
                 .foregroundColor(stateDisplay.color)
@@ -540,45 +448,16 @@ private struct PTYSessionRow: View {
 
             Spacer()
 
-            // Action button: "Take Over" for Attached sessions, normal "Attach" otherwise
-            if isAttached {
-                Button(action: onTakeOver) {
-                    HStack(spacing: 4) {
-                        if isTakingOver {
-                            ProgressView()
-                                .scaleEffect(0.6)
-                                .frame(width: 16, height: 16)
-                        } else {
-                            Image(systemName: "hand.raised.fill")
-                                .font(.caption)
-                        }
-                        Text("接管")
-                            .font(.caption)
-                            .fontWeight(.medium)
-                    }
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(Color.orange)
-                    .cornerRadius(8)
-                }
-                .disabled(isTakingOver)
-            } else {
-                Button(action: onAttach) {
-                    Image(systemName: "arrow.right.circle.fill")
-                        .foregroundColor(.green)
-                        .font(.title3)
-                }
+            // Unified Attach button for all session states (shared mode)
+            Button(action: onAttach) {
+                Image(systemName: "arrow.right.circle.fill")
+                    .foregroundColor(.green)
+                    .font(.title3)
             }
         }
         .padding(12)
-        .background(isAttached ? Color.orange.opacity(0.06) : Color.white.opacity(0.08))
+        .background(Color.white.opacity(0.08))
         .cornerRadius(10)
-        .overlay(
-            // Subtle border for attached sessions
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(isAttached ? Color.orange.opacity(0.3) : Color.clear, lineWidth: 1)
-        )
     }
 
     private func formatAge(_ seconds: UInt64) -> String {
